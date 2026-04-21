@@ -1,0 +1,100 @@
+.player-ip-list {
+  padding: 0.9rem;
+  overflow-x: auto;
+}
+
+.player-ip-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-secondary) 94%, transparent);
+}
+
+.player-ip-table thead {
+  background: color-mix(in srgb, var(--bg-tertiary) 82%, transparent);
+}
+
+.player-ip-table th,
+.player-ip-table td {
+  border-bottom: 1px solid var(--border-color);
+  text-align: left;
+  padding: 0.7rem 0.75rem;
+}
+
+.player-ip-table th {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.player-ip-table td {
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+}
+
+.player-ip-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.player-ip-table tbody tr:hover {
+  background: color-mix(in srgb, var(--primary-color) 7%, transparent);
+}
+
+.username-cell {
+  color: var(--text-primary) !important;
+  font-weight: 700;
+  vertical-align: top;
+}
+
+.ip-cell {
+  font-family: var(--font-mono);
+}
+
+.protocol-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.16rem 0.48rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.protocol-badge.udp {
+  color: var(--info-color);
+  border-color: color-mix(in srgb, var(--info-color) 50%, var(--border-color));
+  background: color-mix(in srgb, var(--info-color) 14%, transparent);
+}
+
+.protocol-badge.tcp {
+  color: var(--success-color);
+  border-color: color-mix(in srgb, var(--success-color) 50%, var(--border-color));
+  background: color-mix(in srgb, var(--success-color) 14%, transparent);
+}
+
+.timestamp-cell,
+.time-since-cell {
+  white-space: nowrap;
+}
+
+.no-data {
+  border: 1px dashed var(--border-color);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+  color: var(--text-muted);
+  text-align: center;
+  padding: 2rem;
+}
+
+@media (max-width: 840px) {
+  .player-ip-table th,
+  .player-ip-table td {
+    padding: 0.58rem;
+    font-size: 0.8rem;
+  }
+}

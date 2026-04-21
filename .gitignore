@@ -1,0 +1,30 @@
+/target/
+target/
+
+# Runtime state
+config.yml
+playerIP.json
+*.log
+
+# FerrumGUI dependencies and build output
+FerrumGUI/node_modules/
+FerrumGUI/.github/
+FerrumGUI/dist/
+FerrumGUI/instances/
+FerrumGUI/services.json
+FerrumGUI/public/index.html
+FerrumGUI/public/assets/
+FerrumGUI/ferrumproxy-gui
+FerrumGUI/ferrumproxy-gui-*
+FerrumGUI/ferrumproxy-gui.exe
+FerrumGUI/.env
+FerrumGUI/.env.local
+FerrumGUI/frontend/node_modules/
+FerrumGUI/frontend/dist/
+FerrumGUI/frontend/dist-ssr/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

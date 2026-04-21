@@ -1,0 +1,16 @@
+node_modules
+bun.lockb
+package-lock.json
+dist/
+instances/
+services.json
+*.log
+.DS_Store
+.env
+.env.local
+ferrumproxy-gui
+ferrumproxy-gui-*
+ferrumproxy-gui.exe
+.history/
+public/index.html
+public/assets/

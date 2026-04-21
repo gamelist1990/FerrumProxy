@@ -1,0 +1,81 @@
+.config-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.9rem;
+}
+
+.json-editor textarea {
+  width: 100%;
+  min-height: 380px;
+  resize: vertical;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-tertiary) 86%, transparent);
+  color: var(--text-primary);
+  padding: 0.95rem;
+  line-height: 1.5;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.json-editor textarea:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--primary-color) 70%, var(--border-color));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 20%, transparent);
+}
+
+.config-actions {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.listener-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.w-full {
+  width: 100%;
+}
+
+.p-4 {
+  padding: 1rem;
+}
+
+.bg-tertiary {
+  background: color-mix(in srgb, var(--bg-tertiary) 84%, transparent);
+}
+
+.text-primary {
+  color: var(--text-primary);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.text-sm {
+  font-size: 0.85rem;
+}
+
+.border {
+  border-width: 1px;
+  border-style: solid;
+}
+
+.border-border {
+  border-color: var(--border-color);
+}
+
+.rounded-md {
+  border-radius: var(--radius-md);
+}
+
+.focus\:outline-none:focus {
+  outline: none;
+}
+
+.focus\:border-primary:focus {
+  border-color: color-mix(in srgb, var(--primary-color) 70%, var(--border-color));
+}

@@ -1,0 +1,30 @@
+endpoint: 6000
+useRestApi: false
+savePlayerIP: true
+debug: false
+listeners:
+  - bind: 0.0.0.0
+    tcp: 25565
+    udp: 25565
+    haproxy: false
+    https:
+      enabled: false
+      autoDetect: true
+      letsEncryptDomain: example.com
+      certPath: ./certs/fullchain.pem
+      keyPath: ./certs/privkey.pem
+    webhook: ""
+    rewriteBedrockPongPorts: true
+    targets:
+      - host: 127.0.0.1
+        tcp: 19132
+        udp: 19132
+    # Optional HTTP/HTTPS path mappings. The longest matching path wins.
+    # /pages/example is routed to /pages before /.
+    httpMappings:
+      - path: /
+        target:
+          host: https://example.com/
+      - path: /pages
+        target:
+          host: https://example.com/docs

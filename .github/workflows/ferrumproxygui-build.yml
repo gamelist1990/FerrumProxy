@@ -1,0 +1,91 @@
+name: Build FerrumProxyGUI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "FerrumGUI/**"
+      - ".github/workflows/ferrumproxygui-build.yml"
+  pull_request:
+    paths:
+      - "FerrumGUI/**"
+      - ".github/workflows/ferrumproxygui-build.yml"
+
+concurrency:
+  group: ferrumproxygui-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build GUI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: FerrumGUI
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install frontend dependencies
+        working-directory: FerrumGUI/frontend
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend
+        run: bun run build:frontend
+
+      - name: Generate embedded files
+        run: bun run generate:embed
+
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/build
+          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-linux-x64 ./src/index.ts --outfile target/build/FerrumProxyGUI-linux-x64
+          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-linux-arm64 ./src/index.ts --outfile target/build/FerrumProxyGUI-linux-arm64
+          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-windows-x64 ./src/index.ts --outfile target/build/FerrumProxyGUI-windows-x64.exe
+          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-darwin-arm64 ./src/index.ts --outfile target/build/FerrumProxyGUI-macos-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FerrumProxyGUI
+          path: FerrumGUI/target/build/FerrumProxyGUI-*
+          if-no-files-found: error
+
+  release:
+    name: Release FerrumProxyGUI
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: FerrumProxyGUI
+          path: release-assets
+
+      - name: Publish fixed FerrumProxyGUI release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: FerrumProxyGUI
+          name: FerrumProxyGUI
+          body: |
+            Latest FerrumProxyGUI build from `${{ github.sha }}`.
+
+            This release intentionally reuses the fixed `FerrumProxyGUI` tag.
+          files: release-assets/FerrumProxyGUI-*
+          fail_on_unmatched_files: true
+          overwrite_files: true

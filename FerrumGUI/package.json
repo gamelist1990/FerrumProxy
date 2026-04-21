@@ -1,0 +1,46 @@
+{
+  "name": "ferrumproxy-gui",
+  "version": "1.0.0",
+  "description": "GUI for managing multiple FerrumProxy instances",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm",
+    "generate:embed": "bun run scripts/generate-embed-files.ts",
+    "build:compile": "bun run generate:embed && bun build --compile --minify --asset-naming=[name].[ext] ./src/index.ts --outfile ferrumproxy-gui",
+    "build:compile:linux": "bun run generate:embed && bun build --compile --minify --asset-naming=[name].[ext] --target=bun-linux-x64 ./src/index.ts --outfile ferrumproxy-gui-linux",
+    "build:compile:linux-arm64": "bun run generate:embed && bun build --compile --minify --asset-naming=[name].[ext] --target=bun-linux-arm64 ./src/index.ts --outfile ferrumproxy-gui-linux-arm64",
+    "build:compile:macos-arm64": "bun run generate:embed && bun build --compile --minify --asset-naming=[name].[ext] --target=bun-darwin-arm64 ./src/index.ts --outfile ferrumproxy-gui-macos-arm64",
+    "build:compile:windows": "bun run generate:embed && bun build --compile --minify --asset-naming=[name].[ext] --target=bun-windows-x64 ./src/index.ts --outfile ferrumproxy-gui-windows.exe",
+    "build:all": "bun run build:frontend && bun run generate:embed && bun run build:compile:linux && bun run build:compile:linux-arm64 && bun run build:compile:macos-arm64 && bun run build:compile:windows",
+    "start": "bun dist/index.js",
+    "build:frontend": "cd frontend && bun run build",
+    "dev:frontend": "cd frontend && bun run dev",
+    "alldev": "bun run build:frontend && bun run generate:embed && bun run dev"
+  },
+  "keywords": [
+    "ferrumproxy",
+    "minecraft",
+    "proxy",
+    "gui"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "yaml": "^2.3.4",
+    "node-fetch": "^3.3.2",
+    "chalk": "^5.3.0",
+    "cookie-parser": "^1.4.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.5",
+    "@types/cookie-parser": "^1.4.6",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.5",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.3"
+  }
+}

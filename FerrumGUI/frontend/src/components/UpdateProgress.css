@@ -1,0 +1,107 @@
+.update-progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(7, 7, 7, 0.58);
+  backdrop-filter: blur(6px);
+}
+
+.update-progress-modal {
+  width: min(520px, 100%);
+  border-radius: 18px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-secondary) 94%, transparent);
+  box-shadow: var(--shadow-xl);
+  padding: 1.3rem;
+  display: grid;
+  gap: 0.95rem;
+}
+
+.update-progress-modal h3 {
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+}
+
+.update-version-info {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+  padding: 0.55rem;
+}
+
+.update-version-label {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.update-version-current,
+.update-version-target {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.update-version-current {
+  color: var(--text-primary);
+}
+
+.update-version-arrow {
+  color: var(--warning-color);
+  font-size: 1rem;
+}
+
+.update-version-target {
+  color: var(--success-color);
+}
+
+.update-progress-container {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.update-progress-bar {
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  transform-origin: left center;
+  transform: scaleX(0);
+  background:
+    repeating-linear-gradient(
+      60deg,
+      color-mix(in srgb, var(--primary-color) 82%, black),
+      color-mix(in srgb, var(--primary-color) 82%, black) 10px,
+      color-mix(in srgb, var(--info-color) 86%, black) 10px,
+      color-mix(in srgb, var(--info-color) 86%, black) 20px
+    );
+  transition: transform 0.25s ease;
+}
+
+.update-progress-text {
+  text-align: center;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.update-message {
+  margin: 0;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
