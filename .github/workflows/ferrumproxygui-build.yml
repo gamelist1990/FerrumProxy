@@ -85,7 +85,9 @@ jobs:
           body: |
             Latest FerrumProxyGUI build from `${{ github.sha }}`.
 
-            This release intentionally reuses the fixed `FerrumProxyGUI` tag.
+            Action: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+            Message: ${{ github.event.head_commit.message }}
           files: release-assets/FerrumProxyGUI-*
           fail_on_unmatched_files: true
           overwrite_files: true

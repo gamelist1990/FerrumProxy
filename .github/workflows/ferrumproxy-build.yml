@@ -117,7 +117,9 @@ jobs:
           body: |
             Latest FerrumProxy build from `${{ github.sha }}`.
 
-            This release intentionally reuses the fixed `FerrumProxy` tag so FerrumProxyGUI can always download the current binaries without version selection.
+            Action: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+            Message: ${{ github.event.head_commit.message }}
           files: release-assets/FerrumProxy-*
           fail_on_unmatched_files: true
           overwrite_files: true
