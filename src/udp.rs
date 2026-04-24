@@ -10,8 +10,9 @@ use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 use crate::bedrock::{
-    describe_offline_ping, describe_unconnected_pong, is_disconnect_notification, is_offline_ping,
-    is_unconnected_pong, rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
+    describe_offline_ping, describe_raknet_packet, describe_unconnected_pong,
+    is_disconnect_notification, is_offline_ping, is_unconnected_pong,
+    rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
 };
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
@@ -89,6 +90,8 @@ async fn handle_datagram(
 
     if let Some(description) = describe_offline_ping(&payload) {
         debug!("Bedrock offline ping from {original_client} via {peer}: {description}");
+    } else if let Some(description) = describe_raknet_packet(&payload) {
+        debug!("RakNet client packet from {original_client} via {peer}: {description}");
     }
 
     let mut session = {
@@ -220,6 +223,10 @@ async fn create_session(
                         if let Some(session) = recv_sessions.lock().await.get_mut(&peer) {
                             session.cached_offline_pong = Some(response.clone());
                         }
+                    } else if let Some(description) = describe_raknet_packet(&response) {
+                        debug!(
+                            "RakNet backend packet from {backend_addr} to {peer}: {description}"
+                        );
                     }
 
                     if let Err(err) = send_server.send_to(&response, peer).await {

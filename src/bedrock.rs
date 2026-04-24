@@ -24,6 +24,29 @@ pub fn is_disconnect_notification(payload: &[u8]) -> bool {
     payload.first().copied() == Some(0x15)
 }
 
+pub fn describe_raknet_packet(payload: &[u8]) -> Option<String> {
+    let packet_id = *payload.first()?;
+    match packet_id {
+        UNCONNECTED_PING_ID | UNCONNECTED_PING_OPEN_CONNECTIONS_ID => {
+            describe_offline_ping(payload)
+        }
+        UNCONNECTED_PONG_ID => describe_unconnected_pong(payload),
+        0x05 => describe_open_connection_request_1(payload),
+        0x06 => describe_open_connection_reply_1(payload),
+        0x07 => describe_open_connection_request_2(payload),
+        0x08 => describe_open_connection_reply_2(payload),
+        0x09 => describe_connection_request(payload),
+        0x10 => Some(format!("Connection Request Accepted len={}", payload.len())),
+        0x13 => Some(format!("New Incoming Connection len={}", payload.len())),
+        0x15 => Some(format!("Disconnect Notification len={}", payload.len())),
+        0x80..=0x8d => describe_frame_set(payload),
+        _ => Some(format!(
+            "RakNet packet id=0x{packet_id:02x} len={}",
+            payload.len()
+        )),
+    }
+}
+
 pub fn describe_offline_ping(payload: &[u8]) -> Option<String> {
     if !is_offline_ping(payload) {
         return None;
@@ -88,6 +111,177 @@ pub fn describe_unconnected_pong(payload: &[u8]) -> Option<String> {
     }
 
     Some(description)
+}
+
+fn describe_open_connection_request_1(payload: &[u8]) -> Option<String> {
+    if payload.len() < 18 || payload[0] != 0x05 || payload[1..17] != RAKNET_OFFLINE_MESSAGE_ID {
+        return None;
+    }
+
+    Some(format!(
+        "Open Connection Request 1 len={} protocol={} mtu_probe={}",
+        payload.len(),
+        payload[17],
+        payload.len() + 28
+    ))
+}
+
+fn describe_open_connection_reply_1(payload: &[u8]) -> Option<String> {
+    if payload.len() < 28 || payload[0] != 0x06 || payload[1..17] != RAKNET_OFFLINE_MESSAGE_ID {
+        return None;
+    }
+
+    let server_guid = u64::from_be_bytes(payload[17..25].try_into().ok()?);
+    let has_security = payload[25] != 0;
+    let mtu = u16::from_be_bytes(payload[payload.len() - 2..].try_into().ok()?);
+    Some(format!(
+        "Open Connection Reply 1 len={} server_guid={} security={} mtu={}",
+        payload.len(),
+        server_guid,
+        has_security,
+        mtu
+    ))
+}
+
+fn describe_open_connection_request_2(payload: &[u8]) -> Option<String> {
+    if payload.len() < 34 || payload[0] != 0x07 || payload[1..17] != RAKNET_OFFLINE_MESSAGE_ID {
+        return None;
+    }
+
+    let mtu = u16::from_be_bytes(
+        payload[payload.len() - 10..payload.len() - 8]
+            .try_into()
+            .ok()?,
+    );
+    let client_guid = u64::from_be_bytes(payload[payload.len() - 8..].try_into().ok()?);
+    Some(format!(
+        "Open Connection Request 2 len={} mtu={} client_guid={} raw_tail={}",
+        payload.len(),
+        mtu,
+        client_guid,
+        hex_prefix(&payload[payload.len().saturating_sub(16)..], 16)
+    ))
+}
+
+fn describe_open_connection_reply_2(payload: &[u8]) -> Option<String> {
+    if payload.len() < 35 || payload[0] != 0x08 || payload[1..17] != RAKNET_OFFLINE_MESSAGE_ID {
+        return None;
+    }
+
+    let server_guid = u64::from_be_bytes(payload[17..25].try_into().ok()?);
+    let mtu = u16::from_be_bytes(
+        payload[payload.len() - 3..payload.len() - 1]
+            .try_into()
+            .ok()?,
+    );
+    let security = payload[payload.len() - 1] != 0;
+    Some(format!(
+        "Open Connection Reply 2 len={} server_guid={} mtu={} security={} raw_tail={}",
+        payload.len(),
+        server_guid,
+        mtu,
+        security,
+        hex_prefix(&payload[payload.len().saturating_sub(16)..], 16)
+    ))
+}
+
+fn describe_connection_request(payload: &[u8]) -> Option<String> {
+    if payload.len() < 18 || payload[0] != 0x09 {
+        return None;
+    }
+
+    let client_guid = u64::from_be_bytes(payload[1..9].try_into().ok()?);
+    let timestamp = u64::from_be_bytes(payload[9..17].try_into().ok()?);
+    let secure = payload[17] != 0;
+    Some(format!(
+        "Connection Request len={} client_guid={} timestamp={} secure={}",
+        payload.len(),
+        client_guid,
+        timestamp,
+        secure
+    ))
+}
+
+fn describe_frame_set(payload: &[u8]) -> Option<String> {
+    let sequence = read_u24_le(payload, 1)?;
+    let mut offset = 4;
+    let mut frames = Vec::new();
+
+    while offset + 3 <= payload.len() && frames.len() < 8 {
+        let frame_start = offset;
+        let flags = payload[offset];
+        offset += 1;
+
+        let bit_length = u16::from_be_bytes(payload[offset..offset + 2].try_into().ok()?);
+        offset += 2;
+        let body_length = (usize::from(bit_length) + 7) / 8;
+        let reliability = flags >> 5;
+        let split = flags & 0x10 != 0;
+
+        if matches!(reliability, 2 | 3 | 4 | 6 | 7) {
+            offset += 3;
+        }
+        if matches!(reliability, 1 | 4) {
+            offset += 3;
+        }
+        if matches!(reliability, 1 | 3 | 4 | 7) {
+            offset += 4;
+        }
+        if split {
+            offset += 10;
+        }
+        if offset > payload.len() {
+            frames.push(format!(
+                "#{} truncated flags=0x{flags:02x} reliability={reliability} bit_len={bit_length}",
+                frames.len()
+            ));
+            break;
+        }
+
+        let body_start = offset;
+        let body_end = body_start.saturating_add(body_length);
+        if body_end > payload.len() {
+            frames.push(format!(
+                "#{} truncated_body flags=0x{flags:02x} reliability={reliability} bit_len={bit_length} body_start={body_start}",
+                frames.len()
+            ));
+            break;
+        }
+
+        let body = &payload[body_start..body_end];
+        let body_id = body.first().copied();
+        frames.push(format!(
+            "#{} offset={} flags=0x{flags:02x} reliability={reliability} split={} bit_len={} body_len={} body_id={}{}",
+            frames.len(),
+            frame_start,
+            split,
+            bit_length,
+            body_length,
+            body_id
+                .map(|id| format!("0x{id:02x}"))
+                .unwrap_or_else(|| "missing".to_string()),
+            body_id
+                .and_then(frame_body_name)
+                .map(|name| format!(" ({name})"))
+                .unwrap_or_default()
+        ));
+        offset = body_end;
+    }
+
+    let suffix = if offset < payload.len() {
+        format!(" trailing={}B", payload.len() - offset)
+    } else {
+        String::new()
+    };
+
+    Some(format!(
+        "Frame Set id=0x{:02x} len={} sequence={} frames=[{}]{}",
+        payload[0],
+        payload.len(),
+        sequence,
+        frames.join("; "),
+        suffix
+    ))
 }
 
 pub fn rewrite_unconnected_pong_timestamp(payload: &[u8], timestamp: &[u8]) -> Option<Vec<u8>> {
@@ -173,4 +367,42 @@ fn truncate_for_log(value: &str, max_chars: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+fn read_u24_le(payload: &[u8], offset: usize) -> Option<u32> {
+    if payload.len() < offset + 3 {
+        return None;
+    }
+    Some(
+        payload[offset] as u32
+            | ((payload[offset + 1] as u32) << 8)
+            | ((payload[offset + 2] as u32) << 16),
+    )
+}
+
+fn hex_prefix(payload: &[u8], max_len: usize) -> String {
+    let mut out = String::new();
+    for (index, byte) in payload.iter().take(max_len).enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        let _ = write!(out, "{byte:02x}");
+    }
+    if payload.len() > max_len {
+        out.push_str(" ...");
+    }
+    out
+}
+
+fn frame_body_name(packet_id: u8) -> Option<&'static str> {
+    match packet_id {
+        0x00 => Some("Connected Ping"),
+        0x03 => Some("Connected Pong"),
+        0x09 => Some("Connection Request"),
+        0x10 => Some("Connection Request Accepted"),
+        0x13 => Some("New Incoming Connection"),
+        0x15 => Some("Disconnect Notification"),
+        0xfe => Some("Game Packet"),
+        _ => None,
+    }
 }
