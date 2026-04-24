@@ -10,8 +10,8 @@ use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 use crate::bedrock::{
-    is_disconnect_notification, is_offline_ping, is_unconnected_pong,
-    rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
+    describe_offline_ping, describe_unconnected_pong, is_disconnect_notification, is_offline_ping,
+    is_unconnected_pong, rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
 };
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
@@ -87,6 +87,10 @@ async fn handle_datagram(
         return Ok(());
     }
 
+    if let Some(description) = describe_offline_ping(&payload) {
+        debug!("Bedrock offline ping from {original_client} via {peer}: {description}");
+    }
+
     let mut session = {
         let guard = sessions.lock().await;
         guard.get(&peer).cloned()
@@ -128,7 +132,11 @@ async fn handle_datagram(
             if let Err(err) = server.send_to(&immediate_pong, peer).await {
                 debug!("Immediate Bedrock pong send to {peer} failed: {err}");
             } else {
-                debug!("Sent immediate Bedrock pong to {peer}; refreshing backend in parallel");
+                let description = describe_unconnected_pong(&immediate_pong)
+                    .unwrap_or_else(|| format!("len={}", immediate_pong.len()));
+                debug!(
+                    "Sent immediate Bedrock pong to {peer}; refreshing backend in parallel: {description}"
+                );
             }
         }
     }
@@ -183,15 +191,32 @@ async fn create_session(
                     }
 
                     if recv_rule.rewrite_bedrock_pong_ports {
+                        let before_rewrite = describe_unconnected_pong(&response);
                         if let Some(rewritten) = rewrite_unconnected_pong_ports(
                             &response,
                             recv_rule.udp.unwrap_or_default(),
                         ) {
+                            if let Some(before_rewrite) = before_rewrite {
+                                let after_rewrite = describe_unconnected_pong(&rewritten)
+                                    .unwrap_or_else(|| format!("len={}", rewritten.len()));
+                                debug!(
+                                    "Rewrote Bedrock pong ports for {peer}: before {before_rewrite}; after {after_rewrite}"
+                                );
+                            }
                             response = rewritten;
+                        } else if let Some(description) = before_rewrite {
+                            debug!(
+                                "Bedrock pong did not need port rewrite for {peer}: {description}"
+                            );
                         }
                     }
 
                     if is_unconnected_pong(&response) {
+                        if let Some(description) = describe_unconnected_pong(&response) {
+                            debug!(
+                                "Bedrock pong from backend {backend_addr} to {peer}: {description}"
+                            );
+                        }
                         if let Some(session) = recv_sessions.lock().await.get_mut(&peer) {
                             session.cached_offline_pong = Some(response.clone());
                         }
@@ -382,6 +407,12 @@ async fn send_to_target(
         if !is_offline_ping(payload) {
             session.header_sent = true;
         }
+
+        debug!(
+            "Added UDP PROXY v2 header for {original_client} -> {target_addr}: payload={}B total={}B force={force_proxy_header}",
+            payload.len(),
+            out.len()
+        );
     }
 
     session.socket.send_to(&out, target_addr).await?;

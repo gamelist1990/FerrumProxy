@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 const RAKNET_OFFLINE_MESSAGE_ID: [u8; 16] = [
     0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0x12, 0x34, 0x56, 0x78,
 ];
@@ -22,8 +24,70 @@ pub fn is_disconnect_notification(payload: &[u8]) -> bool {
     payload.first().copied() == Some(0x15)
 }
 
+pub fn describe_offline_ping(payload: &[u8]) -> Option<String> {
+    if !is_offline_ping(payload) {
+        return None;
+    }
+
+    let timestamp = u64::from_be_bytes(payload[1..9].try_into().ok()?);
+    let client_guid = if payload.len() >= 33 {
+        Some(u64::from_be_bytes(payload[25..33].try_into().ok()?))
+    } else {
+        None
+    };
+
+    Some(format!(
+        "id=0x{:02x} len={} timestamp={} client_guid={}",
+        payload[0],
+        payload.len(),
+        timestamp,
+        client_guid
+            .map(|guid| guid.to_string())
+            .unwrap_or_else(|| "missing".to_string())
+    ))
+}
+
 pub fn is_unconnected_pong(payload: &[u8]) -> bool {
     parse_unconnected_pong(payload).is_some()
+}
+
+pub fn describe_unconnected_pong(payload: &[u8]) -> Option<String> {
+    let parsed = parse_unconnected_pong(payload)?;
+    let timestamp = u64::from_be_bytes(payload[1..9].try_into().ok()?);
+    let server_guid = u64::from_be_bytes(payload[9..17].try_into().ok()?);
+    let parts = parsed.motd.split(';').collect::<Vec<_>>();
+    let mut description = format!(
+        "id=0x{:02x} len={} timestamp={} server_guid={} string_len={} motd_fields={}",
+        payload[0],
+        payload.len(),
+        timestamp,
+        server_guid,
+        parsed.string_end - UNCONNECTED_PONG_STRING_OFFSET,
+        parts.len()
+    );
+
+    if parts.len() >= 12 {
+        let _ = write!(
+            description,
+            " edition={} protocol={} version={} players={}/{} port_v4={} port_v6={} name=\"{}\"",
+            parts[0],
+            parts[2],
+            parts[3],
+            parts[4],
+            parts[5],
+            parts[10],
+            parts[11],
+            truncate_for_log(parts[1], 96)
+        );
+    } else {
+        let _ = write!(
+            description,
+            " motd=\"{}\"",
+            truncate_for_log(&parsed.motd, 160)
+        );
+    }
+
+    Some(description)
 }
 
 pub fn rewrite_unconnected_pong_timestamp(payload: &[u8], timestamp: &[u8]) -> Option<Vec<u8>> {
@@ -97,4 +161,16 @@ fn parse_unconnected_pong(payload: &[u8]) -> Option<ParsedPong> {
         .to_string();
 
     Some(ParsedPong { motd, string_end })
+}
+
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
 }
