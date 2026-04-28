@@ -5,17 +5,11 @@ on:
   push:
     branches: [ "main", "master" ]
     paths:
-      - "FerrumGUI/frontend/**"
-      - "FerrumGUI/src-tauri/**"
-      - "FerrumGUI/package.json"
-      - "FerrumGUI/bun.lock"
+      - "FerrumClient/**"
       - ".github/workflows/ferrumproxy-client-build.yml"
   pull_request:
     paths:
-      - "FerrumGUI/frontend/**"
-      - "FerrumGUI/src-tauri/**"
-      - "FerrumGUI/package.json"
-      - "FerrumGUI/bun.lock"
+      - "FerrumClient/**"
       - ".github/workflows/ferrumproxy-client-build.yml"
 
 concurrency:
@@ -61,15 +55,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: FerrumGUI/src-tauri
+          workspaces: FerrumClient/src-tauri
           key: ferrumproxy-client-${{ matrix.platform }}
 
-      - name: Install GUI dependencies
-        working-directory: FerrumGUI
+      - name: Install client dependencies
+        working-directory: FerrumClient
         run: bun install --frozen-lockfile
 
       - name: Install frontend dependencies
-        working-directory: FerrumGUI/frontend
+        working-directory: FerrumClient/frontend
         run: bun install --frozen-lockfile
 
       - name: Build Tauri client
@@ -77,23 +71,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: FerrumGUI
+          projectPath: FerrumClient
           args: --verbose
 
       - name: Collect bundles
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "FerrumGUI/src-tauri/target/client-artifacts/${{ matrix.platform }}"
-          find FerrumGUI/src-tauri/target/release/bundle -type f \
+          mkdir -p "FerrumClient/src-tauri/target/client-artifacts/${{ matrix.platform }}"
+          find FerrumClient/src-tauri/target/release/bundle -type f \
             \( -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.app.tar.gz" \) \
-            -exec cp {} "FerrumGUI/src-tauri/target/client-artifacts/${{ matrix.platform }}/" \;
+            -exec cp {} "FerrumClient/src-tauri/target/client-artifacts/${{ matrix.platform }}/" \;
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: FerrumProxyClient-${{ matrix.platform }}
-          path: FerrumGUI/src-tauri/target/client-artifacts/${{ matrix.platform }}/*
+          path: FerrumClient/src-tauri/target/client-artifacts/${{ matrix.platform }}/*
           if-no-files-found: error
 
   release:

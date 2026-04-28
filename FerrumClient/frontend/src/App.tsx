@@ -1,6 +1,6 @@
 import { useState } from "react";
 import "./App.css";
-import "./components/SharedServicePanel.css";
+import "./SharedServicePanel.css";
 
 const defaultForm = {
   relayAddress: "127.0.0.1:7000",
@@ -12,7 +12,7 @@ const defaultForm = {
   haproxy: false,
 };
 
-function ClientApp() {
+function App() {
   const [form, setForm] = useState(defaultForm);
   const [running, setRunning] = useState(false);
 
@@ -165,4 +165,4 @@ function ClientApp() {
   );
 }
 
-export default ClientApp;
+export default App;

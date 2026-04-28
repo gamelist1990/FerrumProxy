@@ -23,8 +23,17 @@ FerrumGUI/.env.local
 FerrumGUI/frontend/node_modules/
 FerrumGUI/frontend/dist/
 FerrumGUI/frontend/dist-ssr/
-FerrumGUI/src-tauri/gen/
-FerrumGUI/src-tauri/target/
+
+# FerrumClient dependencies and build output
+FerrumClient/node_modules/
+FerrumClient/bun.lockb
+FerrumClient/public/index.html
+FerrumClient/public/favicon.svg
+FerrumClient/public/assets/
+FerrumClient/frontend/node_modules/
+FerrumClient/frontend/dist/
+FerrumClient/src-tauri/gen/
+FerrumClient/src-tauri/target/
 
 # OS/editor files
 .DS_Store

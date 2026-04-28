@@ -88,7 +88,7 @@ On Windows:
 FerrumProxy shared service is split into two roles:
 
 - `FerrumProxyGUI` is the relay-server management app. It manages the FerrumProxy instance running on the public relay server and exposes relay limits in the config editor.
-- `FerrumProxy Client` is the user-installed app/CLI. It connects outbound to the relay `ip:port`, selects TCP, UDP, or both, chooses local service ports, and controls whether HAProxy PROXY protocol is used.
+- `FerrumProxy Client` lives in `FerrumClient/` as the user-installed app/CLI. It connects outbound to the relay `ip:port`, selects TCP, UDP, or both, chooses local service ports, and controls whether HAProxy PROXY protocol is used.
 
 Public relay listeners bind on `0.0.0.0`, and public share ports are temporary. Users do not reserve permanent public ports from the client.
 
@@ -225,7 +225,7 @@ Windows の場合:
 FerrumProxy の共有サービスは役割を明確に分けます。
 
 - `FerrumProxyGUI` は中継サーバー上で動作する管理用ソフトウェアです。公開リレー上の FerrumProxy インスタンスを管理し、config editor で relay 側の limits を扱います。
-- `FerrumProxy Client` はユーザーインストール型のアプリ/CLIです。relay の `ip:port` に outbound 接続し、TCP、UDP、または両方、ローカルサービスの port、HAProxy PROXY protocol の有効/無効を選びます。
+- `FerrumProxy Client` は `FerrumClient/` にあるユーザーインストール型のアプリ/CLIです。relay の `ip:port` に outbound 接続し、TCP、UDP、または両方、ローカルサービスの port、HAProxy PROXY protocol の有効/無効を選びます。
 
 公開リレーの listener は `0.0.0.0` bind 前提で、公開 share port は一時的に払い出します。Client 側で永続 port を予約する設計にはしません。
 

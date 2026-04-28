@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.ferrumproxy.client",
   "build": {
-    "beforeBuildCommand": "bun run build:client-frontend",
+    "beforeBuildCommand": "bun run build:frontend",
     "beforeDevCommand": "bun run dev:frontend",
     "frontendDist": "../public",
     "devUrl": "http://localhost:5173"

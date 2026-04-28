@@ -6,8 +6,6 @@
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
-    "test": "bun test",
-    "client:cli": "bun src/clientCli.ts",
     "build": "bun build src/index.ts --outdir dist --target node --format esm",
     "generate:embed": "bun run scripts/generate-embed-files.ts",
     "build:compile": "bun run generate:embed && bun build --compile --minify --asset-naming=[name].[ext] ./src/index.ts --outfile ferrumproxy-gui",
@@ -18,10 +16,7 @@
     "build:all": "bun run build:frontend && bun run generate:embed && bun run build:compile:linux && bun run build:compile:linux-arm64 && bun run build:compile:macos-arm64 && bun run build:compile:windows",
     "start": "bun dist/index.js",
     "build:frontend": "cd frontend && bun run build",
-    "build:client-frontend": "cd frontend && bun run build:client",
     "dev:frontend": "cd frontend && bun run dev",
-    "tauri:build": "tauri build",
-    "tauri:dev": "tauri dev",
     "alldev": "bun run build:frontend && bun run generate:embed && bun run dev"
   },
   "keywords": [
@@ -46,7 +41,6 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.10.5",
     "@types/ws": "^8.5.10",
-    "typescript": "^5.3.3",
-    "@tauri-apps/cli": "^2.0.0"
+    "typescript": "^5.3.3"
   }
 }
