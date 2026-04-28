@@ -191,7 +191,8 @@ async fn handle_connect(
     let mut allocated_port: Option<u16> = None;
 
     for i in 0..port_range_size {
-        let candidate = port_range_start + ((current_next - port_range_start + i as u16) % port_range_size as u16);
+        let candidate = port_range_start
+            + ((current_next - port_range_start + i as u16) % port_range_size as u16);
         if !port_allocations.contains_key(&candidate) {
             allocated_port = Some(candidate);
             break;
@@ -315,7 +316,11 @@ async fn handle_list_allocations(state: &Arc<SharedRelayState>) -> Result<String
         ));
     }
 
-    Ok(format!("LIST {}\n{}\n", allocations.len(), lines.join("\n")))
+    Ok(format!(
+        "LIST {}\n{}\n",
+        allocations.len(),
+        lines.join("\n")
+    ))
 }
 
 pub async fn start_relay_port(
