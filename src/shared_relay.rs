@@ -56,7 +56,7 @@ pub async fn start_shared_relay(
     let bind_addr = &config.control_bind;
     let listener = TcpListener::bind(bind_addr)
         .await
-        .with_context(|| format!("failed to bind shared relay on {}", bind_addr))?;
+        .with_context(|| format!("failed to bind shared relay on {bind_addr}"))?;
 
     info!("Shared relay listening on {}", bind_addr);
 
@@ -75,7 +75,9 @@ pub async fn start_shared_relay(
                 let config = config.clone();
                 let runtime = Arc::clone(&runtime);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_control_connection(stream, client_addr, state, config, runtime).await {
+                    if let Err(e) =
+                        handle_control_connection(stream, client_addr, state, config, runtime).await
+                    {
                         debug!("Control connection error: {}", e);
                     }
                 });
@@ -113,7 +115,7 @@ async fn handle_control_connection(
     } else if request == "STATS" {
         handle_stats(&state).await
     } else {
-        Ok(format!("ERROR Unknown command\n"))
+        Ok("ERROR Unknown command\n".to_string())
     };
 
     let response = response?;
@@ -121,7 +123,11 @@ async fn handle_control_connection(
     Ok(())
 }
 
-async fn handle_connect(request: &str, state: &Arc<SharedRelayState>, config: &SharedServiceConfig) -> Result<String> {
+async fn handle_connect(
+    request: &str,
+    state: &Arc<SharedRelayState>,
+    config: &SharedServiceConfig,
+) -> Result<String> {
     let parts: Vec<&str> = request.split_whitespace().collect();
     if parts.len() < 3 {
         return Ok("ERROR Usage: CONNECT <token>:<target_host>:<target_port>\n".to_string());
@@ -129,11 +135,22 @@ async fn handle_connect(request: &str, state: &Arc<SharedRelayState>, config: &S
 
     let target = parts[1];
     let target_parts: Vec<&str> = target.split(':').collect();
-    
+
     let (token, target_host, target_port) = if target_parts.len() == 3 {
-        (Some(target_parts[0].to_string()), target_parts[1].to_string(), target_parts[2].parse().unwrap_or(0))
+        (
+            Some(target_parts[0].to_string()),
+            target_parts[1].to_string(),
+            target_parts[2].parse().unwrap_or(0),
+        )
     } else if config.allow_anonymous {
-        (None, target_parts[0].to_string(), target_parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0))
+        (
+            None,
+            target_parts[0].to_string(),
+            target_parts
+                .get(1)
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(0),
+        )
     } else {
         return Ok("ERROR Token required\n".to_string());
     };
@@ -146,41 +163,66 @@ async fn handle_connect(request: &str, state: &Arc<SharedRelayState>, config: &S
     let next_port = *state.next_port.read().await;
     let mut port = next_port;
     let max_port = config.port_range.end;
-    
+
     for _ in 0..(max_port - next_port + 1) {
         if !port_allocations.contains_key(&port) {
             break;
         }
-        port = if port >= max_port { config.port_range.start } else { port + 1 };
+        port = if port >= max_port {
+            config.port_range.start
+        } else {
+            port + 1
+        };
     }
 
     if port > max_port {
         return Ok("ERROR No available ports\n".to_string());
     }
 
-    port_allocations.insert(port, PortAllocation {
+    port_allocations.insert(
         port,
-        token: token.clone(),
-        client_addr: SocketAddr::new(std::net::IpAddr::from([0, 0, 0, 0]), 0),
-    });
+        PortAllocation {
+            port,
+            token: token.clone(),
+            client_addr: SocketAddr::new(std::net::IpAddr::from([0, 0, 0, 0]), 0),
+        },
+    );
 
     drop(port_allocations);
 
-    let new_next_port = if port >= max_port { config.port_range.start } else { port + 1 };
+    let new_next_port = if port >= max_port {
+        config.port_range.start
+    } else {
+        port + 1
+    };
     *state.next_port.write().await = new_next_port;
 
     let bind_addr = format!("{}:{}", config.public_bind, port);
-    
-    info!("Allocated relay port {} for {} -> {}:{}", port, token.as_deref().unwrap_or("anonymous"), target_host, target_port);
 
-    Ok(format!("OK {} {}\n", port, bind_addr))
+    info!(
+        "Allocated relay port {} for {} -> {}:{}",
+        port,
+        token.as_deref().unwrap_or("anonymous"),
+        target_host,
+        target_port
+    );
+
+    Ok(format!("OK {port} {bind_addr}\n"))
 }
 
-async fn handle_udp_associate(_request: &str, _state: &Arc<SharedRelayState>, _config: &SharedServiceConfig) -> Result<String> {
+async fn handle_udp_associate(
+    _request: &str,
+    _state: &Arc<SharedRelayState>,
+    _config: &SharedServiceConfig,
+) -> Result<String> {
     Ok("OK UDP associated\n".to_string())
 }
 
-async fn handle_token_validation(request: &str, _state: &Arc<SharedRelayState>, config: &SharedServiceConfig) -> Result<String> {
+async fn handle_token_validation(
+    request: &str,
+    _state: &Arc<SharedRelayState>,
+    config: &SharedServiceConfig,
+) -> Result<String> {
     let parts: Vec<&str> = request.split_whitespace().collect();
     if parts.len() < 2 {
         return Ok("ERROR Usage: TOKEN <token>\n".to_string());
@@ -189,7 +231,7 @@ async fn handle_token_validation(request: &str, _state: &Arc<SharedRelayState>, 
     let token = parts[1];
 
     let valid = config.tokens.iter().any(|t| t.enabled && t.token == token);
-    
+
     if valid {
         Ok("OK Token valid\n".to_string())
     } else if config.allow_anonymous {
@@ -205,8 +247,7 @@ async fn handle_stats(state: &Arc<SharedRelayState>) -> Result<String> {
     let port_count = state.port_allocations.read().await.len();
 
     Ok(format!(
-        "STAT tcp={} udp={} ports={}\n",
-        tcp_count, udp_count, port_count
+        "STAT tcp={tcp_count} udp={udp_count} ports={port_count}\n"
     ))
 }
 
@@ -217,24 +258,32 @@ pub async fn start_relay_port(
     token: Option<String>,
     _config: Arc<SharedServiceConfig>,
 ) -> Result<()> {
-    let bind_addr = format!("0.0.0.0:{}", port);
+    let bind_addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&bind_addr).await?;
 
-    info!("Relay port {} listening for {} -> {}:{}", port, token.as_deref().unwrap_or("anonymous"), target_host, target_port);
+    info!(
+        "Relay port {} listening for {} -> {}:{}",
+        port,
+        token.as_deref().unwrap_or("anonymous"),
+        target_host,
+        target_port
+    );
 
     loop {
         match listener.accept().await {
             Ok((client_stream, client_addr)) => {
                 let target_host = target_host.clone();
-                let target_port = target_port;
                 tokio::spawn(async move {
-                    if let Err(e) = relay_tcp_connection(client_stream, client_addr, &target_host, target_port).await {
+                    if let Err(e) =
+                        relay_tcp_connection(client_stream, client_addr, &target_host, target_port)
+                            .await
+                    {
                         debug!("Relay error: {}", e);
                     }
                 });
             }
             Err(e) => {
-                error!("Failed to accept on relay port {}: {}", port, e);
+                error!("Failed to accept on relay port {port}: {e}");
             }
         }
     }
@@ -247,11 +296,8 @@ async fn relay_tcp_connection(
     target_host: &str,
     target_port: u16,
 ) -> Result<()> {
-    let target = format!("{}:{}", target_host, target_port);
-    let mut target_stream = timeout(
-        Duration::from_secs(10),
-        TcpStream::connect(&target)
-    ).await??;
+    let target = format!("{target_host}:{target_port}");
+    let mut target_stream = timeout(Duration::from_secs(10), TcpStream::connect(&target)).await??;
 
     let mut client_buf = vec![0u8; BUFFER_SIZE];
     let mut target_buf = vec![0u8; BUFFER_SIZE];
