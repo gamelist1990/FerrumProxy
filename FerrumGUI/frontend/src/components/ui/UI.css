@@ -243,6 +243,27 @@
   line-height: 1.45;
 }
 
+.token-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.token-row {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-tertiary) 64%, transparent);
+  padding: 0.85rem;
+}
+
+.token-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
 .ui-icon {
   display: inline-flex;
   align-items: center;

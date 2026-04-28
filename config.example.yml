@@ -11,6 +11,11 @@ sharedService:
     start: 40000
     end: 49999
   authTokens: []
+  allowAnonymous: true
+  queue:
+    enabled: true
+    maxSize: 128
+  tokens: []
   defaults:
     maxTcpConnections: 32
     maxUdpPeers: 64

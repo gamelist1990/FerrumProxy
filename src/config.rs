@@ -42,6 +42,12 @@ pub struct SharedServiceConfig {
     pub port_range: SharedServicePortRange,
     #[serde(default)]
     pub auth_tokens: Vec<String>,
+    #[serde(default = "default_true")]
+    pub allow_anonymous: bool,
+    #[serde(default)]
+    pub queue: SharedServiceQueueConfig,
+    #[serde(default)]
+    pub tokens: Vec<SharedServiceToken>,
     #[serde(default)]
     pub defaults: SharedServiceLimits,
     #[serde(default)]
@@ -55,6 +61,29 @@ pub struct SharedServicePortRange {
     pub start: u16,
     #[serde(default = "default_shared_port_end")]
     pub end: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedServiceQueueConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_shared_queue_max_size")]
+    pub max_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedServiceToken {
+    #[serde(default)]
+    pub name: String,
+    pub token: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_shared_token_priority")]
+    pub priority: u16,
+    #[serde(default)]
+    pub limits: SharedServiceLimits,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -191,6 +220,11 @@ sharedService:
     start: 40000
     end: 49999
   authTokens: []
+  allowAnonymous: true
+  queue:
+    enabled: true
+    maxSize: 128
+  tokens: []
   defaults:
     maxTcpConnections: 32
     maxUdpPeers: 64
@@ -391,6 +425,15 @@ impl Default for SharedServiceLimits {
     }
 }
 
+impl Default for SharedServiceQueueConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_size: default_shared_queue_max_size(),
+        }
+    }
+}
+
 fn default_shared_control_bind() -> String {
     "0.0.0.0:7000".to_string()
 }
@@ -413,6 +456,14 @@ fn default_shared_port_start() -> u16 {
 
 fn default_shared_port_end() -> u16 {
     49999
+}
+
+fn default_shared_queue_max_size() -> usize {
+    128
+}
+
+fn default_shared_token_priority() -> u16 {
+    10
 }
 
 fn default_max_tcp_connections() -> usize {

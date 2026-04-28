@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 #[tauri::command]
 fn shared_client_runtime() -> &'static str {
     "FerrumProxy shared-service client runtime is available"

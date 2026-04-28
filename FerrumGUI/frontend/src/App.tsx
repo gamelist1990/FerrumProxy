@@ -38,6 +38,7 @@ import { ConfigEditor } from "./components/ConfigEditor";
 import { PlayerIPList } from "./components/PlayerIPList";
 import { UpdateProgress } from "./components/UpdateProgress";
 import { InstanceSettingsModal } from "./components/InstanceSettingsModal";
+import { SharedRelayDashboard } from "./components/SharedRelayDashboard";
 import { formatLogMessage } from "./utils/ansi";
 import { DEFAULT_FERRUMPROXY_VERSION } from "./utils/version";
 import type { WebSocketEventMap } from "./api";
@@ -511,6 +512,7 @@ function App() {
   const updateProgress = selectedInstance
     ? updatingInstances.get(selectedInstance)
     : undefined;
+  const isSharedRelayMode = !!config?.sharedService?.enabled;
 
   const instanceMetrics = useMemo(() => {
     const running = instances.filter(
@@ -908,6 +910,7 @@ function App() {
                   />
                 )}
 
+                {!isSharedRelayMode && (
                 <section className="surface-card performance-card">
                   <div className="section-head">
                     <h3>{t("performanceMonitor") || "Performance Monitor"}</h3>
@@ -984,6 +987,7 @@ function App() {
                     </p>
                   )}
                 </section>
+                )}
 
                 <InstanceSettingsModal
                   isOpen={settingsModalOpen}
@@ -1040,6 +1044,14 @@ function App() {
                   isUpdating={updatingInstances.has(selectedInstanceData.id)}
                 />
 
+                {isSharedRelayMode && config ? (
+                  <SharedRelayDashboard
+                    config={config}
+                    onChange={setConfig}
+                    onSave={handleSaveConfig}
+                    formatBytes={formatBytes}
+                  />
+                ) : (
                 <div className="workspace-grid">
                   <section className="surface-card console-card">
                     <div className="section-head">
@@ -1107,6 +1119,7 @@ function App() {
                     </section>
                   )}
                 </div>
+                )}
               </>
             ) : (
               <section className="empty-state">

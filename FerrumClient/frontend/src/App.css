@@ -2,27 +2,27 @@
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 28px;
+  padding: 16px;
   color: #18201d;
 }
 
 .client-panel {
-  width: min(760px, 100%);
+  width: min(640px, 100%);
   display: grid;
-  gap: 18px;
+  gap: 12px;
   border: 1px solid #d9ded8;
   border-radius: 8px;
   background: #fbfcfb;
-  padding: 22px;
-  box-shadow: 0 18px 46px rgba(22, 31, 27, 0.08);
+  padding: 16px;
+  box-shadow: 0 12px 32px rgba(22, 31, 27, 0.07);
 }
 
 .client-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 14px;
+  gap: 12px;
+  padding-bottom: 10px;
   border-bottom: 1px solid #e6e9e5;
 }
 
@@ -41,13 +41,13 @@
 
 .client-header h1 {
   margin-top: 3px;
-  font-size: 1.55rem;
+  font-size: 1.35rem;
   line-height: 1.1;
 }
 
 .status {
   min-width: 92px;
-  min-height: 32px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -68,13 +68,13 @@
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+  gap: 12px;
 }
 
 .form-section {
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 9px;
 }
 
 .form-section h2 {
@@ -135,14 +135,15 @@ input:focus {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  max-width: 160px;
 }
 
 .summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
   border-top: 1px solid #e6e9e5;
-  padding-top: 16px;
+  padding-top: 12px;
 }
 
 .summary div {
@@ -150,7 +151,7 @@ input:focus {
   border: 1px solid #e0e4df;
   border-radius: 8px;
   background: #f6f8f6;
-  padding: 10px;
+  padding: 8px;
 }
 
 .summary span {
@@ -172,7 +173,7 @@ input:focus {
 }
 
 .start-button {
-  min-height: 44px;
+  min-height: 40px;
   border: 1px solid #1f5f43;
   border-radius: 8px;
   background: #1f5f43;

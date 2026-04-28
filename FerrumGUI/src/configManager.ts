@@ -19,6 +19,24 @@ export interface FerrumProxyConfig {
       end?: number;
     };
     authTokens?: string[];
+    allowAnonymous?: boolean;
+    queue?: {
+      enabled?: boolean;
+      maxSize?: number;
+    };
+    tokens?: Array<{
+      name?: string;
+      token?: string;
+      enabled?: boolean;
+      priority?: number;
+      limits?: {
+        maxTcpConnections?: number;
+        maxUdpPeers?: number;
+        maxBytesPerSecond?: number;
+        idleTimeoutSeconds?: number;
+        udpSessionTimeoutSeconds?: number;
+      };
+    }>;
     defaults?: {
       maxTcpConnections?: number;
       maxUdpPeers?: number;
@@ -164,6 +182,35 @@ export class ConfigManager extends EventEmitter {
         validatePositiveLimit(group.maxBytesPerSecond, `sharedService.${groupName}.maxBytesPerSecond`);
         validatePositiveLimit(group.idleTimeoutSeconds, `sharedService.${groupName}.idleTimeoutSeconds`);
         validatePositiveLimit(group.udpSessionTimeoutSeconds, `sharedService.${groupName}.udpSessionTimeoutSeconds`);
+      }
+
+      if (shared.queue) {
+        validatePositiveLimit(shared.queue.maxSize, 'sharedService.queue.maxSize');
+      }
+
+      if (shared.tokens !== undefined) {
+        if (!Array.isArray(shared.tokens)) {
+          errors.push('sharedService.tokens must be an array');
+        } else {
+          shared.tokens.forEach((token, index) => {
+            if (!token.token || typeof token.token !== 'string') {
+              errors.push(`sharedService.tokens[${index}].token must be a non-empty string`);
+            }
+            if (
+              token.priority !== undefined &&
+              (!Number.isInteger(token.priority) || Number(token.priority) < 0)
+            ) {
+              errors.push(`sharedService.tokens[${index}].priority must be a non-negative integer`);
+            }
+            if (token.limits) {
+              validatePositiveLimit(token.limits.maxTcpConnections, `sharedService.tokens[${index}].limits.maxTcpConnections`);
+              validatePositiveLimit(token.limits.maxUdpPeers, `sharedService.tokens[${index}].limits.maxUdpPeers`);
+              validatePositiveLimit(token.limits.maxBytesPerSecond, `sharedService.tokens[${index}].limits.maxBytesPerSecond`);
+              validatePositiveLimit(token.limits.idleTimeoutSeconds, `sharedService.tokens[${index}].limits.idleTimeoutSeconds`);
+              validatePositiveLimit(token.limits.udpSessionTimeoutSeconds, `sharedService.tokens[${index}].limits.udpSessionTimeoutSeconds`);
+            }
+          });
+        }
       }
     }
 

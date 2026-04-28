@@ -480,6 +480,40 @@
   gap: 14px;
 }
 
+.shared-relay-console {
+  display: grid;
+  gap: 14px;
+}
+
+.shared-relay-hero {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--success-color) 12%, transparent), transparent 44%),
+    var(--surface-soft);
+}
+
+.shared-relay-hero h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.25rem, 2vw, 1.85rem);
+  line-height: 1.08;
+}
+
+.shared-relay-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.shared-relay-overview .metric-card strong {
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
 .console-card {
   min-height: 300px;
   max-height: 460px;
@@ -583,7 +617,8 @@
   }
 
   .performance-grid,
-  .protocol-grid {
+  .protocol-grid,
+  .shared-relay-overview {
     grid-template-columns: 1fr;
   }
 

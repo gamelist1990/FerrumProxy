@@ -67,6 +67,9 @@ export interface FerrumProxyConfig {
       end?: number;
     };
     authTokens?: string[];
+    allowAnonymous?: boolean;
+    queue?: SharedServiceQueueConfig;
+    tokens?: SharedServiceToken[];
     defaults?: Partial<SharedServiceLimits>;
     maximums?: Partial<SharedServiceLimits>;
   };
@@ -109,6 +112,19 @@ export interface SharedServiceLimits {
   maxBytesPerSecond: number;
   idleTimeoutSeconds: number;
   udpSessionTimeoutSeconds: number;
+}
+
+export interface SharedServiceQueueConfig {
+  enabled?: boolean;
+  maxSize?: number;
+}
+
+export interface SharedServiceToken {
+  name?: string;
+  token: string;
+  enabled?: boolean;
+  priority?: number;
+  limits?: Partial<SharedServiceLimits>;
 }
 
 export interface Release {
