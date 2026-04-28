@@ -218,6 +218,13 @@ input:focus {
   background: #dcdcdc;
 }
 
+.start-button:disabled {
+  border-color: #d1d1d1;
+  background: #efefef;
+  color: #9a9a9a;
+  cursor: not-allowed;
+}
+
 .start-button.stop {
   border-color: #8f3a3a;
   background: #c94b4b;
@@ -228,11 +235,11 @@ input:focus {
   background: #b94040;
 }
 
-.start-button:disabled {
-  border-color: #d1d1d1;
-  background: #efefef;
-  color: #9a9a9a;
-  cursor: not-allowed;
+.connection-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
 
 @media (max-width: 780px) {

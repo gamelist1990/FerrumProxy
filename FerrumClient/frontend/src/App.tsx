@@ -32,15 +32,32 @@ function App() {
   const [running, setRunning] = useState(false);
   const [configPath, setConfigPath] = useState("config.json");
   const [configReady, setConfigReady] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  const probeConnection = async (nextForm: ClientConfig) => {
+    await invoke<void>("probe_client_connection", { config: nextForm });
+    setRunning(true);
+    setConnectionError(null);
+  };
 
   useEffect(() => {
-    invoke<ClientConfigResponse>("load_client_config")
-      .then((response) => {
-        setForm({ ...defaultForm, ...response.config });
+    void (async () => {
+      try {
+        const response = await invoke<ClientConfigResponse>("load_client_config");
+        const nextForm = { ...defaultForm, ...response.config };
+        setForm(nextForm);
         setConfigPath(response.path);
-      })
-      .catch((error) => console.error("failed to load client config", error))
-      .finally(() => setConfigReady(true));
+        await probeConnection(nextForm);
+      } catch (error) {
+        console.error("failed to load or probe client config", error);
+        setRunning(false);
+        setConnectionError(
+          error instanceof Error ? error.message : "failed to probe relay connection"
+        );
+      } finally {
+        setConfigReady(true);
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -85,21 +102,21 @@ function App() {
             <h2>Relay</h2>
             <label>
               <span>FerrumProxy ip:port</span>
-                <input
-                  value={form.relayAddress}
-                  onChange={(event) => update("relayAddress", event.target.value)}
-                  placeholder="203.0.113.10:7000"
-                />
+              <input
+                value={form.relayAddress}
+                onChange={(event) => update("relayAddress", event.target.value)}
+                placeholder="203.0.113.10:7000"
+              />
             </label>
 
             <label>
               <span>Auth token</span>
-                <input
-                  type="password"
-                  value={form.token}
-                  onChange={(event) => update("token", event.target.value)}
-                  placeholder="optional"
-                />
+              <input
+                type="password"
+                value={form.token}
+                onChange={(event) => update("token", event.target.value)}
+                placeholder="optional"
+              />
             </label>
           </section>
 
@@ -128,26 +145,26 @@ function App() {
               {form.tcpEnabled && (
                 <label>
                   <span>TCP port</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={form.tcpLocalPort}
-                      onChange={(event) => update("tcpLocalPort", Number(event.target.value))}
-                    />
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={form.tcpLocalPort}
+                    onChange={(event) => update("tcpLocalPort", Number(event.target.value))}
+                  />
                 </label>
               )}
 
               {form.udpEnabled && (
                 <label>
                   <span>UDP port</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={form.udpLocalPort}
-                      onChange={(event) => update("udpLocalPort", Number(event.target.value))}
-                    />
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={form.udpLocalPort}
+                    onChange={(event) => update("udpLocalPort", Number(event.target.value))}
+                  />
                 </label>
               )}
             </div>
@@ -186,15 +203,36 @@ function App() {
           type="button"
           className={`start-button ${running ? "stop" : ""}`}
           onClick={() => {
-            void invoke<string>("save_client_config", { config: form })
-              .then((path) => setConfigPath(path))
-              .catch((error) => console.error("failed to save client config", error));
-            setRunning((value) => !value);
+            if (running) {
+              setRunning(false);
+              setConnectionError(null);
+              return;
+            }
+
+            void (async () => {
+              try {
+                const path = await invoke<string>("save_client_config", { config: form });
+                setConfigPath(path);
+                await probeConnection(form);
+              } catch (error) {
+                console.error("failed to connect relay", error);
+                setRunning(false);
+                setConnectionError(
+                  error instanceof Error ? error.message : "failed to connect to relay"
+                );
+              }
+            })();
           }}
           disabled={!canStart}
         >
           {running ? "Stop sharing" : "Start sharing"}
         </button>
+
+        {connectionError && (
+          <p className="connection-error" role="alert">
+            {connectionError}
+          </p>
+        )}
       </section>
     </main>
   );

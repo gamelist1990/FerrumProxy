@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -79,13 +81,50 @@ fn save_client_config(config: ClientConfig) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
+#[tauri::command]
+fn probe_client_connection(config: ClientConfig) -> Result<(), String> {
+    probe_tcp_endpoint(&config.relay_address, Duration::from_secs(2))?;
+
+    Ok(())
+}
+
+fn probe_tcp_endpoint(address: &str, timeout: Duration) -> Result<(), String> {
+    let endpoint = address.trim();
+    if endpoint.is_empty() {
+        return Err("relay address is required".to_string());
+    }
+
+    let mut last_error = None;
+    let resolved = endpoint
+        .to_socket_addrs()
+        .map_err(|err| format!("failed to resolve {endpoint}: {err}"))?;
+
+    for socket_address in resolved {
+        match TcpStream::connect_timeout(&socket_address, timeout) {
+            Ok(stream) => {
+                let _ = stream.shutdown(Shutdown::Both);
+                return Ok(());
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    match last_error {
+        Some(err) => Err(format!("{endpoint} did not respond: {err}")),
+        None => Err(format!("no socket addresses resolved for {endpoint}")),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             shared_client_runtime,
             load_client_config,
-            save_client_config
+            save_client_config,
+            probe_client_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running FerrumProxy client");
