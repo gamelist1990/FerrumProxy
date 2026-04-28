@@ -628,8 +628,8 @@ mod tests {
     async fn wait_for_udp_port(port: u16) -> Result<()> {
         let started = tokio::time::Instant::now();
         loop {
-            // Try to bind on 0.0.0.0 (where the relay actually binds) to detect port in use
-            match UdpSocket::bind(("0.0.0.0", port)).await {
+            // Try to bind on 127.0.0.1 (test's public_bind address)
+            match UdpSocket::bind(("127.0.0.1", port)).await {
                 Ok(socket) => {
                     drop(socket);
                     tokio::time::sleep(Duration::from_millis(25)).await;
@@ -811,17 +811,24 @@ async fn handle_udp_tunnel(
                 debug!("[UDP SEND] Pong rewrite skipped or failed, using original payload");
                 payload
             });
+            
+            let socket_addr = socket.local_addr().unwrap_or_else(|_| "UNKNOWN".parse().unwrap());
             match socket.send_to(&payload, remote_addr).await {
                 Ok(sent) => {
                     debug!(
-                        "[UDP SEND] Successfully sent {} bytes to {} on port {}",
-                        sent, remote_addr, port
+                        "[UDP SEND] Successfully sent {} bytes from {} to {} on port {} (first 20 bytes: {:?})",
+                        sent,
+                        socket_addr,
+                        remote_addr,
+                        port,
+                        &payload[..payload.len().min(20)]
                     );
                 }
                 Err(e) => {
                     warn!(
-                        "[UDP SEND] Failed to send {} bytes to {} on port {}: {}",
+                        "[UDP SEND] Failed to send {} bytes from {} to {} on port {}: {}",
                         payload.len(),
+                        socket_addr,
                         remote_addr,
                         port,
                         e
@@ -975,15 +982,20 @@ async fn start_udp_relay_port(
     config: Arc<SharedServiceConfig>,
     state: Arc<SharedRelayState>,
 ) -> Result<()> {
-    // Always bind to 0.0.0.0 to receive from all interfaces
-    let bind_addr = format!("0.0.0.0:{port}");
+    // Bind to the public_bind address to ensure consistent source address for outbound packets
+    let bind_addr = format!("{}:{}", config.public_bind, port);
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
+    
+    let local_addr = socket.local_addr()?;
+    info!("UDP relay port {} listening on {}", port, local_addr);
+    
     state.udp_sockets.lock().await.insert(port, socket.clone());
-    info!("UDP relay port {} listening", port);
 
     let mut buf = vec![0u8; 65_507];
     loop {
         let (len, remote_addr) = socket.recv_from(&mut buf).await?;
+        debug!("[UDP RECV] Received {} bytes from {} on port {}", len, remote_addr, port);
+        
         if !state.port_allocations.read().await.contains_key(&port) {
             state.udp_sockets.lock().await.remove(&port);
             state.allocation_notify.notify_one();
