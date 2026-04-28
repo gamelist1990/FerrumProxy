@@ -628,12 +628,13 @@ mod tests {
     async fn wait_for_udp_port(port: u16) -> Result<()> {
         let started = tokio::time::Instant::now();
         loop {
-            match UdpSocket::bind(("127.0.0.1", port)).await {
+            // Try to bind on 0.0.0.0 (where the relay actually binds) to detect port in use
+            match UdpSocket::bind(("0.0.0.0", port)).await {
                 Ok(socket) => {
                     drop(socket);
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                Err(_) => return Ok(()),
+                Err(_) => return Ok(()), // Port is in use by relay, test can proceed
             }
             anyhow::ensure!(
                 started.elapsed() < Duration::from_secs(5),
@@ -950,7 +951,8 @@ async fn start_udp_relay_port(
     config: Arc<SharedServiceConfig>,
     state: Arc<SharedRelayState>,
 ) -> Result<()> {
-    let bind_addr = format!("{}:{port}", config.public_bind);
+    // Always bind to 0.0.0.0 to receive from all interfaces
+    let bind_addr = format!("0.0.0.0:{port}");
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
     state.udp_sockets.lock().await.insert(port, socket.clone());
     info!("UDP relay port {} listening", port);
