@@ -16,7 +16,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use tokio::task::JoinSet;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -65,8 +65,13 @@ async fn main() -> Result<()> {
         let runtime = Arc::clone(&runtime);
         let endpoint = cfg.endpoint;
         tasks.spawn(async move {
-            if let Err(err) = management_api::start_management_api(endpoint, runtime).await {
-                error!("Management API stopped: {err:#}");
+            match management_api::start_management_api(endpoint, runtime).await {
+                Ok(_) => {}
+                Err(err) => {
+                    if !err.to_string().contains("Address already in use") {
+                        error!("Management API stopped: {err:#}");
+                    }
+                }
             }
         });
     }

@@ -944,7 +944,12 @@ app.put('/api/instances/:id/config', async (req, res) => {
       return res.status(404).json({ error: 'Instance not found' });
     }
 
-    const config = req.body;
+    let config = req.body;
+
+    if (config.sharedService?.enabled) {
+      config.listeners = [];
+      console.log(chalk.blue('  Shared relay mode: clearing listeners'));
+    }
 
     const validation = await configManager.validate(config);
     if (!validation.valid) {
