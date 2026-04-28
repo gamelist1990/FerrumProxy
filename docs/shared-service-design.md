@@ -68,6 +68,7 @@ limits:
   maxBytesPerSecond: 10485760
   idleTimeoutSeconds: 120
   udpSessionTimeoutSeconds: 60
+haproxy: false
 ```
 
 TCP and UDP may share the same public port number when the relay can bind both protocols on that port. If either bind fails, the relay may allocate separate TCP and UDP ports and return both values explicitly.
@@ -228,6 +229,7 @@ Required controls:
 - Relay server `host:port`
 - Auth token
 - Protocol selector: TCP, UDP, or TCP + UDP
+- HAProxy PROXY protocol toggle
 - Local TCP port when TCP is enabled
 - Local UDP port when UDP is enabled
 - Limit fields with relay-capped values

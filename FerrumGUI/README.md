@@ -141,8 +141,9 @@ bun run build:all
 1. `Public host` に他ユーザーへ案内するIPまたはホスト名を入力
 2. TCP、UDP、または両方を選択
 3. ローカルアプリケーションのポートを指定
-4. 同時接続数、UDP peer数、帯域制限、idle timeout を設定
-5. `Start` を押すと一時的な公開 `host:port` が発行されます
+4. 必要に応じて HAProxy PROXY protocol を有効化
+5. 同時接続数、UDP peer数、帯域制限、idle timeout を設定
+6. `Start` を押すと一時的な公開 `host:port` が発行されます
 
 公開ポートは共有停止時に解放されます。永続予約は行いません。
 

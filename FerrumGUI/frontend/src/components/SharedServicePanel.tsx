@@ -13,6 +13,7 @@ const defaultForm = {
   name: "Shared Service",
   publicHost: "127.0.0.1",
   bindHost: "0.0.0.0",
+  haproxy: false,
   tcpEnabled: true,
   udpEnabled: false,
   tcpLocalPort: 25565,
@@ -48,6 +49,7 @@ export function SharedServicePanel({
         name: form.name,
         publicHost: form.publicHost,
         bindHost: form.bindHost,
+        haproxy: form.haproxy,
         tcp: {
           enabled: form.tcpEnabled,
           localHost: "127.0.0.1",
@@ -128,6 +130,17 @@ export function SharedServicePanel({
 
           <label>Bind host</label>
           <input value={form.bindHost} onChange={(e) => update("bindHost", e.target.value)} />
+
+          <div className="protocol-toggle-row">
+            <label>
+              <input
+                type="checkbox"
+                checked={form.haproxy}
+                onChange={(e) => update("haproxy", e.target.checked)}
+              />
+              HAProxy PROXY protocol
+            </label>
+          </div>
 
           <div className="protocol-toggle-row">
             <label>
@@ -246,6 +259,9 @@ export function SharedServicePanel({
                 UDP {status.publicHost}:{status.udp.publicPort}
               </button>
             )}
+            <span className="endpoint-mode">
+              HAProxy {status.haproxy ? "enabled" : "disabled"}
+            </span>
           </section>
 
           <section className="surface-card">

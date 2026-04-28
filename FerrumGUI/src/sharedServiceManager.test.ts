@@ -4,6 +4,7 @@ import dgram from 'dgram';
 import { SharedServiceManager } from './sharedServiceManager';
 
 const managers: SharedServiceManager[] = [];
+const proxyV2Signature = Buffer.from('\r\n\r\n\0\r\nQUIT\n', 'binary');
 
 afterEach(async () => {
   await Promise.all(managers.map((manager) => manager.stop()));
@@ -112,6 +113,42 @@ test('shared service forwards UDP traffic and tracks peer sessions', async () =>
   expect(manager.getStatus()?.stats.totalUdpPeers).toBe(1);
   expect(manager.getStatus()?.stats.bytesIn).toBeGreaterThan(0);
   await echo.stop();
+});
+
+test('shared service can prepend HAProxy PROXY v2 headers for TCP', async () => {
+  const received = new Promise<Buffer>((resolve) => {
+    const server = net.createServer((socket) => {
+      socket.once('data', (chunk) => {
+        socket.end();
+        server.close();
+        resolve(chunk);
+      });
+    });
+
+    server.listen(0, '127.0.0.1', async () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('failed to bind TCP server');
+      }
+
+      const manager = new SharedServiceManager();
+      managers.push(manager);
+      const status = await manager.start({
+        publicHost: '127.0.0.1',
+        bindHost: '127.0.0.1',
+        haproxy: true,
+        tcp: { enabled: true, localPort: address.port },
+      });
+
+      const client = net.createConnection({ host: '127.0.0.1', port: status.tcp!.publicPort });
+      client.write(Buffer.from('payload'));
+      client.end();
+    });
+  });
+
+  const data = await received;
+  expect(data.subarray(0, proxyV2Signature.length).equals(proxyV2Signature)).toBe(true);
+  expect(data.includes(Buffer.from('payload'))).toBe(true);
 });
 
 test('shared service rejects invalid protocol configuration', async () => {

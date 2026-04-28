@@ -125,6 +125,7 @@ export interface SharedServiceStatus {
   name: string;
   running: boolean;
   publicHost: string;
+  haproxy: boolean;
   tcp?: {
     enabled: boolean;
     publicPort: number;
@@ -155,6 +156,7 @@ export interface SharedServiceStartRequest {
   name?: string;
   publicHost?: string;
   bindHost?: string;
+  haproxy?: boolean;
   tcp?: {
     enabled: boolean;
     localHost?: string;

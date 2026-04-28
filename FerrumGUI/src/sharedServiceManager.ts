@@ -17,6 +17,7 @@ export interface SharedServiceStartRequest {
   name?: string;
   publicHost?: string;
   bindHost?: string;
+  haproxy?: boolean;
   tcp?: {
     enabled: boolean;
     localHost?: string;
@@ -46,6 +47,7 @@ export interface SharedServiceStatus {
   name: string;
   running: boolean;
   publicHost: string;
+  haproxy: boolean;
   tcp?: {
     enabled: boolean;
     publicPort: number;
@@ -77,6 +79,7 @@ interface UdpPeer {
   remotePort: number;
   localSocket: UdpSocket;
   lastActivity: number;
+  proxyHeaderSent: boolean;
 }
 
 const DEFAULT_LIMITS: SharedServiceLimits = {
@@ -88,6 +91,12 @@ const DEFAULT_LIMITS: SharedServiceLimits = {
 };
 
 const LOG_LIMIT = 300;
+const PROXY_V2_SIGNATURE = Buffer.from('\r\n\r\n\0\r\nQUIT\n', 'binary');
+const PROXY_V2_COMMAND = 0x21;
+const PROXY_V2_INET_STREAM = 0x11;
+const PROXY_V2_INET_DGRAM = 0x12;
+const PROXY_V2_INET6_STREAM = 0x21;
+const PROXY_V2_INET6_DGRAM = 0x22;
 
 export class SharedServiceManager extends EventEmitter {
   private status?: SharedServiceStatus;
@@ -124,6 +133,7 @@ export class SharedServiceManager extends EventEmitter {
       name: request.name?.trim() || 'Shared Service',
       running: true,
       publicHost,
+      haproxy: !!request.haproxy,
       limits,
       stats: {
         activeTcpConnections: 0,
@@ -237,6 +247,17 @@ export class SharedServiceManager extends EventEmitter {
     }
 
     const local = net.createConnection({ host: localHost, port: localPort });
+    if (this.status.haproxy) {
+      local.write(
+        buildProxyV2Header(
+          remote.remoteAddress || '127.0.0.1',
+          remote.remotePort || 0,
+          remote.localAddress || localHost,
+          remote.localPort || localPort,
+          false
+        )
+      );
+    }
     this.tcpConnections.add(remote);
     this.status.stats.activeTcpConnections = this.tcpConnections.size;
     this.status.stats.totalTcpConnections += 1;
@@ -328,7 +349,13 @@ export class SharedServiceManager extends EventEmitter {
       }
 
       const localSocket = dgram.createSocket('udp4');
-      peer = { remoteHost, remotePort, localSocket, lastActivity: Date.now() };
+      peer = {
+        remoteHost,
+        remotePort,
+        localSocket,
+        lastActivity: Date.now(),
+        proxyHeaderSent: false,
+      };
       localSocket.on('message', (response) => {
         if (!this.udpServer || !this.consumeBandwidth(response.length)) {
           this.addDroppedDatagram(peerId);
@@ -350,7 +377,15 @@ export class SharedServiceManager extends EventEmitter {
       this.addDroppedDatagram(peerId);
       return;
     }
-    peer.localSocket.send(payload, localPort, localHost);
+    const sendProxyHeader = this.status.haproxy && !peer.proxyHeaderSent;
+    peer.proxyHeaderSent = peer.proxyHeaderSent || sendProxyHeader;
+    const outbound = sendProxyHeader
+      ? Buffer.concat([
+          buildProxyV2Header(remoteHost, remotePort, localHost, localPort, true),
+          payload,
+        ])
+      : payload;
+    peer.localSocket.send(outbound, localPort, localHost);
     this.addBytesIn(payload.length);
   }
 
@@ -474,4 +509,87 @@ export class SharedServiceManager extends EventEmitter {
     }
     return JSON.parse(JSON.stringify(this.status));
   }
+}
+
+function buildProxyV2Header(
+  sourceAddress: string,
+  sourcePort: number,
+  destinationAddress: string,
+  destinationPort: number,
+  datagram: boolean
+): Buffer {
+  const source = normalizeIpAddress(sourceAddress);
+  const destination = normalizeIpAddress(destinationAddress);
+  const sourceBytes = ipToBytes(source);
+  const destinationBytes = ipToBytes(destination);
+  const sameFamily = sourceBytes.length === destinationBytes.length;
+  const useIpv4 = sameFamily && sourceBytes.length === 4;
+  const headerLength = useIpv4 ? 12 : 36;
+  const header = Buffer.alloc(16 + headerLength);
+
+  PROXY_V2_SIGNATURE.copy(header, 0);
+  header[12] = PROXY_V2_COMMAND;
+  header[13] = useIpv4
+    ? datagram
+      ? PROXY_V2_INET_DGRAM
+      : PROXY_V2_INET_STREAM
+    : datagram
+      ? PROXY_V2_INET6_DGRAM
+      : PROXY_V2_INET6_STREAM;
+  header.writeUInt16BE(headerLength, 14);
+
+  if (useIpv4) {
+    sourceBytes.copy(header, 16);
+    destinationBytes.copy(header, 20);
+    header.writeUInt16BE(clampPort(sourcePort), 24);
+    header.writeUInt16BE(clampPort(destinationPort), 26);
+  } else {
+    const mappedSource = sourceBytes.length === 16 ? sourceBytes : ipv4ToMappedIpv6(sourceBytes);
+    const mappedDestination = destinationBytes.length === 16 ? destinationBytes : ipv4ToMappedIpv6(destinationBytes);
+    mappedSource.copy(header, 16);
+    mappedDestination.copy(header, 32);
+    header.writeUInt16BE(clampPort(sourcePort), 48);
+    header.writeUInt16BE(clampPort(destinationPort), 50);
+  }
+
+  return header;
+}
+
+function normalizeIpAddress(address: string): string {
+  const trimmed = address.replace(/^::ffff:/, '').trim();
+  if (net.isIP(trimmed)) {
+    return trimmed;
+  }
+  return '127.0.0.1';
+}
+
+function ipToBytes(address: string): Buffer {
+  if (net.isIPv4(address)) {
+    return Buffer.from(address.split('.').map((part) => Number(part)));
+  }
+
+  const expanded = expandIpv6(address);
+  const bytes = Buffer.alloc(16);
+  expanded.forEach((part, index) => bytes.writeUInt16BE(parseInt(part, 16) || 0, index * 2));
+  return bytes;
+}
+
+function expandIpv6(address: string): string[] {
+  const [left, right = ''] = address.split('::');
+  const leftParts = left ? left.split(':') : [];
+  const rightParts = right ? right.split(':') : [];
+  const fill = new Array(Math.max(0, 8 - leftParts.length - rightParts.length)).fill('0');
+  return [...leftParts, ...fill, ...rightParts].map((part) => part.padStart(4, '0'));
+}
+
+function ipv4ToMappedIpv6(bytes: Buffer): Buffer {
+  const mapped = Buffer.alloc(16);
+  mapped[10] = 0xff;
+  mapped[11] = 0xff;
+  bytes.copy(mapped, 12);
+  return mapped;
+}
+
+function clampPort(port: number): number {
+  return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 0;
 }
