@@ -811,8 +811,10 @@ async fn handle_udp_tunnel(
                 debug!("[UDP SEND] Pong rewrite skipped or failed, using original payload");
                 payload
             });
-            
-            let socket_addr = socket.local_addr().unwrap_or_else(|_| "UNKNOWN".parse().unwrap());
+
+            let socket_addr = socket
+                .local_addr()
+                .unwrap_or_else(|_| "UNKNOWN".parse().unwrap());
             match socket.send_to(&payload, remote_addr).await {
                 Ok(sent) => {
                     debug!(
@@ -985,17 +987,20 @@ async fn start_udp_relay_port(
     // Bind to the public_bind address to ensure consistent source address for outbound packets
     let bind_addr = format!("{}:{}", config.public_bind, port);
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
-    
+
     let local_addr = socket.local_addr()?;
     info!("UDP relay port {} listening on {}", port, local_addr);
-    
+
     state.udp_sockets.lock().await.insert(port, socket.clone());
 
     let mut buf = vec![0u8; 65_507];
     loop {
         let (len, remote_addr) = socket.recv_from(&mut buf).await?;
-        debug!("[UDP RECV] Received {} bytes from {} on port {}", len, remote_addr, port);
-        
+        debug!(
+            "[UDP RECV] Received {} bytes from {} on port {}",
+            len, remote_addr, port
+        );
+
         if !state.port_allocations.read().await.contains_key(&port) {
             state.udp_sockets.lock().await.remove(&port);
             state.allocation_notify.notify_one();
