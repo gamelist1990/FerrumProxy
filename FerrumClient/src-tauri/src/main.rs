@@ -468,8 +468,11 @@ fn run_udp_tunnel(
     local
         .set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|err| err.to_string())?;
-    let local_addr = format!("{local_host}:{local_port}");
+    let local_addr = local.local_addr().map_err(|err| err.to_string())?;
+    let local_target = format!("{local_host}:{local_port}");
     let mut response = vec![0u8; 65_507];
+    
+    eprintln!("[UDP] Tunnel started: binding to {}, forwarding to {}", local_addr, local_target);
 
     while !stop.load(Ordering::Relaxed) {
         let (remote_addr, payload) = match read_udp_frame_blocking(&mut tunnel) {
@@ -479,15 +482,57 @@ fn run_udp_tunnel(
             Err(err) => return Err(format!("UDP tunnel read failed: {err}")),
         };
 
-        local
-            .send_to(&payload, &local_addr)
-            .map_err(|err| format!("failed to send UDP to local service: {err}"))?;
-        match local.recv_from(&mut response) {
-            Ok((len, _)) => write_udp_frame_blocking(&mut tunnel, remote_addr, &response[..len])?,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(err) => return Err(format!("failed to read UDP local response: {err}")),
+        // Send from relay to local service
+        eprintln!("[UDP] Received from relay: {} bytes from {}", payload.len(), remote_addr);
+        match local.send_to(&payload, &local_target) {
+            Ok(sent) => eprintln!("[UDP] Sent to local service: {} bytes", sent),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(err) => {
+                eprintln!("[UDP] Failed to send to local service: {}", err);
+                return Err(format!("failed to send UDP to local service: {err}"));
+            },
         }
+        
+        // Receive response from local service
+        match local.recv_from(&mut response) {
+            Ok((len, from)) => {
+                eprintln!("[UDP] Received from local: {} bytes from {}", len, from);
+                // Send response back to relay with original remote address
+                write_udp_frame_blocking(&mut tunnel, remote_addr, &response[..len])?;
+                eprintln!("[UDP] Forwarded response to relay: {} bytes for {}", len, remote_addr);
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                eprintln!("[UDP] No response from local service (would block)");
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
+                eprintln!("[UDP] Timeout waiting for local service response");
+            },
+            Err(err) => {
+                eprintln!("[UDP] Failed to read from local service: {}", err);
+                return Err(format!("failed to read UDP local response: {err}"));
+            },
+        }
+
+        local
+            .set_nonblocking(true)
+            .map_err(|err| format!("failed to switch UDP socket to nonblocking mode: {err}"))?;
+        loop {
+            match local.recv_from(&mut response) {
+                Ok((len, from)) => {
+                    eprintln!("[UDP] Drained extra local response: {} bytes from {}", len, from);
+                    write_udp_frame_blocking(&mut tunnel, remote_addr, &response[..len])?;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(err) => {
+                    let _ = local.set_nonblocking(false);
+                    return Err(format!("failed to drain UDP local response: {err}"));
+                }
+            }
+        }
+        local
+            .set_nonblocking(false)
+            .map_err(|err| format!("failed to restore UDP socket blocking mode: {err}"))?;
     }
 
     Ok(())

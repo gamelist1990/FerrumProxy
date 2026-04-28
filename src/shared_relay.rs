@@ -802,8 +802,32 @@ async fn handle_udp_tunnel(
 
     let read_task = tokio::spawn(async move {
         while let Ok((remote_addr, payload)) = read_udp_frame(&mut reader).await {
-            let payload = rewrite_unconnected_pong_ports(&payload, port).unwrap_or(payload);
-            let _ = socket.send_to(&payload, remote_addr).await;
+            debug!(
+                "[UDP SEND] Received response from tunnel: {} bytes to send to {}",
+                payload.len(),
+                remote_addr
+            );
+            let payload = rewrite_unconnected_pong_ports(&payload, port).unwrap_or_else(|| {
+                debug!("[UDP SEND] Pong rewrite skipped or failed, using original payload");
+                payload
+            });
+            match socket.send_to(&payload, remote_addr).await {
+                Ok(sent) => {
+                    debug!(
+                        "[UDP SEND] Successfully sent {} bytes to {} on port {}",
+                        sent, remote_addr, port
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "[UDP SEND] Failed to send {} bytes to {} on port {}: {}",
+                        payload.len(),
+                        remote_addr,
+                        port,
+                        e
+                    );
+                }
+            }
         }
     });
 
