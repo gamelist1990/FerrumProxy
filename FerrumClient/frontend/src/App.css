@@ -1,28 +1,28 @@
 .client-shell {
   min-height: 100vh;
   display: grid;
-  place-items: center;
-  padding: 16px;
+  align-items: start;
+  padding: 6px;
   color: #18201d;
 }
 
 .client-panel {
-  width: min(640px, 100%);
+  width: 100%;
   display: grid;
-  gap: 12px;
+  gap: 8px;
   border: 1px solid #d9ded8;
   border-radius: 8px;
   background: #fbfcfb;
-  padding: 16px;
-  box-shadow: 0 12px 32px rgba(22, 31, 27, 0.07);
+  padding: 10px;
+  box-shadow: none;
 }
 
 .client-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 10px;
+  gap: 8px;
+  padding-bottom: 7px;
   border-bottom: 1px solid #e6e9e5;
 }
 
@@ -34,20 +34,20 @@
 
 .client-header p {
   color: #69736d;
-  font-size: 0.78rem;
+  font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .client-header h1 {
-  margin-top: 3px;
-  font-size: 1.35rem;
+  margin-top: 1px;
+  font-size: 1.12rem;
   line-height: 1.1;
 }
 
 .status {
   min-width: 92px;
-  min-height: 30px;
+  min-height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -55,7 +55,7 @@
   border-radius: 8px;
   background: #f3f5f2;
   color: #69736d;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 700;
 }
 
@@ -68,35 +68,35 @@
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 
 .form-section {
   display: grid;
   align-content: start;
-  gap: 9px;
+  gap: 6px;
 }
 
 .form-section h2 {
-  font-size: 0.95rem;
+  font-size: 0.86rem;
 }
 
 label {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   color: #69736d;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 700;
 }
 
 input {
   width: 100%;
-  min-height: 40px;
+  min-height: 34px;
   border: 1px solid #d9ded8;
   border-radius: 8px;
   background: #ffffff;
   color: #18201d;
-  padding: 0 11px;
+  padding: 0 9px;
   font: inherit;
 }
 
@@ -108,42 +108,42 @@ input:focus {
 .segmented {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .segmented label,
 .check-row {
-  min-height: 40px;
+  min-height: 34px;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   border: 1px solid #d9ded8;
   border-radius: 8px;
   background: #f6f8f6;
-  padding: 0 11px;
+  padding: 0 9px;
   color: #34413a;
 }
 
 .segmented input,
 .check-row input {
-  width: 16px;
-  min-height: 16px;
+  width: 15px;
+  min-height: 15px;
   accent-color: #2f7352;
 }
 
 .port-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
   max-width: 160px;
 }
 
 .summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
   border-top: 1px solid #e6e9e5;
-  padding-top: 12px;
+  padding-top: 8px;
 }
 
 .summary div {
@@ -151,13 +151,13 @@ input:focus {
   border: 1px solid #e0e4df;
   border-radius: 8px;
   background: #f6f8f6;
-  padding: 8px;
+  padding: 7px;
 }
 
 .summary span {
   display: block;
   color: #69736d;
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -167,13 +167,13 @@ input:focus {
   margin-top: 4px;
   overflow: hidden;
   color: #18201d;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .start-button {
-  min-height: 40px;
+  min-height: 36px;
   border: 1px solid #1f5f43;
   border-radius: 8px;
   background: #1f5f43;
@@ -197,14 +197,17 @@ input:focus {
 
 @media (max-width: 680px) {
   .client-shell {
-    padding: 14px;
+    padding: 6px;
   }
 
   .client-header,
   .form-grid,
-  .summary,
   .port-grid {
     grid-template-columns: 1fr;
+  }
+
+  .summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .client-header {
