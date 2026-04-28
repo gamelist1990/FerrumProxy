@@ -61,12 +61,24 @@ struct PublicEndpoint {
     display: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum ShareSessionStatus {
+    Waiting,
+    Running,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShareSession {
     running: bool,
+    status: ShareSessionStatus,
     relay_address: String,
-    endpoint: PublicEndpoint,
+    endpoint: Option<PublicEndpoint>,
+    queue_waiting_clients: Option<usize>,
+    queue_max_size: Option<usize>,
+    error: Option<String>,
 }
 
 #[derive(Default)]
@@ -75,7 +87,7 @@ struct ClientState {
 }
 
 struct ActiveShareSession {
-    public: ShareSession,
+    public: Arc<Mutex<ShareSession>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -144,57 +156,68 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
     } else {
         format!("{}:{local_host}:{local_port}", config.token.trim())
     };
-    let response = send_relay_command(&config.relay_address, &format!("CONNECT {target}\n"))?;
-    let (host, port) = parse_connect_response(&response)?;
-
-    let protocol = match (config.tcp_enabled, config.udp_enabled) {
-        (true, true) => "tcp/udp",
-        (true, false) => "tcp",
-        (false, true) => "udp",
-        (false, false) => unreachable!(),
-    }
-    .to_string();
-
-    let endpoint = PublicEndpoint {
-        display: format!("{protocol}: {host}:{port}"),
-        protocol,
-        host,
-        port,
-    };
-    let session = ShareSession {
-        running: true,
-        relay_address: config.relay_address.clone(),
-        endpoint,
-    };
     let stop = Arc::new(AtomicBool::new(false));
-    if config.tcp_enabled {
-        start_tcp_tunnel_pool(
-            config.relay_address.clone(),
-            port,
-            local_host.clone(),
-            config.tcp_local_port,
-            stop.clone(),
-        );
-    }
-    if config.udp_enabled {
-        start_udp_tunnel(
-            config.relay_address.clone(),
-            port,
-            local_host,
-            config.udp_local_port,
-            stop.clone(),
-        );
+    let session = Arc::new(Mutex::new(ShareSession {
+        running: false,
+        status: ShareSessionStatus::Waiting,
+        relay_address: config.relay_address.clone(),
+        endpoint: None,
+        queue_waiting_clients: None,
+        queue_max_size: None,
+        error: None,
+    }));
+    let session_handle = Arc::clone(&session);
+
+    {
+        let mut current = state
+            .session
+            .lock()
+            .map_err(|_| "failed to lock client session".to_string())?;
+        if let Some(active) = current.as_ref() {
+            let status = active
+                .public
+                .lock()
+                .map_err(|_| "failed to lock client session".to_string())?
+                .status
+                .clone();
+            if status == ShareSessionStatus::Waiting || status == ShareSessionStatus::Running {
+                return Err("sharing is already in progress".to_string());
+            }
+        }
+
+        *current = Some(ActiveShareSession {
+            public: Arc::clone(&session),
+            stop: Arc::clone(&stop),
+        });
     }
 
-    let mut current = state
-        .session
-        .lock()
-        .map_err(|_| "failed to lock client session".to_string())?;
-    *current = Some(ActiveShareSession {
-        public: session.clone(),
-        stop,
+    let relay_address = config.relay_address.clone();
+    let token = config.token.trim().to_string();
+    thread::spawn(move || {
+        if let Err(error) = run_share_session(
+            relay_address,
+            token,
+            target,
+            local_host,
+            config.tcp_enabled,
+            config.udp_enabled,
+            config.tcp_local_port,
+            config.udp_local_port,
+            stop,
+            Arc::clone(&session),
+        ) {
+            if let Ok(mut guard) = session.lock() {
+                guard.running = false;
+                guard.status = ShareSessionStatus::Failed;
+                guard.error = Some(error);
+            }
+        }
     });
-    Ok(session)
+
+    session_handle
+        .lock()
+        .map_err(|_| "failed to lock client session".to_string())
+        .map(|guard| guard.clone())
 }
 
 fn normalized_local_host(host: &str) -> String {
@@ -218,10 +241,19 @@ fn stop_active_sharing(state: &ClientState) -> Result<(), String> {
         .map_err(|_| "failed to lock client session".to_string())?;
     if let Some(active) = current.as_ref() {
         active.stop.store(true, Ordering::Relaxed);
-        let _ = send_relay_command(
-            &active.public.relay_address,
-            &format!("RELEASE {}\n", active.public.endpoint.port),
-        );
+        let session = active
+            .public
+            .lock()
+            .map_err(|_| "failed to lock client session".to_string())?
+            .clone();
+        if let Some(endpoint) = session.endpoint {
+            if session.status == ShareSessionStatus::Running {
+                let _ = send_relay_command(
+                    &session.relay_address,
+                    &format!("RELEASE {}\n", endpoint.port),
+                );
+            }
+        }
     }
     *current = None;
     Ok(())
@@ -233,7 +265,166 @@ fn get_share_session(state: State<ClientState>) -> Result<Option<ShareSession>, 
         .session
         .lock()
         .map_err(|_| "failed to lock client session".to_string())?;
-    Ok(current.as_ref().map(|active| active.public.clone()))
+    Ok(match current.as_ref() {
+        Some(active) => Some(
+            active
+                .public
+                .lock()
+                .map_err(|_| "failed to lock client session".to_string())?
+                .clone(),
+        ),
+        None => None,
+    })
+}
+
+fn run_share_session(
+    relay_address: String,
+    _token: String,
+    target: String,
+    local_host: String,
+    tcp_enabled: bool,
+    udp_enabled: bool,
+    tcp_local_port: u16,
+    udp_local_port: u16,
+    stop: Arc<AtomicBool>,
+    session: Arc<Mutex<ShareSession>>,
+) -> Result<(), String> {
+    let request = format!("CONNECT {target}\n");
+    let mut stream = connect_tcp_endpoint(&relay_address, Duration::from_secs(5))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|err| err.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|err| err.to_string())?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("failed to write relay command: {err}"))?;
+    stream
+        .flush()
+        .map_err(|err| format!("failed to flush relay command: {err}"))?;
+
+    let response = wait_for_connect_response(&relay_address, &mut stream, &stop, &session)?;
+    if stop.load(Ordering::Relaxed) {
+        return Err("sharing cancelled".to_string());
+    }
+
+    let (host, port) = parse_connect_response(&response)?;
+    let protocol = match (tcp_enabled, udp_enabled) {
+        (true, true) => "tcp/udp",
+        (true, false) => "tcp",
+        (false, true) => "udp",
+        (false, false) => unreachable!(),
+    }
+    .to_string();
+
+    let endpoint = PublicEndpoint {
+        display: format!("{protocol}: {host}:{port}"),
+        protocol,
+        host,
+        port,
+    };
+
+    {
+        let mut guard = session
+            .lock()
+            .map_err(|_| "failed to lock client session".to_string())?;
+        guard.running = true;
+        guard.status = ShareSessionStatus::Running;
+        guard.endpoint = Some(endpoint.clone());
+        guard.error = None;
+    }
+
+    if tcp_enabled {
+        start_tcp_tunnel_pool(
+            relay_address.clone(),
+            port,
+            local_host.clone(),
+            tcp_local_port,
+            stop.clone(),
+        );
+    }
+    if udp_enabled {
+        start_udp_tunnel(
+            relay_address,
+            port,
+            local_host,
+            udp_local_port,
+            stop,
+        );
+    }
+
+    Ok(())
+}
+
+fn wait_for_connect_response(
+    relay_address: &str,
+    stream: &mut TcpStream,
+    stop: &Arc<AtomicBool>,
+    session: &Arc<Mutex<ShareSession>>,
+) -> Result<String, String> {
+    let mut response = Vec::new();
+    let mut buffer = [0u8; 1024];
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err("sharing cancelled".to_string());
+        }
+
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                if response.is_empty() {
+                    return Err("relay closed the connection before responding".to_string());
+                }
+                break;
+            }
+            Ok(bytes_read) => {
+                response.extend_from_slice(&buffer[..bytes_read]);
+                if response.contains(&b'\n') {
+                    break;
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::TimedOut
+                    || error.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                if let Some((waiting_clients, queue_max_size)) = poll_queue_status(relay_address) {
+                    if let Ok(mut guard) = session.lock() {
+                        guard.queue_waiting_clients = Some(waiting_clients);
+                        guard.queue_max_size = Some(queue_max_size);
+                    }
+                }
+            }
+            Err(error) => return Err(format!("failed to read relay response: {error}")),
+        }
+    }
+
+    String::from_utf8(response)
+        .map(|value| value.trim().to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn poll_queue_status(relay_address: &str) -> Option<(usize, usize)> {
+    let response = send_relay_command(relay_address, "STATS\n").ok()?;
+    parse_queue_status(&response)
+}
+
+fn parse_queue_status(response: &str) -> Option<(usize, usize)> {
+    let mut waiting_clients = None;
+    let mut queue_max_size = None;
+
+    for part in response.split_whitespace() {
+        if let Some(value) = part.strip_prefix("waiting=") {
+            waiting_clients = value.parse::<usize>().ok();
+        } else if let Some(value) = part.strip_prefix("queue_max=") {
+            queue_max_size = value.parse::<usize>().ok();
+        }
+    }
+
+    match (waiting_clients, queue_max_size) {
+        (Some(waiting_clients), Some(queue_max_size)) => Some((waiting_clients, queue_max_size)),
+        _ => None,
+    }
 }
 
 fn start_udp_tunnel(

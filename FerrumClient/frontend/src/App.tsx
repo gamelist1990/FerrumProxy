@@ -19,13 +19,18 @@ type ClientConfigResponse = {
 };
 
 type ShareSession = {
+  status: "waiting" | "running" | "failed";
   running: boolean;
+  relayAddress: string;
   endpoint: {
     protocol: string;
     host: string;
     port: number;
     display: string;
-  };
+  } | null;
+  queueWaitingClients?: number | null;
+  queueMaxSize?: number | null;
+  error?: string | null;
 };
 
 const defaultForm: ClientConfig = {
@@ -41,11 +46,10 @@ const defaultForm: ClientConfig = {
 
 function App() {
   const [form, setForm] = useState(defaultForm);
-  const [running, setRunning] = useState(false);
+  const [shareSession, setShareSession] = useState<ShareSession | null>(null);
   const [configPath, setConfigPath] = useState("config.json");
   const [configReady, setConfigReady] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [shareEndpoint, setShareEndpoint] = useState<string | null>(null);
 
   const probeConnection = async (nextForm: ClientConfig) => {
     await invoke<void>("probe_client_connection", { config: nextForm });
@@ -61,11 +65,9 @@ function App() {
         setConfigPath(response.path);
         await probeConnection(nextForm);
         const session = await invoke<ShareSession | null>("get_share_session");
-        setRunning(!!session?.running);
-        setShareEndpoint(session?.endpoint.display || null);
+        setShareSession(session);
       } catch (error) {
         console.error("failed to load or probe client config", error);
-        setRunning(false);
         setConnectionError(
           error instanceof Error ? error.message : "failed to probe relay connection"
         );
@@ -74,6 +76,18 @@ function App() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!configReady || shareSession?.status !== "waiting") return;
+
+    const timer = window.setInterval(() => {
+      invoke<ShareSession | null>("get_share_session")
+        .then((session) => setShareSession(session))
+        .catch((error) => console.error("failed to refresh share session", error));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [configReady, shareSession?.status]);
 
   useEffect(() => {
     if (!configReady) return;
@@ -98,6 +112,15 @@ function App() {
     form.udpEnabled ? `UDP ${form.localHost || "127.0.0.1"}:${form.udpLocalPort}` : null,
   ].filter(Boolean);
   const canStart = form.relayAddress.trim() !== "" && protocols.length > 0;
+  const isWaiting = shareSession?.status === "waiting";
+  const isRunning = shareSession?.status === "running";
+  const displayError = connectionError || shareSession?.error || null;
+  const queueLabel =
+    typeof shareSession?.queueWaitingClients === "number" &&
+    typeof shareSession?.queueMaxSize === "number"
+      ? `${shareSession.queueWaitingClients}/${shareSession.queueMaxSize}`
+      : null;
+  const endpointLabel = shareSession?.endpoint?.display || (isWaiting ? "waiting for allocation" : null);
 
   return (
     <main className="client-shell">
@@ -107,8 +130,8 @@ function App() {
             <p>FerrumProxy Client</p>
             <h1>共有クライアント</h1>
           </div>
-          <span className={`status ${running ? "running" : "stopped"}`}>
-            {running ? "Connected" : "Stopped"}
+          <span className={`status ${isRunning ? "running" : isWaiting ? "waiting" : "stopped"}`}>
+            {isRunning ? "Connected" : isWaiting ? "Waiting" : "Stopped"}
           </span>
         </header>
 
@@ -123,11 +146,9 @@ function App() {
                 placeholder="203.0.113.10:7000"
               />
             </label>
-
             <label>
               <span>Auth token</span>
               <input
-                type="password"
                 value={form.token}
                 onChange={(event) => update("token", event.target.value)}
                 placeholder="optional"
@@ -207,11 +228,11 @@ function App() {
         <section className="summary">
           <div className="public-endpoint">
             <span>Public URL</span>
-            <strong>{shareEndpoint || "not shared"}</strong>
+            <strong>{endpointLabel || "not shared"}</strong>
           </div>
           <div>
             <span>Relay</span>
-            <strong>{form.relayAddress || "not set"}</strong>
+            <strong>{shareSession?.relayAddress || form.relayAddress || "not set"}</strong>
           </div>
           <div>
             <span>Mode</span>
@@ -229,15 +250,14 @@ function App() {
 
         <button
           type="button"
-          className={`start-button ${running ? "stop" : ""}`}
+          className={`start-button ${isWaiting ? "waiting" : isRunning ? "stop" : ""}`}
           onClick={() => {
-            if (running) {
+            if (isWaiting || isRunning) {
               void (async () => {
                 try {
                   await invoke<void>("stop_sharing");
                 } finally {
-                  setRunning(false);
-                  setShareEndpoint(null);
+                  setShareSession(null);
                   setConnectionError(null);
                 }
               })();
@@ -249,27 +269,34 @@ function App() {
                 const path = await invoke<string>("save_client_config", { config: form });
                 setConfigPath(path);
                 const session = await invoke<ShareSession>("start_sharing", { config: form });
-                setRunning(session.running);
-                setShareEndpoint(session.endpoint.display);
+                setShareSession(session);
                 setConnectionError(null);
               } catch (error) {
                 console.error("failed to connect relay", error);
-                setRunning(false);
-                setShareEndpoint(null);
                 setConnectionError(
                   error instanceof Error ? error.message : "failed to connect to relay"
                 );
               }
             })();
           }}
-          disabled={!canStart}
+          disabled={!canStart && !isWaiting && !isRunning}
         >
-          {running ? "Stop sharing" : "Start sharing"}
+          {isWaiting ? "Cancel waiting" : isRunning ? "Stop sharing" : "Start sharing"}
         </button>
 
-        {connectionError && (
+        {isWaiting && (
+          <div className="queue-status" role="status" aria-live="polite">
+            <span className="queue-spinner" aria-hidden="true" />
+            <div>
+              <strong>Waiting for relay allocation</strong>
+              <p>{queueLabel ? `Queue: ${queueLabel}` : "Waiting for an available port"}</p>
+            </div>
+          </div>
+        )}
+
+        {displayError && (
           <p className="connection-error" role="alert">
-            {connectionError}
+            {displayError}
           </p>
         )}
       </section>

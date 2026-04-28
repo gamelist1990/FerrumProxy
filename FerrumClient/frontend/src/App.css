@@ -68,6 +68,12 @@
   color: #0b5cad;
 }
 
+.status.waiting {
+  border-color: #d79f4e;
+  background: #fff5e8;
+  color: #9a5b00;
+}
+
 .status.stopped {
   background: #f7f7f7;
 }
@@ -240,8 +246,54 @@ input:focus {
   color: #ffffff;
 }
 
+.start-button.waiting {
+  border-color: #c08a31;
+  background: linear-gradient(135deg, #f6ba5f, #e59b1f);
+  color: #2c1b00;
+}
+
 .start-button.stop:hover:not(:disabled) {
   background: #b94040;
+}
+
+.start-button.waiting:hover:not(:disabled) {
+  background: linear-gradient(135deg, #f2ae45, #d98f0f);
+}
+
+.queue-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #f0c27a;
+  background: linear-gradient(180deg, #fff8ec, #fff2db);
+}
+
+.queue-status strong,
+.queue-status p {
+  margin: 0;
+}
+
+.queue-status p {
+  margin-top: 4px;
+  color: #725015;
+  font-size: 0.78rem;
+}
+
+.queue-spinner {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 3px solid rgba(154, 91, 0, 0.2);
+  border-top-color: #9a5b00;
+  animation: queue-spin 0.85s linear infinite;
+}
+
+@keyframes queue-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .connection-error {

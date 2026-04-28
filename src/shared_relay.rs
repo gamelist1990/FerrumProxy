@@ -721,9 +721,12 @@ async fn handle_stats(state: &Arc<SharedRelayState>) -> Result<String> {
         .values()
         .map(VecDeque::len)
         .sum::<usize>();
+    let waiting_clients = *state.waiting_clients.lock().await;
+    let queue_max_size = state.config.queue.max_size;
 
     Ok(format!(
-        "STAT tcp={tcp_count} udp={udp_count} ports={port_count} tunnels={tunnel_count}\n"
+        "STAT tcp={tcp_count} udp={udp_count} ports={port_count} tunnels={tunnel_count} waiting={waiting_clients} queue_max={queue_max_size} queue_enabled={}\n",
+        state.config.queue.enabled
     ))
 }
 
@@ -944,10 +947,10 @@ pub async fn start_relay_port(
 
 async fn start_udp_relay_port(
     port: u16,
-    _config: Arc<SharedServiceConfig>,
+    config: Arc<SharedServiceConfig>,
     state: Arc<SharedRelayState>,
 ) -> Result<()> {
-    let bind_addr = format!("0.0.0.0:{port}");
+    let bind_addr = format!("{}:{port}", config.public_bind);
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
     state.udp_sockets.lock().await.insert(port, socket.clone());
     info!("UDP relay port {} listening", port);
