@@ -464,7 +464,7 @@ export class SharedServiceManager extends EventEmitter {
   }
 
   private positiveInt(value: number | undefined, fallback: number): number {
-    return Number.isInteger(value) && value > 0 ? value : fallback;
+    return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
   }
 
   private requirePort(value: number | undefined, label: string): number {

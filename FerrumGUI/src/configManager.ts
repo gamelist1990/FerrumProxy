@@ -76,6 +76,19 @@ export interface FerrumProxyConfig {
       tcp?: number;
       udp?: number;
     }>;
+    httpMappings?: Array<{
+      path: string;
+      target?: {
+        host?: string;
+        tcp?: number;
+        udp?: number;
+      };
+      targets?: Array<{
+        host?: string;
+        tcp?: number;
+        udp?: number;
+      }>;
+    }>;
   }>;
 }
 
@@ -106,28 +119,66 @@ export class ConfigManager extends EventEmitter {
   }
 
   private sanitize(config: FerrumProxyConfig): FerrumProxyConfig {
-    return {
-      ...config,
-      listeners: config.listeners?.map((listener) => {
-        const https = listener.https
-          ? {
-              ...listener.https,
-              letsEncryptDomain: listener.https.letsEncryptDomain?.trim() || undefined,
-              certPath: listener.https.certPath?.trim() || undefined,
-              keyPath: listener.https.keyPath?.trim() || undefined,
-            }
-          : undefined;
+    const sanitized: FerrumProxyConfig = { ...config };
 
-        return {
-          ...listener,
-          webhook: listener.webhook?.trim() || undefined,
-          https,
-        };
-      }),
-    };
+    // Sanitize sharedService
+    if (sanitized.sharedService) {
+      const shared = { ...sanitized.sharedService };
+      if (shared.controlBind) shared.controlBind = shared.controlBind.trim();
+      if (shared.publicBind) shared.publicBind = shared.publicBind.trim();
+      if (shared.publicHost) shared.publicHost = shared.publicHost.trim();
+
+      // Clean up tokens: remove tokens with empty token strings
+      if (shared.tokens) {
+        shared.tokens = shared.tokens
+          .filter((t) => t.token && t.token.trim().length > 0)
+          .map((t) => ({
+            ...t,
+            token: t.token!.trim(),
+            name: t.name?.trim() || undefined,
+          }));
+      }
+
+      // Clean up authTokens: remove empty strings
+      if (shared.authTokens) {
+        shared.authTokens = shared.authTokens.filter((t) => t.trim().length > 0);
+      }
+
+      // Ensure port range values are integers
+      if (shared.portRange) {
+        if (shared.portRange.start !== undefined) {
+          shared.portRange.start = Math.floor(shared.portRange.start);
+        }
+        if (shared.portRange.end !== undefined) {
+          shared.portRange.end = Math.floor(shared.portRange.end);
+        }
+      }
+
+      sanitized.sharedService = shared;
+    }
+
+    // Sanitize listeners
+    sanitized.listeners = config.listeners?.map((listener) => {
+      const https = listener.https
+        ? {
+            ...listener.https,
+            letsEncryptDomain: listener.https.letsEncryptDomain?.trim() || undefined,
+            certPath: listener.https.certPath?.trim() || undefined,
+            keyPath: listener.https.keyPath?.trim() || undefined,
+          }
+        : undefined;
+
+      return {
+        ...listener,
+        webhook: listener.webhook?.trim() || undefined,
+        https,
+      };
+    });
+
+    return sanitized;
   }
 
-  async validate(config: FerrumProxyConfig): Promise<{ valid: boolean; errors: string[] }> {
+  async validate(config: FerrumProxyConfig, isSharedRelayMode: boolean = false): Promise<{ valid: boolean; errors: string[] }> {
     const errors: string[] = [];
     const validateTargetPorts = (
       target: { tcp?: number; udp?: number } | undefined,
@@ -160,11 +211,28 @@ export class ConfigManager extends EventEmitter {
       }
     };
 
+    const validatePort = (value: unknown, path: string) => {
+      if (value !== undefined) {
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
+          errors.push(`${path} must be a valid port number (1-65535)`);
+        }
+      }
+    };
+
     if (config.sharedService) {
       const shared = config.sharedService;
+
+      // Validate controlBind when shared service is enabled
+      if (shared.enabled && shared.controlBind) {
+        const bindParts = shared.controlBind.split(':');
+        if (bindParts.length !== 2 || isNaN(Number(bindParts[1]))) {
+          errors.push('sharedService.controlBind must be in format host:port');
+        }
+      }
+
       if (shared.portRange) {
-        validatePositiveLimit(shared.portRange.start, 'sharedService.portRange.start');
-        validatePositiveLimit(shared.portRange.end, 'sharedService.portRange.end');
+        validatePort(shared.portRange.start, 'sharedService.portRange.start');
+        validatePort(shared.portRange.end, 'sharedService.portRange.end');
         if (
           typeof shared.portRange.start === 'number' &&
           typeof shared.portRange.end === 'number' &&

@@ -946,12 +946,18 @@ app.put('/api/instances/:id/config', async (req, res) => {
 
     let config = req.body;
 
-    if (config.sharedService?.enabled) {
+    const isSharedRelayMode = !!config.sharedService?.enabled;
+    if (isSharedRelayMode) {
       config.listeners = [];
       console.log(chalk.blue('  Shared relay mode: clearing listeners'));
     }
 
-    const validation = await configManager.validate(config);
+    // Ensure listeners is at least an empty array
+    if (!config.listeners) {
+      config.listeners = [];
+    }
+
+    const validation = await configManager.validate(config, isSharedRelayMode);
     if (!validation.valid) {
       return res.status(400).json({ errors: validation.errors });
     }
