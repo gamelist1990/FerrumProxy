@@ -17,6 +17,16 @@ type ClientConfigResponse = {
   path: string;
 };
 
+type ShareSession = {
+  running: boolean;
+  endpoint: {
+    protocol: string;
+    host: string;
+    port: number;
+    display: string;
+  };
+};
+
 const defaultForm: ClientConfig = {
   relayAddress: "127.0.0.1:7000",
   token: "",
@@ -33,10 +43,10 @@ function App() {
   const [configPath, setConfigPath] = useState("config.json");
   const [configReady, setConfigReady] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [shareEndpoint, setShareEndpoint] = useState<string | null>(null);
 
   const probeConnection = async (nextForm: ClientConfig) => {
     await invoke<void>("probe_client_connection", { config: nextForm });
-    setRunning(true);
     setConnectionError(null);
   };
 
@@ -48,6 +58,9 @@ function App() {
         setForm(nextForm);
         setConfigPath(response.path);
         await probeConnection(nextForm);
+        const session = await invoke<ShareSession | null>("get_share_session");
+        setRunning(!!session?.running);
+        setShareEndpoint(session?.endpoint.display || null);
       } catch (error) {
         console.error("failed to load or probe client config", error);
         setRunning(false);
@@ -181,6 +194,10 @@ function App() {
         </div>
 
         <section className="summary">
+          <div className="public-endpoint">
+            <span>Public URL</span>
+            <strong>{shareEndpoint || "not shared"}</strong>
+          </div>
           <div>
             <span>Relay</span>
             <strong>{form.relayAddress || "not set"}</strong>
@@ -204,8 +221,15 @@ function App() {
           className={`start-button ${running ? "stop" : ""}`}
           onClick={() => {
             if (running) {
-              setRunning(false);
-              setConnectionError(null);
+              void (async () => {
+                try {
+                  await invoke<void>("stop_sharing");
+                } finally {
+                  setRunning(false);
+                  setShareEndpoint(null);
+                  setConnectionError(null);
+                }
+              })();
               return;
             }
 
@@ -213,10 +237,14 @@ function App() {
               try {
                 const path = await invoke<string>("save_client_config", { config: form });
                 setConfigPath(path);
-                await probeConnection(form);
+                const session = await invoke<ShareSession>("start_sharing", { config: form });
+                setRunning(session.running);
+                setShareEndpoint(session.endpoint.display);
+                setConnectionError(null);
               } catch (error) {
                 console.error("failed to connect relay", error);
                 setRunning(false);
+                setShareEndpoint(null);
                 setConnectionError(
                   error instanceof Error ? error.message : "failed to connect to relay"
                 );

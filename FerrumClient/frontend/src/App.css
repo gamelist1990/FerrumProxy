@@ -178,6 +178,12 @@ input:focus {
   background: #ffffff;
 }
 
+.summary .public-endpoint {
+  grid-column: 1 / -1;
+  border-color: #8fb4de;
+  background: #f4f9ff;
+}
+
 .summary span {
   display: block;
   color: #666666;
@@ -188,12 +194,15 @@ input:focus {
 .summary strong {
   display: block;
   margin-top: 5px;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   color: #1d1d1d;
   font-size: 0.85rem;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.summary .public-endpoint strong {
+  font-size: 1rem;
 }
 
 .start-button {
