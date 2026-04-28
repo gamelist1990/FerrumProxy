@@ -11,7 +11,6 @@ import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './serv
 import { ProcessManager } from './processManager.js';
 import { ConfigManager, FerrumProxyConfig } from './configManager.js';
 import { AuthManager } from './authManager.js';
-import { SharedServiceManager } from './sharedServiceManager.js';
 import {
   getLatestRelease,
   getReleaseByVersion,
@@ -53,7 +52,6 @@ const serviceManager = new ServiceManager(path.join(appRoot, 'services.json'));
 const processManager = new ProcessManager();
 const configManager = new ConfigManager();
 const authManager = new AuthManager(serviceManager);
-const sharedServiceManager = new SharedServiceManager();
 
 function isRequestHttps(req: express.Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https';
@@ -348,13 +346,6 @@ configManager.on('change', (instanceId: string, config: any) => {
   });
 });
 
-sharedServiceManager.on('change', (status) => {
-  broadcast({
-    type: 'sharedServiceStatus',
-    status,
-  });
-});
-
 
 
 
@@ -483,28 +474,6 @@ app.get('/api/system', async (req, res) => {
     }
 
     res.json({ platform, nodePlatform: process.platform, arch: process.arch });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/shared-service/status', (_req, res) => {
-  res.json(sharedServiceManager.getStatus());
-});
-
-app.post('/api/shared-service/start', async (req, res) => {
-  try {
-    const status = await sharedServiceManager.start(req.body);
-    res.json(status);
-  } catch (error: any) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post('/api/shared-service/stop', async (_req, res) => {
-  try {
-    await sharedServiceManager.stop();
-    res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1295,7 +1264,6 @@ async function init() {
 
     process.on('SIGINT', async () => {
       console.log(chalk.yellow('\nShutting down...'));
-      await sharedServiceManager.stop();
       processManager.stopAll();
       configManager.unwatchAll();
       await serviceManager.save();

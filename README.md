@@ -85,7 +85,12 @@ On Windows:
 
 ## Shared Service Mode
 
-FerrumProxyGUI includes a shared-service mode for temporarily exposing local TCP and/or UDP applications. TCP and UDP can be enabled independently or together, public ports are temporary, and the service tracks connection limits, bandwidth limits, structured logs, and idle timeout handling. A Tauri desktop client scaffold and GitHub Actions release workflow are included for building the client app.
+FerrumProxy shared service is split into two roles:
+
+- `FerrumProxyGUI` is the relay-server management app. It manages the FerrumProxy instance running on the public relay server and exposes relay limits in the config editor.
+- `FerrumProxy Client` is the user-installed app/CLI. It connects outbound to the relay `ip:port`, selects TCP, UDP, or both, chooses local service ports, and controls whether HAProxy PROXY protocol is used.
+
+Public relay listeners bind on `0.0.0.0`, and public share ports are temporary. Users do not reserve permanent public ports from the client.
 
 See [`docs/shared-service-design.md`](docs/shared-service-design.md) for the current design.
 
@@ -217,7 +222,12 @@ Windows の場合:
 
 ## 共有サービスモード
 
-FerrumProxyGUI には、ローカルの TCP/UDP アプリケーションを一時公開する共有サービスモードが含まれています。TCP のみ、UDP のみ、TCP+UDP の共有、Temporary public port、同時接続数制限、帯域制限、構造化ログ、idle timeout を扱えます。Tauri デスクトップクライアントの scaffold と GitHub Actions の公開 workflow も追加されています。
+FerrumProxy の共有サービスは役割を明確に分けます。
+
+- `FerrumProxyGUI` は中継サーバー上で動作する管理用ソフトウェアです。公開リレー上の FerrumProxy インスタンスを管理し、config editor で relay 側の limits を扱います。
+- `FerrumProxy Client` はユーザーインストール型のアプリ/CLIです。relay の `ip:port` に outbound 接続し、TCP、UDP、または両方、ローカルサービスの port、HAProxy PROXY protocol の有効/無効を選びます。
+
+公開リレーの listener は `0.0.0.0` bind 前提で、公開 share port は一時的に払い出します。Client 側で永続 port を予約する設計にはしません。
 
 現在の設計は [`docs/shared-service-design.md`](docs/shared-service-design.md) を参照してください。
 

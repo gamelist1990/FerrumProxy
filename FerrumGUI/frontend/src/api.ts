@@ -111,67 +111,6 @@ export interface SharedServiceLimits {
   udpSessionTimeoutSeconds: number;
 }
 
-export interface SharedServiceLogEntry {
-  timestamp: string;
-  level: 'info' | 'warn' | 'error';
-  event: string;
-  protocol?: 'tcp' | 'udp';
-  message: string;
-  remoteAddress?: string;
-}
-
-export interface SharedServiceStatus {
-  id: string;
-  name: string;
-  running: boolean;
-  publicHost: string;
-  haproxy: boolean;
-  tcp?: {
-    enabled: boolean;
-    publicPort: number;
-    localHost: string;
-    localPort: number;
-  };
-  udp?: {
-    enabled: boolean;
-    publicPort: number;
-    localHost: string;
-    localPort: number;
-  };
-  limits: SharedServiceLimits;
-  stats: {
-    activeTcpConnections: number;
-    activeUdpPeers: number;
-    totalTcpConnections: number;
-    totalUdpPeers: number;
-    bytesIn: number;
-    bytesOut: number;
-    droppedDatagrams: number;
-    startedAt: string;
-  };
-  logs: SharedServiceLogEntry[];
-}
-
-export interface SharedServiceStartRequest {
-  name?: string;
-  publicHost?: string;
-  bindHost?: string;
-  haproxy?: boolean;
-  tcp?: {
-    enabled: boolean;
-    localHost?: string;
-    localPort?: number;
-    publicPort?: number;
-  };
-  udp?: {
-    enabled: boolean;
-    localHost?: string;
-    localPort?: number;
-    publicPort?: number;
-  };
-  limits?: Partial<SharedServiceLimits>;
-}
-
 export interface Release {
   version: string;
   tag: string;
@@ -299,35 +238,6 @@ export async function fetchPlayerIPs(id: string): Promise<PlayerIPEntry[]> {
   const res = await fetch(`${API_BASE}/instances/${id}/player-ips`);
   if (!res.ok) throw new Error('Failed to fetch player IPs');
   return res.json();
-}
-
-export async function fetchSharedServiceStatus(): Promise<SharedServiceStatus | null> {
-  const res = await fetch(`${API_BASE}/shared-service/status`);
-  if (!res.ok) throw new Error('Failed to fetch shared service status');
-  return res.json();
-}
-
-export async function startSharedService(data: SharedServiceStartRequest): Promise<SharedServiceStatus> {
-  const res = await fetch(`${API_BASE}/shared-service/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Failed to start shared service' }));
-    throw new Error(error.error || 'Failed to start shared service');
-  }
-  return res.json();
-}
-
-export async function stopSharedService(): Promise<void> {
-  const res = await fetch(`${API_BASE}/shared-service/stop`, {
-    method: 'POST',
-  });
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Failed to stop shared service' }));
-    throw new Error(error.error || 'Failed to stop shared service');
-  }
 }
 
 export async function fetchPerformance(id: string): Promise<PerformanceMetrics> {
@@ -458,7 +368,6 @@ export interface WebSocketEventMap {
   log: { instanceId: string; timestamp: string; logType: string; message: string };
   configUpdated: { instanceId: string; config: FerrumProxyConfig };
   rateLimitError: { message: string };
-  sharedServiceStatus: { status: SharedServiceStatus };
 }
 
 export interface UpdateCheckResult {

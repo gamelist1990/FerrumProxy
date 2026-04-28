@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { FerrumProxyConfig } from '../api';
 import { t } from '../lang';
 import { GeneralSettings } from './config/GeneralSettings';
+import { SharedRelaySettings } from './config/SharedRelaySettings';
 import { ListenerList } from './config/ListenerList';
 import { Button } from './ui/Button';
 import './ConfigEditor.css';
@@ -32,6 +33,10 @@ export function ConfigEditor({ instanceId, config, onChange, onSave }: ConfigEdi
       {!showAdvanced ? (
         <>
           <GeneralSettings config={localConfig} onChange={handleChange} />
+          <SharedRelaySettings
+            config={localConfig}
+            onChange={(sharedService) => handleChange('sharedService', sharedService)}
+          />
           <ListenerList
             instanceId={instanceId}
             listeners={localConfig.listeners || []}

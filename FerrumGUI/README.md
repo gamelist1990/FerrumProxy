@@ -12,8 +12,8 @@
 - **認証機能** - パスワード保護でセキュアに管理
 - **多言語対応** - 日本語・英語に対応
 - **ダーク/ライトモード** - テーマ切り替え対応
-- **共有サービス** - TCP/UDP の片方または両方を一時ポートで公開し、同時接続数、帯域、ログ、idle timeout を管理
-- **Tauriクライアント** - React UIをデスクトップアプリとしてビルド可能
+- **共有サービス relay 管理** - 中継サーバー側の有効化と limits を管理
+- **FerrumProxy Client** - ユーザーインストール型の Tauri GUI / CLI として別ビルド
 
 ## 必要な環境
 
@@ -134,18 +134,34 @@ bun run build:all
 4. GUIから直接PEMファイルをアップロードする場合は、証明書PEMと秘密鍵PEMを選んで `TLSファイルをアップロード` を押す
 5. 保存後に FerrumProxy を再起動
 
-### 共有サービス
+### 共有サービス relay
 
-上部の「共有サービス」を押すと、通常のインスタンス管理画面から共有サービスUIへ切り替わります。
+FerrumProxyGUI は中継サーバー上で動作する管理用ソフトウェアです。ユーザーのローカルサービス port や HAProxy の有効/無効は Client 側で設定します。
 
-1. `Public host` に他ユーザーへ案内するIPまたはホスト名を入力
-2. TCP、UDP、または両方を選択
-3. ローカルアプリケーションのポートを指定
-4. 必要に応じて HAProxy PROXY protocol を有効化
-5. 同時接続数、UDP peer数、帯域制限、idle timeout を設定
-6. `Start` を押すと一時的な公開 `host:port` が発行されます
+FerrumProxyGUI では config editor の `Shared Service Relay` から以下を設定します。
 
-公開ポートは共有停止時に解放されます。永続予約は行いません。
+1. relay の有効/無効
+2. 最大 TCP 接続数
+3. 最大 UDP peer 数
+4. 帯域制限
+5. TCP idle timeout
+6. UDP session timeout
+
+公開時の bind は `0.0.0.0` 前提です。公開 share port は relay が一時的に払い出し、永続予約は行いません。
+
+### FerrumProxy Client
+
+Client はユーザーPCにインストールして使う共有用アプリです。Tauri GUI と CLI を用意します。
+
+```bash
+# GUI build
+bun run tauri:build
+
+# CLI example
+bun run client:cli -- --relay 203.0.113.10:7000 --protocol both --tcp-port 25565 --udp-port 25565 --haproxy
+```
+
+Client 側では relay の `ip:port`、TCP/UDP、ローカルサービス port、HAProxy PROXY protocol の有効/無効を指定します。
 
 
 ## トラブルシューティング

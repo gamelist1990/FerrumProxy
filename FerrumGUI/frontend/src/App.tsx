@@ -9,7 +9,6 @@ import type {
   AuthStatus,
   PlayerIPEntry,
   PerformanceMetrics,
-  SharedServiceStatus,
 } from "./api";
 import {
   fetchInstances,
@@ -29,7 +28,6 @@ import {
   setupAuth,
   fetchPlayerIPs,
   fetchPerformance,
-  fetchSharedServiceStatus,
   updateInstance,
   updateInstanceMetadata,
   fetchSystemInfo,
@@ -40,7 +38,6 @@ import { ConfigEditor } from "./components/ConfigEditor";
 import { PlayerIPList } from "./components/PlayerIPList";
 import { UpdateProgress } from "./components/UpdateProgress";
 import { InstanceSettingsModal } from "./components/InstanceSettingsModal";
-import { SharedServicePanel } from "./components/SharedServicePanel";
 import { formatLogMessage } from "./utils/ansi";
 import { DEFAULT_FERRUMPROXY_VERSION } from "./utils/version";
 import type { WebSocketEventMap } from "./api";
@@ -54,9 +51,6 @@ function App() {
   const [playerIPs, setPlayerIPs] = useState<PlayerIPEntry[]>([]);
   const [performance, setPerformance] = useState<PerformanceMetrics | null>(null);
   const [performanceError, setPerformanceError] = useState<string | null>(null);
-  const [sharedServiceMode, setSharedServiceMode] = useState(false);
-  const [sharedServiceStatus, setSharedServiceStatus] =
-    useState<SharedServiceStatus | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [initializingInstances, setInitializingInstances] = useState<
     Set<string>
@@ -285,23 +279,10 @@ function App() {
       on("rateLimitError", (data: WebSocketEventMap["rateLimitError"]) => {
         alert(`⚠️ ${data.message}`);
       }),
-      on(
-        "sharedServiceStatus",
-        (data: WebSocketEventMap["sharedServiceStatus"]) => {
-          setSharedServiceStatus(data.status);
-        }
-      ),
     ];
 
     return () => unsubscribes.forEach((unsub) => unsub());
   }, [on, selectedInstance]);
-
-  useEffect(() => {
-    if (!authStatus?.isAuthenticated) return;
-    fetchSharedServiceStatus()
-      .then(setSharedServiceStatus)
-      .catch(() => {});
-  }, [authStatus]);
 
   useEffect(() => {
     if (selectedInstance) {
@@ -701,13 +682,6 @@ function App() {
                 {t("logout")}
               </button>
             )}
-            <button
-              type="button"
-              className={`btn tertiary ${sharedServiceMode ? "active" : ""}`}
-              onClick={() => setSharedServiceMode((value) => !value)}
-            >
-              共有サービス
-            </button>
           </div>
         </header>
 
@@ -856,13 +830,7 @@ function App() {
           </aside>
 
           <main className="workspace">
-            {sharedServiceMode ? (
-              <SharedServicePanel
-                status={sharedServiceStatus}
-                onStatusChange={setSharedServiceStatus}
-                formatBytes={formatBytes}
-              />
-            ) : selectedInstanceData ? (
+            {selectedInstanceData ? (
               <>
                 <section className="instance-hero">
                   <div className="hero-copy">
