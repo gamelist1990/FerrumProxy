@@ -1,4 +1,4 @@
-import type { FerrumProxyConfig, PerformanceMetrics } from '../api';
+import type { FerrumProxyConfig, LogEntry, PerformanceMetrics } from '../api';
 import { t } from '../lang';
 import { SharedRelaySettings } from './config/SharedRelaySettings';
 
@@ -13,6 +13,7 @@ interface SharedRelayDashboardProps {
   runtimeState: RuntimeState;
   performance: PerformanceMetrics | null;
   performanceError: string | null;
+  logs: LogEntry[];
 }
 
 export function SharedRelayDashboard({
@@ -24,6 +25,7 @@ export function SharedRelayDashboard({
   runtimeState,
   performance,
   performanceError,
+  logs,
 }: SharedRelayDashboardProps) {
   const sharedService = config.sharedService || {};
   const defaults = sharedService.defaults || {};
@@ -123,6 +125,40 @@ export function SharedRelayDashboard({
         config={config}
         onChange={(sharedService) => onChange({ ...config, sharedService })}
       />
+
+      <section className="surface-card console-card">
+        <div className="section-head">
+          <h3>{t('consoleLogs')}</h3>
+          <span>{logs.length} lines</span>
+        </div>
+        <div className="log-container">
+          {logs.map((log, index) => (
+            <div
+              key={`${log.timestamp}-${index}`}
+              className={`log-entry log-${log.type}`}
+            >
+              <span className="log-time">
+                {new Date(log.timestamp).toLocaleTimeString()}
+              </span>
+              <span className="log-type">
+                [
+                {log.type === 'stdout'
+                  ? t('logStdout')
+                  : log.type === 'stderr'
+                    ? t('logStderr')
+                    : t('logSystem')}
+                ]
+              </span>
+              <span
+                className="log-message"
+                dangerouslySetInnerHTML={{
+                  __html: log.message.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

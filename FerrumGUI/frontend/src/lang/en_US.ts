@@ -139,6 +139,7 @@ export const en_US = {
   enableSharedServiceRelay: 'Enable shared service relay',
   relayOverview: 'Relay overview',
   relayControlEndpoint: 'Control endpoint',
+  controlBind: 'Control Bind Address',
   relayPublicRange: 'Public port range',
   relayAnonymousPolicy: 'Anonymous policy',
   relayTokenPolicy: 'Token policy',

@@ -141,6 +141,7 @@ export const ja_JP: Translation = {
   enableSharedServiceRelay: '共有サービスリレーを有効化',
   relayOverview: 'リレー概要',
   relayControlEndpoint: '制御エンドポイント',
+  controlBind: '制御バインドアドレス',
   relayPublicRange: '公開ポート範囲',
   relayAnonymousPolicy: '匿名接続ポリシー',
   relayTokenPolicy: 'トークンポリシー',

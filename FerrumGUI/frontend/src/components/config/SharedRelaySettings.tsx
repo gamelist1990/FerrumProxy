@@ -125,6 +125,14 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
         </div>
 
         <Input
+          label={t('controlBind')}
+          type="text"
+          value={sharedService.controlBind || '0.0.0.0:7000'}
+          onChange={(event) => updateShared({ controlBind: event.target.value })}
+          placeholder="0.0.0.0:7000"
+        />
+
+        <Input
           label={t('maxTcpConnections')}
           type="number"
           value={defaults.maxTcpConnections}

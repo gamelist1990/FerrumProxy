@@ -1054,6 +1054,7 @@ function App() {
                     runtimeState={getRuntimeState(selectedInstanceData)}
                     performance={performance}
                     performanceError={performanceError}
+                    logs={logs}
                   />
                 ) : (
                 <div className="workspace-grid">
