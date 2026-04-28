@@ -7,6 +7,7 @@ type ClientConfig = {
   token: string;
   tcpEnabled: boolean;
   udpEnabled: boolean;
+  localHost: string;
   tcpLocalPort: number;
   udpLocalPort: number;
   haproxy: boolean;
@@ -32,6 +33,7 @@ const defaultForm: ClientConfig = {
   token: "",
   tcpEnabled: true,
   udpEnabled: false,
+  localHost: "127.0.0.1",
   tcpLocalPort: 25565,
   udpLocalPort: 25565,
   haproxy: false,
@@ -92,8 +94,8 @@ function App() {
   };
 
   const protocols = [
-    form.tcpEnabled ? `TCP 127.0.0.1:${form.tcpLocalPort}` : null,
-    form.udpEnabled ? `UDP 127.0.0.1:${form.udpLocalPort}` : null,
+    form.tcpEnabled ? `TCP ${form.localHost || "127.0.0.1"}:${form.tcpLocalPort}` : null,
+    form.udpEnabled ? `UDP ${form.localHost || "127.0.0.1"}:${form.udpLocalPort}` : null,
   ].filter(Boolean);
   const canStart = form.relayAddress.trim() !== "" && protocols.length > 0;
 
@@ -153,6 +155,15 @@ function App() {
                 <span>UDP</span>
               </label>
             </div>
+
+            <label>
+              <span>Local IPv4 / host</span>
+              <input
+                value={form.localHost}
+                onChange={(event) => update("localHost", event.target.value)}
+                placeholder="127.0.0.1"
+              />
+            </label>
 
             <div className="port-grid">
               {form.tcpEnabled && (

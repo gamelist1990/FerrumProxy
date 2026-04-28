@@ -19,6 +19,8 @@ struct ClientConfig {
     token: String,
     tcp_enabled: bool,
     udp_enabled: bool,
+    #[serde(default = "default_local_host")]
+    local_host: String,
     tcp_local_port: u16,
     udp_local_port: u16,
     haproxy: bool,
@@ -31,11 +33,16 @@ impl Default for ClientConfig {
             token: String::new(),
             tcp_enabled: true,
             udp_enabled: false,
+            local_host: default_local_host(),
             tcp_local_port: 25565,
             udp_local_port: 25565,
             haproxy: false,
         }
     }
+}
+
+fn default_local_host() -> String {
+    "127.0.0.1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,10 +138,11 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
     } else {
         config.udp_local_port
     };
+    let local_host = normalized_local_host(&config.local_host);
     let target = if config.token.trim().is_empty() {
-        format!("127.0.0.1:{local_port}")
+        format!("{local_host}:{local_port}")
     } else {
-        format!("{}:127.0.0.1:{local_port}", config.token.trim())
+        format!("{}:{local_host}:{local_port}", config.token.trim())
     };
     let response = send_relay_command(&config.relay_address, &format!("CONNECT {target}\n"))?;
     let (host, port) = parse_connect_response(&response)?;
@@ -163,7 +171,7 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
         start_tcp_tunnel_pool(
             config.relay_address.clone(),
             port,
-            "127.0.0.1".to_string(),
+            local_host.clone(),
             config.tcp_local_port,
             stop.clone(),
         );
@@ -172,7 +180,7 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
         start_udp_tunnel(
             config.relay_address.clone(),
             port,
-            "127.0.0.1".to_string(),
+            local_host,
             config.udp_local_port,
             stop.clone(),
         );
@@ -187,6 +195,15 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
         stop,
     });
     Ok(session)
+}
+
+fn normalized_local_host(host: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        default_local_host()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[tauri::command]
