@@ -468,7 +468,7 @@ export class SharedServiceManager extends EventEmitter {
   }
 
   private requirePort(value: number | undefined, label: string): number {
-    if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
       throw new Error(`${label} must be a valid port`);
     }
     return value;
