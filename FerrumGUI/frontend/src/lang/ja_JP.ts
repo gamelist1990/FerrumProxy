@@ -137,6 +137,7 @@ export const ja_JP: Translation = {
   noListenersConfigured: 'リスナーが設定されていません',
   sharedServiceRelay: '共有サービスリレー',
   sharedRelayDedicatedMode: '共有サービスリレー専用画面',
+  relayStatus: 'リレーステータス',
   enableSharedServiceRelay: '共有サービスリレーを有効化',
   relayOverview: 'リレー概要',
   relayControlEndpoint: '制御エンドポイント',

@@ -1050,6 +1050,10 @@ function App() {
                     onChange={setConfig}
                     onSave={handleSaveConfig}
                     formatBytes={formatBytes}
+                    formatDuration={formatDuration}
+                    runtimeState={getRuntimeState(selectedInstanceData)}
+                    performance={performance}
+                    performanceError={performanceError}
                   />
                 ) : (
                 <div className="workspace-grid">

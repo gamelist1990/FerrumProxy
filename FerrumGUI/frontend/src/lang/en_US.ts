@@ -135,6 +135,7 @@ export const en_US = {
   noListenersConfigured: 'No listeners configured',
   sharedServiceRelay: 'Shared Service Relay',
   sharedRelayDedicatedMode: 'Shared Service Relay Console',
+  relayStatus: 'Relay status',
   enableSharedServiceRelay: 'Enable shared service relay',
   relayOverview: 'Relay overview',
   relayControlEndpoint: 'Control endpoint',

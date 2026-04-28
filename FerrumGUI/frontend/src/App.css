@@ -418,7 +418,8 @@
   overflow: hidden;
 }
 
-.performance-card {
+.performance-card,
+.shared-relay-status {
   display: grid;
   gap: 14px;
   padding-bottom: 14px;
@@ -435,7 +436,8 @@
   gap: 10px;
 }
 
-.performance-card > :not(.section-head) {
+.performance-card > :not(.section-head),
+.shared-relay-status > :not(.section-head) {
   margin-inline: 14px;
 }
 
@@ -507,6 +509,10 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.shared-relay-status {
+  background: color-mix(in srgb, var(--surface-soft) 80%, transparent);
 }
 
 .shared-relay-overview .metric-card strong {
@@ -618,7 +624,8 @@
 
   .performance-grid,
   .protocol-grid,
-  .shared-relay-overview {
+  .shared-relay-overview,
+  .shared-relay-status {
     grid-template-columns: 1fr;
   }
 

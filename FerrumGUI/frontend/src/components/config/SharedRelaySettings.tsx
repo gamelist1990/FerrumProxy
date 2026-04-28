@@ -169,6 +169,7 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
           <Switch
             label={t('enableWaitingQueue')}
             checked={queue.enabled ?? true}
+            className="ui-switch--stacked"
             onChange={(checked) => updateShared({ queue: { ...queue, enabled: checked } })}
           />
         </div>
