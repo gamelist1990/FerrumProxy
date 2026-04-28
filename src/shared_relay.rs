@@ -3,13 +3,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::bedrock::rewrite_unconnected_pong_ports;
@@ -17,15 +17,6 @@ use crate::config::SharedServiceConfig;
 use crate::runtime::AppRuntime;
 
 const BUFFER_SIZE: usize = 16 * 1024;
-const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-#[cfg(not(test))]
-const ABANDONED_SHARE_GRACE: Duration = Duration::from_secs(30);
-#[cfg(test)]
-const ABANDONED_SHARE_GRACE: Duration = Duration::from_millis(500);
-#[cfg(not(test))]
-const ABANDONED_SHARE_CHECK_INTERVAL: Duration = Duration::from_secs(10);
-#[cfg(test)]
-const ABANDONED_SHARE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct SharedRelayState {
     pub config: SharedServiceConfig,
@@ -35,7 +26,8 @@ pub struct SharedRelayState {
     pub tcp_tunnels: Arc<Mutex<HashMap<u16, VecDeque<TcpStream>>>>,
     pub udp_tunnels: Arc<Mutex<HashMap<u16, mpsc::Sender<UdpRelayPacket>>>>,
     pub udp_sockets: Arc<Mutex<HashMap<u16, Arc<UdpSocket>>>>,
-    pub tunnel_last_seen: Arc<Mutex<HashMap<u16, Instant>>>,
+    pub allocation_notify: Arc<Notify>,
+    pub waiting_clients: Arc<Mutex<usize>>,
     pub next_port: Arc<RwLock<u16>>,
 }
 
@@ -89,7 +81,8 @@ pub async fn start_shared_relay(
         tcp_tunnels: Arc::new(Mutex::new(HashMap::new())),
         udp_tunnels: Arc::new(Mutex::new(HashMap::new())),
         udp_sockets: Arc::new(Mutex::new(HashMap::new())),
-        tunnel_last_seen: Arc::new(Mutex::new(HashMap::new())),
+        allocation_notify: Arc::new(Notify::new()),
+        waiting_clients: Arc::new(Mutex::new(0)),
         next_port: Arc::new(RwLock::new(config.port_range.start)),
     });
 
@@ -122,7 +115,7 @@ async fn handle_control_connection(
     _runtime: Arc<AppRuntime>,
 ) -> Result<()> {
     let mut buf = [0u8; 4096];
-    let n = timeout(Duration::from_secs(5), stream.read(&mut buf)).await??;
+    let n = stream.read(&mut buf).await?;
 
     if n == 0 {
         return Ok(());
@@ -216,44 +209,10 @@ async fn handle_connect(
         }
     }
 
-    // Allocate a port
-    let port_range_start = config.port_range.start;
-    let port_range_end = config.port_range.end;
-    let port_range_size = (port_range_end - port_range_start + 1) as usize;
-
-    let mut port_allocations = state.port_allocations.write().await;
-    let random_offset = random_port_offset(port_range_size);
-    let mut allocated_port: Option<u16> = None;
-
-    for i in 0..port_range_size {
-        let candidate = port_range_start + ((random_offset + i) % port_range_size) as u16;
-        if !port_allocations.contains_key(&candidate) {
-            allocated_port = Some(candidate);
-            break;
-        }
-    }
-
-    let port = match allocated_port {
-        Some(p) => p,
-        None => return Ok("ERROR No available ports\n".to_string()),
+    let port = match allocate_or_wait_for_port(state, config, token.clone(), client_addr).await? {
+        Some(port) => port,
+        None => return Ok("ERROR Waiting queue full\n".to_string()),
     };
-
-    port_allocations.insert(
-        port,
-        PortAllocation {
-            port,
-            token: token.clone(),
-            client_addr,
-        },
-    );
-
-    drop(port_allocations);
-    state
-        .tunnel_last_seen
-        .lock()
-        .await
-        .insert(port, Instant::now());
-
     let _bind_addr = format!("{}:{}", config.public_bind, port);
     let public_host =
         public_host_for_response(&config.public_host, &config.control_bind, client_addr);
@@ -295,7 +254,6 @@ async fn handle_connect(
             warn!("Relay port {} stopped: {}", port, e);
         }
     });
-    tokio::spawn(cleanup_abandoned_share_port(port, Arc::clone(state)));
 
     Ok(format!("OK {port} {public_addr}\n"))
 }
@@ -339,6 +297,79 @@ fn random_port_offset(range_size: usize) -> usize {
     (mixed % range_size as u128) as usize
 }
 
+async fn allocate_or_wait_for_port(
+    state: &Arc<SharedRelayState>,
+    config: &SharedServiceConfig,
+    token: Option<String>,
+    client_addr: SocketAddr,
+) -> Result<Option<u16>> {
+    let queue_enabled = config.queue.enabled;
+    let queue_max_size = config.queue.max_size;
+    let mut queued = false;
+
+    loop {
+        if let Some(port) = try_allocate_port(state, config, token.clone(), client_addr).await {
+            if queued {
+                *state.waiting_clients.lock().await -= 1;
+                info!(
+                    "Dequeued shared relay client {}; allocated port {}",
+                    client_addr, port
+                );
+            }
+            return Ok(Some(port));
+        }
+
+        if !queue_enabled {
+            return Ok(None);
+        }
+
+        if !queued {
+            let mut waiting = state.waiting_clients.lock().await;
+            if *waiting >= queue_max_size {
+                return Ok(None);
+            }
+            *waiting += 1;
+            queued = true;
+            info!(
+                "Queued shared relay client {}; waiting={}/{}",
+                client_addr, *waiting, queue_max_size
+            );
+        }
+
+        state.allocation_notify.notified().await;
+    }
+}
+
+async fn try_allocate_port(
+    state: &Arc<SharedRelayState>,
+    config: &SharedServiceConfig,
+    token: Option<String>,
+    client_addr: SocketAddr,
+) -> Option<u16> {
+    let port_range_start = config.port_range.start;
+    let port_range_end = config.port_range.end;
+    let port_range_size = (port_range_end - port_range_start + 1) as usize;
+
+    let mut port_allocations = state.port_allocations.write().await;
+    let random_offset = random_port_offset(port_range_size);
+    for i in 0..port_range_size {
+        let candidate = port_range_start + ((random_offset + i) % port_range_size) as u16;
+        if !port_allocations.contains_key(&candidate) {
+            port_allocations.insert(
+                candidate,
+                PortAllocation {
+                    port: candidate,
+                    token: token.clone(),
+                    client_addr,
+                },
+            );
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +379,7 @@ mod tests {
     use crate::runtime::AppRuntime;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UdpSocket;
+    use tokio::time::timeout;
 
     #[tokio::test]
     async fn shared_relay_forwards_tcp_through_client_tunnel() -> Result<()> {
@@ -407,6 +439,9 @@ mod tests {
             tunnel
                 .write_all(format!("UDP_TUNNEL {allocated}\n").as_bytes())
                 .await?;
+            let mut ready = [0u8; 6];
+            tunnel.read_exact(&mut ready).await?;
+            assert_eq!(&ready, b"READY\n");
             let local = UdpSocket::bind("127.0.0.1:0").await?;
             let mut buf = vec![0u8; 65_507];
 
@@ -426,22 +461,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_relay_releases_port_after_client_tunnels_disappear() -> Result<()> {
-        let control_port = free_tcp_port().await?;
-        let public_port = free_dual_stack_port().await?;
-        let relay = spawn_test_relay(control_port, public_port);
-
-        let response = send_control(control_port, "CONNECT 127.0.0.1:19132\n").await?;
-        assert_eq!(parse_test_public_port(&response)?, public_port);
-
-        let stats = wait_for_released_port(control_port).await?;
-        assert!(stats.contains("ports=0"), "unexpected stats: {stats}");
-
-        relay.abort();
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn shared_relay_rewrites_bedrock_pong_to_public_udp_port() -> Result<()> {
         let control_port = free_tcp_port().await?;
         let public_port = free_dual_stack_port().await?;
@@ -457,6 +476,9 @@ mod tests {
             tunnel
                 .write_all(format!("UDP_TUNNEL {allocated}\n").as_bytes())
                 .await?;
+            let mut ready = [0u8; 6];
+            tunnel.read_exact(&mut ready).await?;
+            assert_eq!(&ready, b"READY\n");
 
             let (remote_addr, _) = read_udp_frame(&mut tunnel).await?;
             let pong = bedrock_pong_with_ports(19132);
@@ -535,21 +557,6 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).await?;
         Ok(response)
-    }
-
-    async fn wait_for_released_port(control_port: u16) -> Result<String> {
-        let started = tokio::time::Instant::now();
-        loop {
-            let stats = send_control(control_port, "STATS\n").await?;
-            if stats.contains("ports=0") {
-                return Ok(stats);
-            }
-            anyhow::ensure!(
-                started.elapsed() < Duration::from_secs(5),
-                "relay did not release abandoned port; last stats: {stats}"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
     }
 
     async fn tcp_roundtrip(port: u16, payload: &[u8]) -> Result<Vec<u8>> {
@@ -746,18 +753,13 @@ async fn handle_tcp_tunnel(
         .entry(port)
         .or_default()
         .push_back(stream);
-    state
-        .tunnel_last_seen
-        .lock()
-        .await
-        .insert(port, Instant::now());
     debug!("Queued client tunnel for relay port {}", port);
     Ok(())
 }
 
 async fn handle_udp_tunnel(
     request: &str,
-    stream: TcpStream,
+    mut stream: TcpStream,
     state: &Arc<SharedRelayState>,
 ) -> Result<()> {
     let parts: Vec<&str> = request.split_whitespace().collect();
@@ -780,12 +782,8 @@ async fn handle_udp_tunnel(
 
     let (tx, mut rx) = mpsc::channel::<UdpRelayPacket>(512);
     state.udp_tunnels.lock().await.insert(port, tx);
-    state
-        .tunnel_last_seen
-        .lock()
-        .await
-        .insert(port, Instant::now());
 
+    stream.write_all(b"READY\n").await?;
     let (mut reader, mut writer) = stream.into_split();
     let write_task = tokio::spawn(async move {
         while let Some(packet) = rx.recv().await {
@@ -891,7 +889,7 @@ async fn handle_release(
         state.tcp_tunnels.lock().await.remove(&port);
         state.udp_tunnels.lock().await.remove(&port);
         state.udp_sockets.lock().await.remove(&port);
-        state.tunnel_last_seen.lock().await.remove(&port);
+        state.allocation_notify.notify_one();
         info!("Released relay port {} by client request", port);
         Ok("OK Released\n".to_string())
     } else if port >= config.port_range.start && port <= config.port_range.end {
@@ -921,8 +919,8 @@ pub async fn start_relay_port(
     );
 
     loop {
-        match timeout(RELAY_IDLE_TIMEOUT, listener.accept()).await {
-            Ok(Ok((client_stream, client_addr))) => {
+        match listener.accept().await {
+            Ok((client_stream, client_addr)) => {
                 if !state.port_allocations.read().await.contains_key(&port) {
                     info!("Relay port {} released, stopping listener", port);
                     return Ok(());
@@ -937,18 +935,8 @@ pub async fn start_relay_port(
                     }
                 });
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 error!("Failed to accept on relay port {port}: {e}");
-            }
-            Err(_) => {
-                // Idle timeout — no connections for a while, clean up
-                info!("Relay port {} idle timeout, releasing", port);
-                state.port_allocations.write().await.remove(&port);
-                state.tcp_tunnels.lock().await.remove(&port);
-                state.udp_tunnels.lock().await.remove(&port);
-                state.udp_sockets.lock().await.remove(&port);
-                state.tunnel_last_seen.lock().await.remove(&port);
-                return Ok(());
             }
         }
     }
@@ -969,6 +957,7 @@ async fn start_udp_relay_port(
         let (len, remote_addr) = socket.recv_from(&mut buf).await?;
         if !state.port_allocations.read().await.contains_key(&port) {
             state.udp_sockets.lock().await.remove(&port);
+            state.allocation_notify.notify_one();
             return Ok(());
         }
 
@@ -987,71 +976,6 @@ async fn start_udp_relay_port(
             );
         }
     }
-}
-
-async fn cleanup_abandoned_share_port(port: u16, state: Arc<SharedRelayState>) {
-    loop {
-        tokio::time::sleep(ABANDONED_SHARE_CHECK_INTERVAL).await;
-
-        if !state.port_allocations.read().await.contains_key(&port) {
-            return;
-        }
-
-        prune_closed_tcp_tunnels(port, &state).await;
-
-        let has_tcp_tunnel = state
-            .tcp_tunnels
-            .lock()
-            .await
-            .get(&port)
-            .is_some_and(|queue| !queue.is_empty());
-        let has_udp_tunnel = state.udp_tunnels.lock().await.contains_key(&port);
-        if has_tcp_tunnel || has_udp_tunnel {
-            continue;
-        }
-
-        let last_seen = state.tunnel_last_seen.lock().await.get(&port).copied();
-        if last_seen.is_some_and(|seen| seen.elapsed() < ABANDONED_SHARE_GRACE) {
-            continue;
-        }
-
-        release_share_port(port, &state).await;
-        info!("Released abandoned relay port {}", port);
-        return;
-    }
-}
-
-async fn prune_closed_tcp_tunnels(port: u16, state: &Arc<SharedRelayState>) {
-    let mut tunnels = state.tcp_tunnels.lock().await;
-    let Some(queue) = tunnels.get_mut(&port) else {
-        return;
-    };
-
-    let mut kept = VecDeque::new();
-    while let Some(stream) = queue.pop_front() {
-        if tcp_tunnel_is_closed(&stream).await {
-            continue;
-        }
-        kept.push_back(stream);
-    }
-
-    *queue = kept;
-}
-
-async fn tcp_tunnel_is_closed(stream: &TcpStream) -> bool {
-    let mut buf = [0u8; 1];
-    matches!(
-        timeout(Duration::from_millis(1), stream.peek(&mut buf)).await,
-        Ok(Ok(0)) | Ok(Err(_))
-    )
-}
-
-async fn release_share_port(port: u16, state: &Arc<SharedRelayState>) {
-    state.port_allocations.write().await.remove(&port);
-    state.tcp_tunnels.lock().await.remove(&port);
-    state.udp_tunnels.lock().await.remove(&port);
-    state.udp_sockets.lock().await.remove(&port);
-    state.tunnel_last_seen.lock().await.remove(&port);
 }
 
 async fn relay_tcp_connection(
@@ -1113,7 +1037,6 @@ async fn relay_tcp_connection(
 }
 
 async fn wait_for_client_tunnel(port: u16, state: Arc<SharedRelayState>) -> Result<TcpStream> {
-    let started = tokio::time::Instant::now();
     loop {
         if let Some(stream) = state
             .tcp_tunnels
@@ -1125,10 +1048,6 @@ async fn wait_for_client_tunnel(port: u16, state: Arc<SharedRelayState>) -> Resu
             return Ok(stream);
         }
 
-        if started.elapsed() >= Duration::from_secs(15) {
-            anyhow::bail!("no client tunnel available for relay port {port}");
-        }
-
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
@@ -1137,16 +1056,12 @@ async fn wait_for_ready_client_tunnel(
     port: u16,
     state: Arc<SharedRelayState>,
 ) -> Result<TcpStream> {
-    let started = tokio::time::Instant::now();
     loop {
         let mut stream = wait_for_client_tunnel(port, Arc::clone(&state)).await?;
         match stream.write_all(b"START\n").await {
             Ok(()) => return Ok(stream),
             Err(err) => {
                 debug!("Discarded stale client tunnel for relay port {port}: {err}");
-                if started.elapsed() >= Duration::from_secs(15) {
-                    anyhow::bail!("no ready client tunnel available for relay port {port}");
-                }
             }
         }
     }

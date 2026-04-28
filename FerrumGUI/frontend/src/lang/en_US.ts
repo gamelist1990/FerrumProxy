@@ -151,11 +151,8 @@ export const en_US = {
   maxTcpConnections: 'Max TCP connections',
   maxUdpPeers: 'Max UDP peers',
   bandwidthBytesPerSecond: 'Bandwidth bytes/sec',
-  tcpIdleTimeoutSeconds: 'TCP idle timeout seconds',
-  udpSessionTimeoutSeconds: 'UDP session timeout seconds',
   waitingQueue: 'Waiting queue',
-  enableWaitingQueue: 'Put anonymous users into a waiting queue when limits are full',
-  maxQueueSize: 'Max queue size',
+  maxQueueSize: 'Max waiting shares',
   accessTokens: 'Access tokens',
   issueToken: 'Issue token',
   tokenName: 'Token name',
@@ -167,7 +164,6 @@ export const en_US = {
   tokenMaxUdp: 'Token max UDP',
   removeToken: 'Remove token',
   priorityAccess: 'Priority access',
-  anonymousUsersQueued: 'Anonymous users wait in the queue when TCP or UDP limits are full. Token users are handled first by priority.',
 };
 
 export type Translation = typeof en_US;

@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State, WindowEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,6 +208,10 @@ fn normalized_local_host(host: &str) -> String {
 
 #[tauri::command]
 fn stop_sharing(state: State<ClientState>) -> Result<(), String> {
+    stop_active_sharing(&state)
+}
+
+fn stop_active_sharing(state: &ClientState) -> Result<(), String> {
     let mut current = state
         .session
         .lock()
@@ -260,9 +264,14 @@ fn run_udp_tunnel(
     tunnel
         .write_all(format!("UDP_TUNNEL {public_port}\n").as_bytes())
         .map_err(|err| format!("failed to register UDP tunnel: {err}"))?;
+
+    let mut ready = [0u8; 6];
     tunnel
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|err| err.to_string())?;
+        .read_exact(&mut ready)
+        .map_err(|err| format!("failed to wait for UDP tunnel readiness: {err}"))?;
+    if &ready != b"READY\n" {
+        return Err("relay rejected UDP tunnel readiness".to_string());
+    }
 
     let local = UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?;
     local
@@ -518,6 +527,12 @@ fn probe_tcp_endpoint(address: &str, timeout: Duration) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .manage(ClientState::default())
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                let state = window.state::<ClientState>();
+                let _ = stop_active_sharing(&state);
+            }
+        })
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             shared_client_runtime,

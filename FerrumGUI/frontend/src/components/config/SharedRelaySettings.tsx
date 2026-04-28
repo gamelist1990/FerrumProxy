@@ -15,8 +15,6 @@ const defaultLimits: SharedServiceLimits = {
   maxTcpConnections: 32,
   maxUdpPeers: 64,
   maxBytesPerSecond: 10 * 1024 * 1024,
-  idleTimeoutSeconds: 120,
-  udpSessionTimeoutSeconds: 60,
 };
 
 const generateToken = () => {
@@ -165,40 +163,13 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
         />
 
         <Input
-          label={t('tcpIdleTimeoutSeconds')}
-          type="number"
-          value={defaults.idleTimeoutSeconds}
-          onChange={(event) => updateLimit('idleTimeoutSeconds', toPositiveInt(event.target.value, defaults.idleTimeoutSeconds))}
-          min="1"
-        />
-
-        <Input
-          label={t('udpSessionTimeoutSeconds')}
-          type="number"
-          value={defaults.udpSessionTimeoutSeconds}
-          onChange={(event) => updateLimit('udpSessionTimeoutSeconds', toPositiveInt(event.target.value, defaults.udpSessionTimeoutSeconds))}
-          min="1"
-        />
-
-        <div className="flex flex-col gap-4 pt-2">
-          <Switch
-            label={t('enableWaitingQueue')}
-            checked={queue.enabled ?? true}
-            className="ui-switch--stacked"
-            onChange={(checked) => updateShared({ queue: { ...queue, enabled: checked } })}
-          />
-        </div>
-
-        <Input
           label={t('maxQueueSize')}
           type="number"
           value={queue.maxSize}
-          onChange={(event) => updateShared({ queue: { ...queue, maxSize: toPositiveInt(event.target.value, queue.maxSize || 128) } })}
-          min="1"
+          onChange={(event) => updateShared({ queue: { ...queue, enabled: true, maxSize: toPositiveInt(event.target.value, queue.maxSize || 128) } })}
+          min="0"
         />
       </div>
-
-      <p className="ui-help-text">{t('anonymousUsersQueued')}</p>
 
       {tokens.length > 0 && (
         <div className="token-list">

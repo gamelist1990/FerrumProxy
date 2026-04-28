@@ -153,11 +153,8 @@ export const ja_JP: Translation = {
   maxTcpConnections: '最大TCP接続数',
   maxUdpPeers: '最大UDPピア数',
   bandwidthBytesPerSecond: '帯域上限 bytes/sec',
-  tcpIdleTimeoutSeconds: 'TCPアイドルタイムアウト秒',
-  udpSessionTimeoutSeconds: 'UDPセッションタイムアウト秒',
   waitingQueue: '待機列',
-  enableWaitingQueue: '上限到達時に匿名ユーザーを待機列へ入れる',
-  maxQueueSize: '最大待機数',
+  maxQueueSize: '最大待機共有数',
   accessTokens: 'アクセストークン',
   issueToken: 'トークン発行',
   tokenName: 'トークン名',
@@ -169,5 +166,4 @@ export const ja_JP: Translation = {
   tokenMaxUdp: 'トークン最大UDP',
   removeToken: 'トークン削除',
   priorityAccess: '優先接続',
-  anonymousUsersQueued: 'TCP/UDPの上限到達時、匿名ユーザーは待機列に入り、トークン利用者は優先度順に先に処理されます。',
 };

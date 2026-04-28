@@ -113,12 +113,12 @@ export function SharedRelayDashboard({
           </strong>
         </article>
         <article className="metric-card">
-          <span>{t('waitingQueue')}</span>
-          <strong>{queue.enabled ? queue.maxSize : 'Off'}</strong>
-        </article>
-        <article className="metric-card">
           <span>{t('accessTokens')}</span>
           <strong>{tokenCount}</strong>
+        </article>
+        <article className="metric-card">
+          <span>{t('waitingQueue')}</span>
+          <strong>{queue.maxSize}</strong>
         </article>
         <article className="metric-card">
           <span>{t('bandwidthBytesPerSecond')}</span>

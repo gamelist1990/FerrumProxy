@@ -110,8 +110,6 @@ export interface SharedServiceLimits {
   maxTcpConnections: number;
   maxUdpPeers: number;
   maxBytesPerSecond: number;
-  idleTimeoutSeconds: number;
-  udpSessionTimeoutSeconds: number;
 }
 
 export interface SharedServiceQueueConfig {
