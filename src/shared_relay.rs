@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,7 +15,6 @@ use crate::config::SharedServiceConfig;
 use crate::runtime::AppRuntime;
 
 const BUFFER_SIZE: usize = 16 * 1024;
-const CONTROL_PORT_OFFSET: u16 = 10000;
 
 pub struct SharedRelayState {
     pub config: SharedServiceConfig,
@@ -226,7 +227,6 @@ pub async fn start_relay_port(
             Ok((client_stream, client_addr)) => {
                 let target_host = target_host.clone();
                 let target_port = target_port;
-                let token = token.clone();
                 tokio::spawn(async move {
                     if let Err(e) = relay_tcp_connection(client_stream, client_addr, &target_host, target_port).await {
                         debug!("Relay error: {}", e);
