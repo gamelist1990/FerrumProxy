@@ -140,6 +140,7 @@ export const en_US = {
   relayOverview: 'Relay overview',
   relayControlEndpoint: 'Control endpoint',
   controlBind: 'Control Bind Address',
+  publicHost: 'Public host',
   relayPublicRange: 'Public port range',
   relayAnonymousPolicy: 'Anonymous policy',
   relayTokenPolicy: 'Token policy',

@@ -142,6 +142,7 @@ export const ja_JP: Translation = {
   relayOverview: 'リレー概要',
   relayControlEndpoint: '制御エンドポイント',
   controlBind: '制御バインドアドレス',
+  publicHost: '公開ホスト',
   relayPublicRange: '公開ポート範囲',
   relayAnonymousPolicy: '匿名接続ポリシー',
   relayTokenPolicy: 'トークンポリシー',

@@ -247,7 +247,9 @@ async fn handle_connect(
     *state.next_port.write().await = new_next;
 
     let _bind_addr = format!("{}:{}", config.public_bind, port);
-    let public_addr = format!("{}:{}", config.public_host, port);
+    let public_host =
+        public_host_for_response(&config.public_host, &config.control_bind, client_addr);
+    let public_addr = format!("{public_host}:{port}");
 
     info!(
         "Allocated relay port {} for {} -> {}:{} (client: {})",
@@ -287,6 +289,32 @@ async fn handle_connect(
     });
 
     Ok(format!("OK {port} {public_addr}\n"))
+}
+
+fn public_host_for_response(
+    configured_public_host: &str,
+    control_bind: &str,
+    client_addr: SocketAddr,
+) -> String {
+    let configured = configured_public_host.trim();
+    if !configured.is_empty() && !is_loopback_or_unspecified_host(configured) {
+        return configured.to_string();
+    }
+
+    let control_host = control_bind
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim_matches(['[', ']']))
+        .unwrap_or(control_bind)
+        .trim();
+    if !control_host.is_empty() && !is_loopback_or_unspecified_host(control_host) {
+        return control_host.to_string();
+    }
+
+    client_addr.ip().to_string()
+}
+
+fn is_loopback_or_unspecified_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "0.0.0.0" | "::1" | "::")
 }
 
 async fn handle_udp_associate(

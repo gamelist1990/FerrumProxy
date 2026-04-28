@@ -95,6 +95,10 @@ export function SharedRelayDashboard({
           <strong>{sharedService.controlBind || '0.0.0.0:7000'}</strong>
         </article>
         <article className="metric-card">
+          <span>{t('publicHost')}</span>
+          <strong>{sharedService.publicHost || 'Auto'}</strong>
+        </article>
+        <article className="metric-card">
           <span>{t('relayPublicRange')}</span>
           <strong>
             {portRange.start}-{portRange.end}

@@ -215,7 +215,7 @@ sharedService:
   enabled: false
   controlBind: 0.0.0.0:7000
   publicBind: 0.0.0.0
-  publicHost: 127.0.0.1
+  publicHost: ""
   portRange:
     start: 40000
     end: 49999
@@ -443,7 +443,7 @@ fn default_shared_public_bind() -> String {
 }
 
 fn default_shared_public_host() -> String {
-    "127.0.0.1".to_string()
+    String::new()
 }
 
 fn default_shared_port_range() -> SharedServicePortRange {

@@ -133,6 +133,14 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
         />
 
         <Input
+          label={t('publicHost')}
+          type="text"
+          value={sharedService.publicHost || ''}
+          onChange={(event) => updateShared({ publicHost: event.target.value })}
+          placeholder="xxx.xxx.xxx.xxx"
+        />
+
+        <Input
           label={t('maxTcpConnections')}
           type="number"
           value={defaults.maxTcpConnections}
