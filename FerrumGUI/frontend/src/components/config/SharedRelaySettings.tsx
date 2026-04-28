@@ -46,7 +46,6 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
 
   const updateShared = (updates: FerrumProxyConfig['sharedService']) => {
     onChange({
-      enabled: false,
       ...sharedService,
       ...updates,
       publicBind: '0.0.0.0',
