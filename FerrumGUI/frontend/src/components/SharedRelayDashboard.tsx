@@ -1,6 +1,7 @@
 import type { FerrumProxyConfig, LogEntry, PerformanceMetrics } from '../api';
 import { t } from '../lang';
 import { SharedRelaySettings } from './config/SharedRelaySettings';
+import { formatLogMessage } from '../utils/ansi';
 
 type RuntimeState = 'initializing' | 'running' | 'stopped';
 
@@ -152,7 +153,7 @@ export function SharedRelayDashboard({
               <span
                 className="log-message"
                 dangerouslySetInnerHTML={{
-                  __html: log.message.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+                  __html: formatLogMessage(log.message),
                 }}
               />
             </div>

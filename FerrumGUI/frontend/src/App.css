@@ -568,6 +568,24 @@
 .log-message {
   white-space: pre-wrap;
   word-break: break-word;
+  line-height: 1.5;
+}
+
+.log-message .level-error {
+  color: #ff6b6b;
+  font-weight: 600;
+}
+
+.log-message .level-warn {
+  color: #ffd93d;
+}
+
+.log-message .level-info {
+  color: #6bcf6b;
+}
+
+.log-message .level-debug {
+  color: #74c0fc;
 }
 
 .empty-state {

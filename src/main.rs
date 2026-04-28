@@ -5,6 +5,7 @@ mod http_rewrite;
 mod management_api;
 mod proxy_protocol;
 mod runtime;
+mod shared_relay;
 mod tcp;
 mod tls_config;
 mod udp;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use tokio::task::JoinSet;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -129,6 +130,14 @@ async fn main() -> Result<()> {
                 best_priority,
                 highest_token_bandwidth,
             );
+
+            let shared_config = shared_service.clone();
+            let runtime = Arc::clone(&runtime);
+            tasks.spawn(async move {
+                if let Err(err) = shared_relay::start_shared_relay(shared_config, runtime).await {
+                    error!("Shared relay stopped: {err:#}");
+                }
+            });
         }
     }
 
