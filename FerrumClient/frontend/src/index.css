@@ -1,11 +1,17 @@
 :root {
-  font-family: Inter, "Segoe UI", system-ui, sans-serif;
-  color: #18201d;
-  background: #eef2ef;
+  font-family: "Segoe UI", sans-serif;
+  color: #1d1d1d;
+  background: #ffffff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  scrollbar-width: none;
+}
+
+html {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 * {
@@ -20,7 +26,13 @@ body,
 
 body {
   margin: 0;
-  background: #eef2ef;
+  background: #ffffff;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+body::-webkit-scrollbar {
+  display: none;
 }
 
 button,

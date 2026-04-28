@@ -1,29 +1,31 @@
 .client-shell {
   min-height: 100vh;
   display: grid;
-  align-items: start;
-  padding: 6px;
-  color: #18201d;
+  justify-items: center;
+  align-content: start;
+  padding: 0;
+  color: #1d1d1d;
+  background: #ffffff;
 }
 
 .client-panel {
   width: 100%;
   display: grid;
-  gap: 8px;
-  border: 1px solid #d9ded8;
-  border-radius: 8px;
-  background: #fbfcfb;
-  padding: 10px;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #cfcfcf;
+  border-radius: 0;
+  background: #ffffff;
   box-shadow: none;
 }
 
 .client-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
-  padding-bottom: 7px;
-  border-bottom: 1px solid #e6e9e5;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #d6d6d6;
 }
 
 .client-header p,
@@ -33,184 +35,220 @@
 }
 
 .client-header p {
-  color: #69736d;
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
+  color: #5f5f5f;
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
 .client-header h1 {
-  margin-top: 1px;
-  font-size: 1.12rem;
-  line-height: 1.1;
+  margin-top: 2px;
+  font-size: 1.2rem;
+  line-height: 1.2;
+  font-weight: 600;
 }
 
 .status {
-  min-width: 92px;
-  min-height: 28px;
+  min-width: 96px;
+  min-height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #d9ded8;
-  border-radius: 8px;
-  background: #f3f5f2;
-  color: #69736d;
-  font-size: 0.76rem;
-  font-weight: 700;
+  padding: 0 12px;
+  border: 1px solid #b7b7b7;
+  border-radius: 0;
+  background: #f7f7f7;
+  color: #4a4a4a;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .status.running {
-  border-color: #b7dec6;
-  background: #edf8f1;
-  color: #217344;
+  border-color: #7fa9d9;
+  background: #e9f2ff;
+  color: #0b5cad;
+}
+
+.status.stopped {
+  background: #f7f7f7;
 }
 
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
 }
 
 .form-section {
   display: grid;
-  align-content: start;
-  gap: 6px;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #d6d6d6;
+  border-radius: 0;
+  background: #fafafa;
 }
 
 .form-section h2 {
-  font-size: 0.86rem;
+  color: #333333;
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 
 label {
   display: grid;
-  gap: 4px;
-  color: #69736d;
-  font-size: 0.72rem;
-  font-weight: 700;
+  gap: 5px;
+  color: #4a4a4a;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 input {
   width: 100%;
-  min-height: 34px;
-  border: 1px solid #d9ded8;
-  border-radius: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #bdbdbd;
+  border-radius: 0;
   background: #ffffff;
-  color: #18201d;
-  padding: 0 9px;
+  color: #1d1d1d;
   font: inherit;
+  transition: border-color 0.12s ease, outline-color 0.12s ease;
+}
+
+input::placeholder {
+  color: #9a9a9a;
 }
 
 input:focus {
-  border-color: #5f8f78;
-  outline: 2px solid rgba(95, 143, 120, 0.16);
+  border-color: #0b5cad;
+  outline: 1px solid #0b5cad;
+  outline-offset: 1px;
+  box-shadow: none;
 }
 
 .segmented {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
 }
 
 .segmented label,
 .check-row {
-  min-height: 34px;
+  min-height: 36px;
   display: flex;
   align-items: center;
-  gap: 7px;
-  border: 1px solid #d9ded8;
-  border-radius: 8px;
-  background: #f6f8f6;
-  padding: 0 9px;
-  color: #34413a;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid #bdbdbd;
+  border-radius: 0;
+  background: #ffffff;
+  color: #1d1d1d;
+  cursor: pointer;
+}
+
+.segmented label:hover,
+.check-row:hover {
+  background: #f2f6fb;
+  border-color: #99b8dd;
 }
 
 .segmented input,
 .check-row input {
-  width: 15px;
-  min-height: 15px;
-  accent-color: #2f7352;
+  width: 16px;
+  min-height: 16px;
+  accent-color: #0b5cad;
+  cursor: pointer;
 }
 
 .port-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
-  max-width: 160px;
 }
 
 .summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  border-top: 1px solid #e6e9e5;
-  padding-top: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
 }
 
 .summary div {
   min-width: 0;
-  border: 1px solid #e0e4df;
-  border-radius: 8px;
-  background: #f6f8f6;
-  padding: 7px;
+  padding: 10px 12px;
+  border: 1px solid #d6d6d6;
+  border-radius: 0;
+  background: #ffffff;
 }
 
 .summary span {
   display: block;
-  color: #69736d;
-  font-size: 0.66rem;
-  font-weight: 700;
-  text-transform: uppercase;
+  color: #666666;
+  font-size: 0.68rem;
+  font-weight: 600;
 }
 
 .summary strong {
   display: block;
-  margin-top: 4px;
+  margin-top: 5px;
   overflow: hidden;
-  color: #18201d;
-  font-size: 0.8rem;
+  color: #1d1d1d;
+  font-size: 0.85rem;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .start-button {
-  min-height: 36px;
-  border: 1px solid #1f5f43;
-  border-radius: 8px;
-  background: #1f5f43;
-  color: #ffffff;
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #a8a8a8;
+  border-radius: 0;
+  background: #f2f2f2;
+  color: #1d1d1d;
   font: inherit;
-  font-weight: 800;
+  font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.start-button:hover:not(:disabled) {
+  background: #e7e7e7;
+}
+
+.start-button:active:not(:disabled) {
+  background: #dcdcdc;
 }
 
 .start-button.stop {
-  border-color: #a83f3f;
-  background: #a83f3f;
+  border-color: #8f3a3a;
+  background: #c94b4b;
+  color: #ffffff;
+}
+
+.start-button.stop:hover:not(:disabled) {
+  background: #b94040;
 }
 
 .start-button:disabled {
-  border-color: #d9ded8;
-  background: #e8ebe7;
-  color: #89918c;
+  border-color: #d1d1d1;
+  background: #efefef;
+  color: #9a9a9a;
   cursor: not-allowed;
 }
 
-@media (max-width: 680px) {
+@media (max-width: 780px) {
   .client-shell {
-    padding: 6px;
+    padding: 0;
   }
 
-  .client-header,
-  .form-grid,
-  .port-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .client-panel {
+    padding: 10px;
   }
 
   .client-header {
-    display: grid;
+    flex-direction: column;
+  }
+
+  .status {
+    align-self: flex-start;
   }
 }

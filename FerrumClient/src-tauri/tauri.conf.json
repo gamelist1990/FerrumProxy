@@ -13,10 +13,11 @@
     "windows": [
       {
         "title": "FerrumProxy Client",
-        "width": 620,
+        "width": 820,
         "height": 420,
         "minWidth": 560,
-        "minHeight": 360
+        "minHeight": 360,
+        "resizable": false
       }
     ],
     "security": {
