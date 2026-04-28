@@ -2,6 +2,27 @@ endpoint: 6000
 useRestApi: false
 savePlayerIP: true
 debug: false
+sharedService:
+  enabled: false
+  controlBind: 0.0.0.0:7000
+  publicBind: 0.0.0.0
+  publicHost: 127.0.0.1
+  portRange:
+    start: 40000
+    end: 49999
+  authTokens: []
+  defaults:
+    maxTcpConnections: 32
+    maxUdpPeers: 64
+    maxBytesPerSecond: 10485760
+    idleTimeoutSeconds: 120
+    udpSessionTimeoutSeconds: 60
+  maximums:
+    maxTcpConnections: 256
+    maxUdpPeers: 512
+    maxBytesPerSecond: 104857600
+    idleTimeoutSeconds: 3600
+    udpSessionTimeoutSeconds: 600
 listeners:
   - bind: 0.0.0.0
     tcp: 25565

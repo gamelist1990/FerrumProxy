@@ -12,6 +12,8 @@
 - **認証機能** - パスワード保護でセキュアに管理
 - **多言語対応** - 日本語・英語に対応
 - **ダーク/ライトモード** - テーマ切り替え対応
+- **共有サービス** - TCP/UDP の片方または両方を一時ポートで公開し、同時接続数、帯域、ログ、idle timeout を管理
+- **Tauriクライアント** - React UIをデスクトップアプリとしてビルド可能
 
 ## 必要な環境
 
@@ -132,6 +134,18 @@ bun run build:all
 4. GUIから直接PEMファイルをアップロードする場合は、証明書PEMと秘密鍵PEMを選んで `TLSファイルをアップロード` を押す
 5. 保存後に FerrumProxy を再起動
 
+### 共有サービス
+
+上部の「共有サービス」を押すと、通常のインスタンス管理画面から共有サービスUIへ切り替わります。
+
+1. `Public host` に他ユーザーへ案内するIPまたはホスト名を入力
+2. TCP、UDP、または両方を選択
+3. ローカルアプリケーションのポートを指定
+4. 同時接続数、UDP peer数、帯域制限、idle timeout を設定
+5. `Start` を押すと一時的な公開 `host:port` が発行されます
+
+公開ポートは共有停止時に解放されます。永続予約は行いません。
+
 
 ## トラブルシューティング
 
@@ -175,4 +189,3 @@ MIT License
 **関連リンク**
 - [FerrumProxy本体](https://github.com/gamelist1990/FerrumProxy)
 - [FerrumProxyリリース](https://github.com/gamelist1990/FerrumProxy/releases)
-

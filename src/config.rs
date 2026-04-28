@@ -22,7 +22,54 @@ pub struct ProxyConfig {
     pub save_player_ip: bool,
     #[serde(default)]
     pub debug: bool,
+    #[serde(default)]
+    pub shared_service: Option<SharedServiceConfig>,
     pub listeners: Vec<ListenerRule>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedServiceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_shared_control_bind")]
+    pub control_bind: String,
+    #[serde(default = "default_shared_public_bind")]
+    pub public_bind: String,
+    #[serde(default = "default_shared_public_host")]
+    pub public_host: String,
+    #[serde(default = "default_shared_port_range")]
+    pub port_range: SharedServicePortRange,
+    #[serde(default)]
+    pub auth_tokens: Vec<String>,
+    #[serde(default)]
+    pub defaults: SharedServiceLimits,
+    #[serde(default)]
+    pub maximums: SharedServiceLimits,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedServicePortRange {
+    #[serde(default = "default_shared_port_start")]
+    pub start: u16,
+    #[serde(default = "default_shared_port_end")]
+    pub end: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedServiceLimits {
+    #[serde(default = "default_max_tcp_connections")]
+    pub max_tcp_connections: usize,
+    #[serde(default = "default_max_udp_peers")]
+    pub max_udp_peers: usize,
+    #[serde(default = "default_max_bytes_per_second")]
+    pub max_bytes_per_second: u64,
+    #[serde(default = "default_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+    #[serde(default = "default_udp_session_timeout_seconds")]
+    pub udp_session_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -135,6 +182,27 @@ fn default_config_text() -> &'static str {
 useRestApi: false
 savePlayerIP: true
 debug: false
+sharedService:
+  enabled: false
+  controlBind: 0.0.0.0:7000
+  publicBind: 0.0.0.0
+  publicHost: 127.0.0.1
+  portRange:
+    start: 40000
+    end: 49999
+  authTokens: []
+  defaults:
+    maxTcpConnections: 32
+    maxUdpPeers: 64
+    maxBytesPerSecond: 10485760
+    idleTimeoutSeconds: 120
+    udpSessionTimeoutSeconds: 60
+  maximums:
+    maxTcpConnections: 256
+    maxUdpPeers: 512
+    maxBytesPerSecond: 104857600
+    idleTimeoutSeconds: 3600
+    udpSessionTimeoutSeconds: 600
 listeners:
   - bind: 0.0.0.0
     tcp: 8000
@@ -300,6 +368,71 @@ fn default_save_player_ip() -> bool {
 
 fn default_rewrite_bedrock_pong_ports() -> bool {
     true
+}
+
+impl Default for SharedServicePortRange {
+    fn default() -> Self {
+        Self {
+            start: default_shared_port_start(),
+            end: default_shared_port_end(),
+        }
+    }
+}
+
+impl Default for SharedServiceLimits {
+    fn default() -> Self {
+        Self {
+            max_tcp_connections: default_max_tcp_connections(),
+            max_udp_peers: default_max_udp_peers(),
+            max_bytes_per_second: default_max_bytes_per_second(),
+            idle_timeout_seconds: default_idle_timeout_seconds(),
+            udp_session_timeout_seconds: default_udp_session_timeout_seconds(),
+        }
+    }
+}
+
+fn default_shared_control_bind() -> String {
+    "0.0.0.0:7000".to_string()
+}
+
+fn default_shared_public_bind() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_shared_public_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_shared_port_range() -> SharedServicePortRange {
+    SharedServicePortRange::default()
+}
+
+fn default_shared_port_start() -> u16 {
+    40000
+}
+
+fn default_shared_port_end() -> u16 {
+    49999
+}
+
+fn default_max_tcp_connections() -> usize {
+    32
+}
+
+fn default_max_udp_peers() -> usize {
+    64
+}
+
+fn default_max_bytes_per_second() -> u64 {
+    10 * 1024 * 1024
+}
+
+fn default_idle_timeout_seconds() -> u64 {
+    120
+}
+
+fn default_udp_session_timeout_seconds() -> u64 {
+    60
 }
 
 fn default_true() -> bool {

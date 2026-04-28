@@ -71,6 +71,30 @@ async fn main() -> Result<()> {
         });
     }
 
+    if let Some(shared_service) = &cfg.shared_service {
+        if shared_service.enabled {
+            info!(
+                "Shared service config enabled: control_bind={}, public_bind={}, public_host={}, port_range={}-{}, defaults(max_tcp_connections={}, max_udp_peers={}, max_bytes_per_second={}, idle_timeout_seconds={}, udp_session_timeout_seconds={}), maximums(max_tcp_connections={}, max_udp_peers={}, max_bytes_per_second={}, idle_timeout_seconds={}, udp_session_timeout_seconds={}), tokens={}",
+                shared_service.control_bind,
+                shared_service.public_bind,
+                shared_service.public_host,
+                shared_service.port_range.start,
+                shared_service.port_range.end,
+                shared_service.defaults.max_tcp_connections,
+                shared_service.defaults.max_udp_peers,
+                shared_service.defaults.max_bytes_per_second,
+                shared_service.defaults.idle_timeout_seconds,
+                shared_service.defaults.udp_session_timeout_seconds,
+                shared_service.maximums.max_tcp_connections,
+                shared_service.maximums.max_udp_peers,
+                shared_service.maximums.max_bytes_per_second,
+                shared_service.maximums.idle_timeout_seconds,
+                shared_service.maximums.udp_session_timeout_seconds,
+                shared_service.auth_tokens.len(),
+            );
+        }
+    }
+
     for rule in cfg.listeners {
         if rule.tcp.is_some() && rule.has_targets_for(config::Protocol::Tcp) {
             let rule = Arc::new(rule.clone());

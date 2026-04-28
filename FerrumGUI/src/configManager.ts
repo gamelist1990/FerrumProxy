@@ -9,6 +9,31 @@ export interface FerrumProxyConfig {
   useRestApi?: boolean;
   savePlayerIP?: boolean;
   debug?: boolean;
+  sharedService?: {
+    enabled?: boolean;
+    controlBind?: string;
+    publicBind?: string;
+    publicHost?: string;
+    portRange?: {
+      start?: number;
+      end?: number;
+    };
+    authTokens?: string[];
+    defaults?: {
+      maxTcpConnections?: number;
+      maxUdpPeers?: number;
+      maxBytesPerSecond?: number;
+      idleTimeoutSeconds?: number;
+      udpSessionTimeoutSeconds?: number;
+    };
+    maximums?: {
+      maxTcpConnections?: number;
+      maxUdpPeers?: number;
+      maxBytesPerSecond?: number;
+      idleTimeoutSeconds?: number;
+      udpSessionTimeoutSeconds?: number;
+    };
+  };
   listeners?: Array<{
     bind?: string;
     tcp?: number;
@@ -108,6 +133,37 @@ export class ConfigManager extends EventEmitter {
     if (config.endpoint !== undefined) {
       if (typeof config.endpoint !== 'number' || config.endpoint < 1 || config.endpoint > 65535) {
         errors.push('endpoint must be a valid port number (1-65535)');
+      }
+    }
+
+    const validatePositiveLimit = (value: unknown, path: string) => {
+      if (value !== undefined && (!Number.isInteger(value) || Number(value) < 1)) {
+        errors.push(`${path} must be a positive integer`);
+      }
+    };
+
+    if (config.sharedService) {
+      const shared = config.sharedService;
+      if (shared.portRange) {
+        validatePositiveLimit(shared.portRange.start, 'sharedService.portRange.start');
+        validatePositiveLimit(shared.portRange.end, 'sharedService.portRange.end');
+        if (
+          typeof shared.portRange.start === 'number' &&
+          typeof shared.portRange.end === 'number' &&
+          shared.portRange.start > shared.portRange.end
+        ) {
+          errors.push('sharedService.portRange.start must be less than or equal to end');
+        }
+      }
+
+      for (const groupName of ['defaults', 'maximums'] as const) {
+        const group = shared[groupName];
+        if (!group) continue;
+        validatePositiveLimit(group.maxTcpConnections, `sharedService.${groupName}.maxTcpConnections`);
+        validatePositiveLimit(group.maxUdpPeers, `sharedService.${groupName}.maxUdpPeers`);
+        validatePositiveLimit(group.maxBytesPerSecond, `sharedService.${groupName}.maxBytesPerSecond`);
+        validatePositiveLimit(group.idleTimeoutSeconds, `sharedService.${groupName}.idleTimeoutSeconds`);
+        validatePositiveLimit(group.udpSessionTimeoutSeconds, `sharedService.${groupName}.udpSessionTimeoutSeconds`);
       }
     }
 

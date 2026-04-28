@@ -83,6 +83,12 @@ On Windows:
 - Player connection buffering and player IP persistence in `playerIP.json`
 - Debug logging via `debug: true`
 
+## Shared Service Mode
+
+FerrumProxyGUI includes a shared-service mode for temporarily exposing local TCP and/or UDP applications. TCP and UDP can be enabled independently or together, public ports are temporary, and the service tracks connection limits, bandwidth limits, structured logs, and idle timeout handling. A Tauri desktop client scaffold and GitHub Actions release workflow are included for building the client app.
+
+See [`docs/shared-service-design.md`](docs/shared-service-design.md) for the current design.
+
 ## FerrumProxyGUI
 
 FerrumProxyGUI lives in `FerrumGUI`.
@@ -208,6 +214,12 @@ Windows の場合:
 - `/api/login`, `/api/logout`, `/api/players` REST 管理 API
 - プレイヤー接続バッファと `playerIP.json` への IP 保存
 - `debug: true` によるデバッグログ
+
+## 共有サービスモード
+
+FerrumProxyGUI には、ローカルの TCP/UDP アプリケーションを一時公開する共有サービスモードが含まれています。TCP のみ、UDP のみ、TCP+UDP の共有、Temporary public port、同時接続数制限、帯域制限、構造化ログ、idle timeout を扱えます。Tauri デスクトップクライアントの scaffold と GitHub Actions の公開 workflow も追加されています。
+
+現在の設計は [`docs/shared-service-design.md`](docs/shared-service-design.md) を参照してください。
 
 ## FerrumProxyGUI
 

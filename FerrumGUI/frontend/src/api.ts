@@ -57,6 +57,19 @@ export interface FerrumProxyConfig {
   useRestApi?: boolean;
   savePlayerIP?: boolean;
   debug?: boolean;
+  sharedService?: {
+    enabled?: boolean;
+    controlBind?: string;
+    publicBind?: string;
+    publicHost?: string;
+    portRange?: {
+      start?: number;
+      end?: number;
+    };
+    authTokens?: string[];
+    defaults?: Partial<SharedServiceLimits>;
+    maximums?: Partial<SharedServiceLimits>;
+  };
   listeners?: Array<ListenerConfig>;
 }
 
@@ -88,6 +101,73 @@ export interface PerformanceMetrics {
   udp: ProtocolPerformanceMetrics;
   restApiEnabled: boolean;
   sampledAt: string;
+}
+
+export interface SharedServiceLimits {
+  maxTcpConnections: number;
+  maxUdpPeers: number;
+  maxBytesPerSecond: number;
+  idleTimeoutSeconds: number;
+  udpSessionTimeoutSeconds: number;
+}
+
+export interface SharedServiceLogEntry {
+  timestamp: string;
+  level: 'info' | 'warn' | 'error';
+  event: string;
+  protocol?: 'tcp' | 'udp';
+  message: string;
+  remoteAddress?: string;
+}
+
+export interface SharedServiceStatus {
+  id: string;
+  name: string;
+  running: boolean;
+  publicHost: string;
+  tcp?: {
+    enabled: boolean;
+    publicPort: number;
+    localHost: string;
+    localPort: number;
+  };
+  udp?: {
+    enabled: boolean;
+    publicPort: number;
+    localHost: string;
+    localPort: number;
+  };
+  limits: SharedServiceLimits;
+  stats: {
+    activeTcpConnections: number;
+    activeUdpPeers: number;
+    totalTcpConnections: number;
+    totalUdpPeers: number;
+    bytesIn: number;
+    bytesOut: number;
+    droppedDatagrams: number;
+    startedAt: string;
+  };
+  logs: SharedServiceLogEntry[];
+}
+
+export interface SharedServiceStartRequest {
+  name?: string;
+  publicHost?: string;
+  bindHost?: string;
+  tcp?: {
+    enabled: boolean;
+    localHost?: string;
+    localPort?: number;
+    publicPort?: number;
+  };
+  udp?: {
+    enabled: boolean;
+    localHost?: string;
+    localPort?: number;
+    publicPort?: number;
+  };
+  limits?: Partial<SharedServiceLimits>;
 }
 
 export interface Release {
@@ -219,6 +299,35 @@ export async function fetchPlayerIPs(id: string): Promise<PlayerIPEntry[]> {
   return res.json();
 }
 
+export async function fetchSharedServiceStatus(): Promise<SharedServiceStatus | null> {
+  const res = await fetch(`${API_BASE}/shared-service/status`);
+  if (!res.ok) throw new Error('Failed to fetch shared service status');
+  return res.json();
+}
+
+export async function startSharedService(data: SharedServiceStartRequest): Promise<SharedServiceStatus> {
+  const res = await fetch(`${API_BASE}/shared-service/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: 'Failed to start shared service' }));
+    throw new Error(error.error || 'Failed to start shared service');
+  }
+  return res.json();
+}
+
+export async function stopSharedService(): Promise<void> {
+  const res = await fetch(`${API_BASE}/shared-service/stop`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: 'Failed to stop shared service' }));
+    throw new Error(error.error || 'Failed to stop shared service');
+  }
+}
+
 export async function fetchPerformance(id: string): Promise<PerformanceMetrics> {
   const res = await fetch(`${API_BASE}/instances/${id}/performance`);
   if (!res.ok) {
@@ -347,6 +456,7 @@ export interface WebSocketEventMap {
   log: { instanceId: string; timestamp: string; logType: string; message: string };
   configUpdated: { instanceId: string; config: FerrumProxyConfig };
   rateLimitError: { message: string };
+  sharedServiceStatus: { status: SharedServiceStatus };
 }
 
 export interface UpdateCheckResult {

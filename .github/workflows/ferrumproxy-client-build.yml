@@ -1,0 +1,125 @@
+name: Build FerrumProxy Client
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "FerrumGUI/frontend/**"
+      - "FerrumGUI/src-tauri/**"
+      - "FerrumGUI/package.json"
+      - "FerrumGUI/bun.lock"
+      - ".github/workflows/ferrumproxy-client-build.yml"
+  pull_request:
+    paths:
+      - "FerrumGUI/frontend/**"
+      - "FerrumGUI/src-tauri/**"
+      - "FerrumGUI/package.json"
+      - "FerrumGUI/bun.lock"
+      - ".github/workflows/ferrumproxy-client-build.yml"
+
+concurrency:
+  group: ferrumproxy-client-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: ubuntu-latest
+          - platform: windows-x64
+            os: windows-latest
+          - platform: macos-arm64
+            os: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: FerrumGUI/src-tauri
+          key: ferrumproxy-client-${{ matrix.platform }}
+
+      - name: Install GUI dependencies
+        working-directory: FerrumGUI
+        run: bun install --frozen-lockfile
+
+      - name: Install frontend dependencies
+        working-directory: FerrumGUI/frontend
+        run: bun install --frozen-lockfile
+
+      - name: Build Tauri client
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: FerrumGUI
+          args: --verbose
+
+      - name: Collect bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "FerrumGUI/src-tauri/target/client-artifacts/${{ matrix.platform }}"
+          find FerrumGUI/src-tauri/target/release/bundle -type f \
+            \( -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.app.tar.gz" \) \
+            -exec cp {} "FerrumGUI/src-tauri/target/client-artifacts/${{ matrix.platform }}/" \;
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FerrumProxyClient-${{ matrix.platform }}
+          path: FerrumGUI/src-tauri/target/client-artifacts/${{ matrix.platform }}/*
+          if-no-files-found: error
+
+  release:
+    name: Release FerrumProxy Client
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: FerrumProxyClient-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish fixed FerrumProxyClient release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: FerrumProxyClient
+          name: FerrumProxyClient
+          body: |
+            Latest FerrumProxy shared-service client build from `${{ github.sha }}`.
+
+            Action: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+            Message: ${{ github.event.head_commit.message }}
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          overwrite_files: true

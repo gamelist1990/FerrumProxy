@@ -167,6 +167,11 @@
   background: var(--surface-soft);
 }
 
+.btn.active {
+  border-color: color-mix(in srgb, var(--primary-color) 55%, var(--border-color));
+  background: color-mix(in srgb, var(--primary-color) 12%, var(--surface-soft));
+}
+
 .btn.danger {
   background: color-mix(in srgb, var(--danger-color) 10%, var(--surface-soft));
   border-color: color-mix(in srgb, var(--danger-color) 42%, var(--border-color));
