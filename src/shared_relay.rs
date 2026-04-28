@@ -317,6 +317,255 @@ fn is_loopback_or_unspecified_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "0.0.0.0" | "::1" | "::")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        SharedServiceLimits, SharedServicePortRange, SharedServiceQueueConfig, SharedServiceToken,
+    };
+    use crate::runtime::AppRuntime;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UdpSocket;
+
+    #[tokio::test]
+    async fn shared_relay_forwards_tcp_through_client_tunnel() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let echo_port = start_tcp_echo().await?;
+        let relay = spawn_test_relay(control_port, public_port);
+
+        let response =
+            send_control(control_port, &format!("CONNECT 127.0.0.1:{echo_port}\n")).await?;
+        let allocated = parse_test_public_port(&response)?;
+        assert_eq!(allocated, public_port);
+
+        let mut tunnel_tasks = Vec::new();
+        for _ in 0..4 {
+            tunnel_tasks.push(tokio::spawn(async move {
+                let mut tunnel = TcpStream::connect(("127.0.0.1", control_port)).await?;
+                tunnel
+                    .write_all(format!("TUNNEL {allocated}\n").as_bytes())
+                    .await?;
+
+                let mut start = [0u8; 6];
+                tunnel.read_exact(&mut start).await?;
+                assert_eq!(&start, b"START\n");
+
+                let mut local = TcpStream::connect(("127.0.0.1", echo_port)).await?;
+                let _ = tokio::io::copy_bidirectional(&mut tunnel, &mut local).await?;
+                Ok::<_, anyhow::Error>(())
+            }));
+        }
+
+        let response = tcp_roundtrip(public_port, b"hello over tcp").await?;
+        assert_eq!(response, b"hello over tcp");
+
+        relay.abort();
+        for task in tunnel_tasks {
+            task.abort();
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_relay_forwards_udp_through_client_tunnel() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let echo_port = start_udp_echo().await?;
+        let relay = spawn_test_relay(control_port, public_port);
+
+        let response =
+            send_control(control_port, &format!("CONNECT 127.0.0.1:{echo_port}\n")).await?;
+        let allocated = parse_test_public_port(&response)?;
+        assert_eq!(allocated, public_port);
+        wait_for_udp_port(public_port).await?;
+
+        let tunnel_task = tokio::spawn(async move {
+            let mut tunnel = TcpStream::connect(("127.0.0.1", control_port)).await?;
+            tunnel
+                .write_all(format!("UDP_TUNNEL {allocated}\n").as_bytes())
+                .await?;
+            let local = UdpSocket::bind("127.0.0.1:0").await?;
+            let mut buf = vec![0u8; 65_507];
+
+            let (remote_addr, payload) = read_udp_frame(&mut tunnel).await?;
+            local.send_to(&payload, ("127.0.0.1", echo_port)).await?;
+            let (len, _) = local.recv_from(&mut buf).await?;
+            write_udp_frame(&mut tunnel, remote_addr, &buf[..len]).await?;
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let response = udp_roundtrip(public_port, b"hello over udp").await?;
+        assert_eq!(response, b"hello over udp");
+
+        relay.abort();
+        tunnel_task.abort();
+        Ok(())
+    }
+
+    fn spawn_test_relay(control_port: u16, public_port: u16) -> tokio::task::JoinHandle<()> {
+        let config = SharedServiceConfig {
+            enabled: true,
+            control_bind: format!("127.0.0.1:{control_port}"),
+            public_bind: "127.0.0.1".to_string(),
+            public_host: "127.0.0.1".to_string(),
+            port_range: SharedServicePortRange {
+                start: public_port,
+                end: public_port,
+            },
+            auth_tokens: Vec::new(),
+            allow_anonymous: true,
+            queue: SharedServiceQueueConfig {
+                enabled: true,
+                max_size: 128,
+            },
+            tokens: Vec::<SharedServiceToken>::new(),
+            defaults: SharedServiceLimits::default(),
+            maximums: SharedServiceLimits::default(),
+        };
+        let runtime = Arc::new(AppRuntime::new(false, false, Vec::new()));
+        tokio::spawn(async move {
+            let _ = start_shared_relay(config, runtime).await;
+        })
+    }
+
+    async fn start_tcp_echo() -> Result<u16> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let (mut read, mut write) = socket.split();
+                    let _ = tokio::io::copy(&mut read, &mut write).await;
+                });
+            }
+        });
+        Ok(port)
+    }
+
+    async fn start_udp_echo() -> Result<u16> {
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let port = socket.local_addr()?.port();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 65_507];
+            while let Ok((len, remote)) = socket.recv_from(&mut buf).await {
+                let _ = socket.send_to(&buf[..len], remote).await;
+            }
+        });
+        Ok(port)
+    }
+
+    async fn send_control(control_port: u16, command: &str) -> Result<String> {
+        wait_for_tcp_port(control_port).await?;
+        let mut stream = TcpStream::connect(("127.0.0.1", control_port)).await?;
+        stream.write_all(command.as_bytes()).await?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await?;
+        Ok(response)
+    }
+
+    async fn tcp_roundtrip(port: u16, payload: &[u8]) -> Result<Vec<u8>> {
+        let started = tokio::time::Instant::now();
+        loop {
+            match timeout(Duration::from_secs(2), async {
+                let mut public = TcpStream::connect(("127.0.0.1", port)).await?;
+                public.write_all(payload).await?;
+                let mut buf = vec![0u8; payload.len()];
+                public.read_exact(&mut buf).await?;
+                Ok::<_, anyhow::Error>(buf)
+            })
+            .await
+            {
+                Ok(Ok(buf)) => return Ok(buf),
+                Ok(Err(_)) | Err(_) => {
+                    anyhow::ensure!(
+                        started.elapsed() < Duration::from_secs(5),
+                        "TCP roundtrip through public port {port} did not complete"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
+
+    async fn udp_roundtrip(port: u16, payload: &[u8]) -> Result<Vec<u8>> {
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        let started = tokio::time::Instant::now();
+        let mut buf = vec![0u8; 128];
+        loop {
+            client.send_to(payload, ("127.0.0.1", port)).await?;
+            match timeout(Duration::from_millis(300), client.recv(&mut buf)).await {
+                Ok(Ok(len)) => return Ok(buf[..len].to_vec()),
+                Ok(Err(err)) => return Err(err.into()),
+                Err(_) => {
+                    anyhow::ensure!(
+                        started.elapsed() < Duration::from_secs(5),
+                        "UDP roundtrip through public port {port} did not complete"
+                    );
+                }
+            }
+        }
+    }
+
+    fn parse_test_public_port(response: &str) -> Result<u16> {
+        let parts = response.split_whitespace().collect::<Vec<_>>();
+        anyhow::ensure!(
+            parts.len() >= 2 && parts[0] == "OK",
+            "bad response: {response}"
+        );
+        Ok(parts[1].parse()?)
+    }
+
+    async fn wait_for_tcp_port(port: u16) -> Result<()> {
+        let started = tokio::time::Instant::now();
+        loop {
+            if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                started.elapsed() < Duration::from_secs(5),
+                "TCP port {port} did not open"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    async fn wait_for_udp_port(port: u16) -> Result<()> {
+        let started = tokio::time::Instant::now();
+        loop {
+            match UdpSocket::bind(("127.0.0.1", port)).await {
+                Ok(socket) => {
+                    drop(socket);
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(_) => return Ok(()),
+            }
+            anyhow::ensure!(
+                started.elapsed() < Duration::from_secs(5),
+                "UDP port {port} did not open"
+            );
+        }
+    }
+
+    async fn free_tcp_port() -> Result<u16> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        Ok(listener.local_addr()?.port())
+    }
+
+    async fn free_dual_stack_port() -> Result<u16> {
+        for _ in 0..32 {
+            let tcp = TcpListener::bind("127.0.0.1:0").await?;
+            let port = tcp.local_addr()?.port();
+            if let Ok(udp) = UdpSocket::bind(("127.0.0.1", port)).await {
+                drop(udp);
+                drop(tcp);
+                return Ok(port);
+            }
+        }
+        anyhow::bail!("failed to reserve a TCP/UDP test port")
+    }
+}
+
 async fn handle_udp_associate(
     _request: &str,
     _state: &Arc<SharedRelayState>,
@@ -628,8 +877,7 @@ async fn relay_tcp_connection(
     port: u16,
     state: Arc<SharedRelayState>,
 ) -> Result<()> {
-    let mut target_stream = wait_for_client_tunnel(port, state).await?;
-    target_stream.write_all(b"START\n").await?;
+    let mut target_stream = wait_for_ready_client_tunnel(port, state).await?;
 
     debug!(
         "Relay connection {} -> client tunnel on {}",
@@ -699,5 +947,24 @@ async fn wait_for_client_tunnel(port: u16, state: Arc<SharedRelayState>) -> Resu
         }
 
         tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_ready_client_tunnel(
+    port: u16,
+    state: Arc<SharedRelayState>,
+) -> Result<TcpStream> {
+    let started = tokio::time::Instant::now();
+    loop {
+        let mut stream = wait_for_client_tunnel(port, Arc::clone(&state)).await?;
+        match stream.write_all(b"START\n").await {
+            Ok(()) => return Ok(stream),
+            Err(err) => {
+                debug!("Discarded stale client tunnel for relay port {port}: {err}");
+                if started.elapsed() >= Duration::from_secs(15) {
+                    anyhow::bail!("no ready client tunnel available for relay port {port}");
+                }
+            }
+        }
     }
 }

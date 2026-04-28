@@ -347,9 +347,6 @@ fn open_tcp_tunnel(
     tunnel
         .write_all(format!("TUNNEL {public_port}\n").as_bytes())
         .map_err(|err| format!("failed to register tunnel: {err}"))?;
-    tunnel
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|err| err.to_string())?;
 
     let mut start = [0u8; 6];
     tunnel
