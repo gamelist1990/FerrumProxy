@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{copy, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
@@ -59,6 +60,14 @@ struct PublicEndpoint {
     host: String,
     port: u16,
     display: String,
+}
+
+struct FlagOnDrop(Arc<AtomicBool>);
+
+impl Drop for FlagOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -345,13 +354,7 @@ fn run_share_session(
         );
     }
     if udp_enabled {
-        start_udp_tunnel(
-            relay_address,
-            port,
-            local_host,
-            udp_local_port,
-            stop,
-        );
+        start_udp_tunnel(relay_address, port, local_host, udp_local_port, stop);
     }
 
     Ok(())
@@ -464,15 +467,17 @@ fn run_udp_tunnel(
         return Err("relay rejected UDP tunnel readiness".to_string());
     }
 
-    let local = UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?;
-    local
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|err| err.to_string())?;
-    let local_addr = local.local_addr().map_err(|err| err.to_string())?;
     let local_target = format!("{local_host}:{local_port}");
-    let mut response = vec![0u8; 65_507];
-    
-    eprintln!("[UDP] Tunnel started: binding to {}, forwarding to {}", local_addr, local_target);
+    let local_target_addr = resolve_single_addr(&local_target)?;
+    let tunnel_alive = Arc::new(AtomicBool::new(true));
+    let _tunnel_alive_guard = FlagOnDrop(Arc::clone(&tunnel_alive));
+    let tunnel_writer =
+        Arc::new(Mutex::new(tunnel.try_clone().map_err(|err| {
+            format!("failed to clone UDP tunnel writer: {err}")
+        })?));
+    let mut peers = HashMap::<SocketAddr, Arc<UdpSocket>>::new();
+
+    eprintln!("[UDP] Tunnel started: forwarding to {}", local_target);
 
     while !stop.load(Ordering::Relaxed) {
         let (remote_addr, payload) = match read_udp_frame_blocking(&mut tunnel) {
@@ -482,57 +487,95 @@ fn run_udp_tunnel(
             Err(err) => return Err(format!("UDP tunnel read failed: {err}")),
         };
 
-        // Send from relay to local service
-        eprintln!("[UDP] Received from relay: {} bytes from {}", payload.len(), remote_addr);
-        match local.send_to(&payload, &local_target) {
+        eprintln!(
+            "[UDP] Received from relay: {} bytes from {}",
+            payload.len(),
+            remote_addr
+        );
+        let local = match peers.get(&remote_addr) {
+            Some(local) => Arc::clone(local),
+            None => {
+                let local = Arc::new(UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?);
+                local
+                    .set_read_timeout(Some(Duration::from_millis(500)))
+                    .map_err(|err| err.to_string())?;
+                let local_addr = local.local_addr().map_err(|err| err.to_string())?;
+                eprintln!(
+                    "[UDP] Peer started: {} via local {} -> {}",
+                    remote_addr, local_addr, local_target
+                );
+
+                let local_reader = Arc::clone(&local);
+                let tunnel_writer = Arc::clone(&tunnel_writer);
+                let local_target_addr = local_target_addr;
+                let tunnel_alive = Arc::clone(&tunnel_alive);
+                let stop = Arc::clone(stop);
+                thread::spawn(move || {
+                    let mut response = vec![0u8; 65_507];
+                    while !stop.load(Ordering::Relaxed) && tunnel_alive.load(Ordering::Relaxed) {
+                        match local_reader.recv_from(&mut response) {
+                            Ok((len, from)) => {
+                                eprintln!("[UDP] Received from local: {} bytes from {}", len, from);
+                                if from != local_target_addr {
+                                    eprintln!(
+                                        "[UDP] Ignored local UDP response from unexpected source: {}",
+                                        from
+                                    );
+                                    continue;
+                                }
+
+                                let write_result = tunnel_writer
+                                    .lock()
+                                    .map_err(|err| err.to_string())
+                                    .and_then(|mut tunnel| {
+                                        write_udp_frame_blocking(
+                                            &mut tunnel,
+                                            remote_addr,
+                                            &response[..len],
+                                        )
+                                    });
+                                match write_result {
+                                    Ok(()) => eprintln!(
+                                        "[UDP] Forwarded response to relay: {} bytes for {}",
+                                        len, remote_addr
+                                    ),
+                                    Err(err) => {
+                                        eprintln!(
+                                            "[UDP] Failed to forward local response: {}",
+                                            err
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(err)
+                                if err.kind() == std::io::ErrorKind::WouldBlock
+                                    || err.kind() == std::io::ErrorKind::TimedOut =>
+                            {
+                                continue;
+                            }
+                            Err(err) => {
+                                eprintln!("[UDP] Failed to read from local service: {}", err);
+                                break;
+                            }
+                        }
+                    }
+                });
+
+                peers.insert(remote_addr, Arc::clone(&local));
+                local
+            }
+        };
+
+        match local.send_to(&payload, local_target_addr) {
             Ok(sent) => eprintln!("[UDP] Sent to local service: {} bytes", sent),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(err) if err.kind() == std::io::ErrorKind::TimedOut => continue,
             Err(err) => {
                 eprintln!("[UDP] Failed to send to local service: {}", err);
                 return Err(format!("failed to send UDP to local service: {err}"));
-            },
-        }
-        
-        // Receive response from local service
-        match local.recv_from(&mut response) {
-            Ok((len, from)) => {
-                eprintln!("[UDP] Received from local: {} bytes from {}", len, from);
-                // Send response back to relay with original remote address
-                write_udp_frame_blocking(&mut tunnel, remote_addr, &response[..len])?;
-                eprintln!("[UDP] Forwarded response to relay: {} bytes for {}", len, remote_addr);
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                eprintln!("[UDP] No response from local service (would block)");
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
-                eprintln!("[UDP] Timeout waiting for local service response");
-            },
-            Err(err) => {
-                eprintln!("[UDP] Failed to read from local service: {}", err);
-                return Err(format!("failed to read UDP local response: {err}"));
-            },
-        }
-
-        local
-            .set_nonblocking(true)
-            .map_err(|err| format!("failed to switch UDP socket to nonblocking mode: {err}"))?;
-        loop {
-            match local.recv_from(&mut response) {
-                Ok((len, from)) => {
-                    eprintln!("[UDP] Drained extra local response: {} bytes from {}", len, from);
-                    write_udp_frame_blocking(&mut tunnel, remote_addr, &response[..len])?;
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(err) => {
-                    let _ = local.set_nonblocking(false);
-                    return Err(format!("failed to drain UDP local response: {err}"));
-                }
             }
         }
-        local
-            .set_nonblocking(false)
-            .map_err(|err| format!("failed to restore UDP socket blocking mode: {err}"))?;
     }
 
     Ok(())
@@ -683,6 +726,19 @@ fn send_relay_command(address: &str, command: &str) -> Result<String, String> {
         Some(err) => Err(format!("{endpoint} did not respond: {err}")),
         None => Err(format!("no socket addresses resolved for {endpoint}")),
     }
+}
+
+fn resolve_single_addr(address: &str) -> Result<SocketAddr, String> {
+    let endpoint = address.trim();
+    if endpoint.is_empty() {
+        return Err("address is required".to_string());
+    }
+
+    endpoint
+        .to_socket_addrs()
+        .map_err(|err| format!("failed to resolve {endpoint}: {err}"))?
+        .next()
+        .ok_or_else(|| format!("no socket addresses resolved for {endpoint}"))
 }
 
 fn connect_tcp_endpoint(address: &str, timeout: Duration) -> Result<TcpStream, String> {

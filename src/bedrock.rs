@@ -304,17 +304,21 @@ pub fn rewrite_unconnected_pong_ports(payload: &[u8], listener_port: u16) -> Opt
         .split(';')
         .map(str::to_string)
         .collect::<Vec<_>>();
-    if parts.len() < 12 {
+    if parts.len() < 11 {
         return None;
     }
 
     let port = listener_port.to_string();
-    if parts[10] == port && parts[11] == port {
+    let already_rewritten = parts.get(10).map_or(false, |value| value == &port)
+        && parts.get(11).map_or(true, |value| value == &port);
+    if already_rewritten {
         return None;
     }
 
     parts[10] = port.clone();
-    parts[11] = port;
+    if let Some(port_v6) = parts.get_mut(11) {
+        *port_v6 = port;
+    }
 
     let rewritten_motd = parts.join(";");
     let motd_bytes = rewritten_motd.as_bytes();
@@ -404,5 +408,44 @@ fn frame_body_name(packet_id: u8) -> Option<&'static str> {
         0x15 => Some("Disconnect Notification"),
         0xfe => Some("Game Packet"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_unconnected_pong_ipv4_and_ipv6_ports() {
+        let pong =
+            bedrock_pong("MCPE;Dedicated Server;390;1.20.0;0;10;123;World;Survival;1;19132;19133;");
+        let rewritten = rewrite_unconnected_pong_ports(&pong, 43211).expect("pong rewritten");
+        let description = describe_unconnected_pong(&rewritten).expect("pong parsed");
+
+        assert!(description.contains("port_v4=43211"));
+        assert!(description.contains("port_v6=43211"));
+    }
+
+    #[test]
+    fn rewrites_unconnected_pong_with_only_ipv4_port_field() {
+        let pong = bedrock_pong("MCPE;Dedicated Server;390;1.20.0;0;10;123;World;Survival;1;19132");
+        let rewritten = rewrite_unconnected_pong_ports(&pong, 43211).expect("pong rewritten");
+        let parsed = parse_unconnected_pong(&rewritten).expect("pong parsed");
+
+        assert_eq!(
+            parsed.motd,
+            "MCPE;Dedicated Server;390;1.20.0;0;10;123;World;Survival;1;43211"
+        );
+    }
+
+    fn bedrock_pong(motd: &str) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.push(UNCONNECTED_PONG_ID);
+        payload.extend_from_slice(&0u64.to_be_bytes());
+        payload.extend_from_slice(&0u64.to_be_bytes());
+        payload.extend_from_slice(&RAKNET_OFFLINE_MESSAGE_ID);
+        payload.extend_from_slice(&(motd.len() as u16).to_be_bytes());
+        payload.extend_from_slice(motd.as_bytes());
+        payload
     }
 }

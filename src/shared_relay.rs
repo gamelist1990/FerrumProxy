@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use crate::bedrock::rewrite_unconnected_pong_ports;
+use crate::bedrock::{describe_unconnected_pong, rewrite_unconnected_pong_ports};
 use crate::config::SharedServiceConfig;
 use crate::runtime::AppRuntime;
 
@@ -807,10 +807,24 @@ async fn handle_udp_tunnel(
                 payload.len(),
                 remote_addr
             );
-            let payload = rewrite_unconnected_pong_ports(&payload, port).unwrap_or_else(|| {
-                debug!("[UDP SEND] Pong rewrite skipped or failed, using original payload");
+            let payload = if let Some(rewritten) = rewrite_unconnected_pong_ports(&payload, port) {
+                debug!(
+                    "[UDP SEND] Rewrote Bedrock pong port for {}: before={} after={}",
+                    remote_addr,
+                    describe_unconnected_pong(&payload).unwrap_or_else(|| "unparsed".to_string()),
+                    describe_unconnected_pong(&rewritten).unwrap_or_else(|| "unparsed".to_string())
+                );
+                rewritten
+            } else {
+                if payload.first().copied() == Some(0x1c) {
+                    debug!(
+                        "[UDP SEND] Bedrock pong port rewrite skipped: {}",
+                        describe_unconnected_pong(&payload)
+                            .unwrap_or_else(|| { format!("unparsed pong len={}", payload.len()) })
+                    );
+                }
                 payload
-            });
+            };
 
             let socket_addr = socket
                 .local_addr()
