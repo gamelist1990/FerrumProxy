@@ -7,6 +7,7 @@ mod proxy_protocol;
 mod runtime;
 mod shared_relay;
 mod tcp;
+mod tcp_tuning;
 mod tls_config;
 mod udp;
 mod webhook_queue;
@@ -40,6 +41,7 @@ async fn main() -> Result<()> {
         EnvFilter::new("info")
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
+    tcp_tuning::tune_system_tcp();
 
     let webhooks = cfg
         .listeners

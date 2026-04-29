@@ -17,6 +17,7 @@ use crate::http_rewrite::{
 };
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
 use crate::runtime::AppRuntime;
+use crate::tcp_tuning::apply_tcp_nodelay;
 use crate::tls_config::resolve_tls_acceptor;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -46,6 +47,7 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
 
     loop {
         let (client, client_addr) = listener.accept().await?;
+        apply_tcp_nodelay(&client, "tcp listener client");
         let rule = Arc::clone(&rule);
         let runtime = Arc::clone(&runtime);
         let tls_acceptor = tls_acceptor.clone();
@@ -327,7 +329,7 @@ async fn copy_bidirectional(
 
 async fn connect_target(target: &ProxyTarget, target_addr: SocketAddr) -> Result<BoxedStream> {
     let tcp = timeout(CONNECT_TIMEOUT, TcpStream::connect(target_addr)).await??;
-    tcp.set_nodelay(true)?;
+    apply_tcp_nodelay(&tcp, "tcp target");
 
     if target.url_protocol.as_deref() == Some("https") {
         let mut roots = RootCertStore::empty();

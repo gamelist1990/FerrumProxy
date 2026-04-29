@@ -700,6 +700,7 @@ fn send_relay_command(address: &str, command: &str) -> Result<String, String> {
     for socket_address in resolved {
         match TcpStream::connect_timeout(&socket_address, Duration::from_secs(3)) {
             Ok(mut stream) => {
+                apply_tcp_nodelay(&stream);
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .map_err(|err| err.to_string())?;
@@ -754,7 +755,10 @@ fn connect_tcp_endpoint(address: &str, timeout: Duration) -> Result<TcpStream, S
 
     for socket_address in resolved {
         match TcpStream::connect_timeout(&socket_address, timeout) {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                apply_tcp_nodelay(&stream);
+                return Ok(stream);
+            }
             Err(err) => last_error = Some(err),
         }
     }
@@ -801,6 +805,7 @@ fn probe_tcp_endpoint(address: &str, timeout: Duration) -> Result<(), String> {
     for socket_address in resolved {
         match TcpStream::connect_timeout(&socket_address, timeout) {
             Ok(stream) => {
+                apply_tcp_nodelay(&stream);
                 let _ = stream.shutdown(Shutdown::Both);
                 return Ok(());
             }
@@ -814,6 +819,10 @@ fn probe_tcp_endpoint(address: &str, timeout: Duration) -> Result<(), String> {
         Some(err) => Err(format!("{endpoint} did not respond: {err}")),
         None => Err(format!("no socket addresses resolved for {endpoint}")),
     }
+}
+
+fn apply_tcp_nodelay(stream: &TcpStream) {
+    let _ = stream.set_nodelay(true);
 }
 
 fn main() {

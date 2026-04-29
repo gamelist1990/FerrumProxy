@@ -238,6 +238,7 @@ export class SharedServiceManager extends EventEmitter {
       remote.destroy();
       return;
     }
+    remote.setNoDelay(true);
 
     const remoteAddress = `${remote.remoteAddress || 'unknown'}:${remote.remotePort || 0}`;
     if (this.tcpConnections.size >= this.status.limits.maxTcpConnections) {
@@ -247,6 +248,7 @@ export class SharedServiceManager extends EventEmitter {
     }
 
     const local = net.createConnection({ host: localHost, port: localPort });
+    local.setNoDelay(true);
     if (this.status.haproxy) {
       local.write(
         buildProxyV2Header(

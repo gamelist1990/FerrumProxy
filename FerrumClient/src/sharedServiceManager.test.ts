@@ -74,7 +74,7 @@ test('shared service forwards TCP traffic and records stats', async () => {
     client.once('error', reject);
     client.once('data', (chunk) => {
       client.end();
-      resolve(chunk);
+      resolve(Buffer.from(chunk));
     });
     client.write(Buffer.from('hello tcp'));
   });
@@ -121,7 +121,7 @@ test('shared service can prepend HAProxy PROXY v2 headers for TCP', async () => 
       socket.once('data', (chunk) => {
         socket.end();
         server.close();
-        resolve(chunk);
+        resolve(Buffer.from(chunk));
       });
     });
 
