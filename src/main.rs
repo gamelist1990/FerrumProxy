@@ -1,5 +1,6 @@
 mod bedrock;
 mod config;
+mod ddos_guard;
 mod discord;
 mod http_rewrite;
 mod management_api;

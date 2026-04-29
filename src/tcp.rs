@@ -47,11 +47,22 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
 
     loop {
         let (client, client_addr) = listener.accept().await?;
+        let tcp_ddos_permit = match runtime.ddos_guard.tcp_connection_opened(client_addr.ip()) {
+            Ok(permit) => permit,
+            Err(reason) => {
+                warn!(
+                    "DDoS guard dropped TCP connection from {client_addr}: {}",
+                    reason.as_str()
+                );
+                continue;
+            }
+        };
         apply_tcp_nodelay(&client, "tcp listener client");
         let rule = Arc::clone(&rule);
         let runtime = Arc::clone(&runtime);
         let tls_acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
+            let _tcp_ddos_permit = tcp_ddos_permit;
             let client: Result<BoxedStream> = match tls_acceptor {
                 Some(acceptor) => acceptor
                     .accept(client)

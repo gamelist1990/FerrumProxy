@@ -88,6 +88,17 @@ async fn handle_datagram(
         return Ok(());
     }
 
+    if let Err(reason) = runtime
+        .ddos_guard
+        .udp_datagram_allowed(original_client.ip(), payload.len())
+    {
+        debug!(
+            "DDoS guard dropped UDP datagram from {original_client} via {peer}: {}",
+            reason.as_str()
+        );
+        return Ok(());
+    }
+
     if let Some(description) = describe_offline_ping(&payload) {
         debug!("Bedrock offline ping from {original_client} via {peer}: {description}");
     } else if let Some(description) = describe_raknet_packet(&payload) {
