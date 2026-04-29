@@ -1,12 +1,17 @@
-use std::fs;
-use std::path::Path;
-
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
+#[cfg(target_os = "linux")]
+use std::{fs, path::Path};
+#[cfg(target_os = "linux")]
+use tracing::info;
+
+#[cfg(target_os = "linux")]
 const TCP_AVAILABLE_CONGESTION_CONTROL: &str =
     "/proc/sys/net/ipv4/tcp_available_congestion_control";
+#[cfg(target_os = "linux")]
 const TCP_CONGESTION_CONTROL: &str = "/proc/sys/net/ipv4/tcp_congestion_control";
+#[cfg(target_os = "linux")]
 const TCP_FASTOPEN: &str = "/proc/sys/net/ipv4/tcp_fastopen";
 
 pub fn tune_system_tcp() {
