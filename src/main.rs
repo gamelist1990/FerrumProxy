@@ -132,9 +132,13 @@ async fn main() -> Result<()> {
             );
 
             let shared_config = shared_service.clone();
+            let config_path = args.config.clone();
             let runtime = Arc::clone(&runtime);
             tasks.spawn(async move {
-                if let Err(err) = shared_relay::start_shared_relay(shared_config, runtime).await {
+                if let Err(err) =
+                    shared_relay::start_shared_relay(shared_config, Some(config_path), runtime)
+                        .await
+                {
                     error!("Shared relay stopped: {err:#}");
                 }
             });

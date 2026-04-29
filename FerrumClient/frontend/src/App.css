@@ -130,6 +130,37 @@ input:focus {
   box-shadow: none;
 }
 
+.secret-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+}
+
+.secret-input input {
+  min-width: 0;
+  border-right: 0;
+}
+
+.secret-input button {
+  min-height: 36px;
+  border: 1px solid #bdbdbd;
+  border-radius: 0;
+  background: #f5f5f5;
+  color: #1d1d1d;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secret-input button:hover {
+  background: #eaf2fb;
+  border-color: #99b8dd;
+}
+
+.secret-input:focus-within button {
+  border-color: #0b5cad;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));

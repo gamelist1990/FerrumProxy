@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,13 +17,14 @@ use crate::bedrock::{
     describe_unconnected_pong, is_offline_ping, is_unconnected_pong,
     rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
 };
-use crate::config::SharedServiceConfig;
+use crate::config::{ProxyConfig, SharedServiceConfig};
 use crate::runtime::AppRuntime;
 
 const BUFFER_SIZE: usize = 16 * 1024;
 
 pub struct SharedRelayState {
     pub config: SharedServiceConfig,
+    pub config_path: Option<PathBuf>,
     pub tcp_connections: Arc<RwLock<HashMap<String, TcpConnection>>>,
     pub udp_peers: Arc<RwLock<HashMap<String, UdpPeer>>>,
     pub port_allocations: Arc<RwLock<HashMap<u16, PortAllocation>>>,
@@ -68,6 +70,7 @@ pub struct UdpRelayPacket {
 
 pub async fn start_shared_relay(
     config: SharedServiceConfig,
+    config_path: Option<PathBuf>,
     runtime: Arc<AppRuntime>,
 ) -> Result<()> {
     let bind_addr = &config.control_bind;
@@ -79,6 +82,7 @@ pub async fn start_shared_relay(
 
     let state = Arc::new(SharedRelayState {
         config: config.clone(),
+        config_path,
         tcp_connections: Arc::new(RwLock::new(HashMap::new())),
         udp_peers: Arc::new(RwLock::new(HashMap::new())),
         port_allocations: Arc::new(RwLock::new(HashMap::new())),
@@ -159,6 +163,43 @@ async fn handle_control_connection(
     Ok(())
 }
 
+async fn shared_service_auth_config(
+    state: &Arc<SharedRelayState>,
+    fallback: &SharedServiceConfig,
+) -> SharedServiceConfig {
+    let Some(config_path) = state.config_path.as_ref() else {
+        return fallback.clone();
+    };
+
+    match ProxyConfig::load(config_path) {
+        Ok(proxy_config) => {
+            if let Some(shared_service) = proxy_config.shared_service {
+                debug!(
+                    "Reloaded shared relay auth config from {}: allow_anonymous={}, legacy_tokens={}, tokens={}",
+                    config_path.display(),
+                    shared_service.allow_anonymous,
+                    shared_service.auth_tokens.len(),
+                    shared_service.tokens.len()
+                );
+                shared_service
+            } else {
+                debug!(
+                    "Shared relay auth reload skipped because {} has no sharedService section",
+                    config_path.display()
+                );
+                fallback.clone()
+            }
+        }
+        Err(err) => {
+            debug!(
+                "Shared relay auth reload failed from {}: {err:#}; using startup config",
+                config_path.display()
+            );
+            fallback.clone()
+        }
+    }
+}
+
 async fn handle_connect(
     request: &str,
     client_addr: SocketAddr,
@@ -176,6 +217,7 @@ async fn handle_connect(
 
     let target = parts[1];
     let target_parts: Vec<&str> = target.splitn(3, ':').collect();
+    let auth_config = shared_service_auth_config(state, config).await;
 
     let (token, target_host, target_port) = if target_parts.len() == 3 {
         // token:host:port
@@ -187,7 +229,7 @@ async fn handle_connect(
         )
     } else if target_parts.len() == 2 {
         // host:port (anonymous)
-        if !config.allow_anonymous {
+        if !auth_config.allow_anonymous {
             return Ok("ERROR Token required\n".to_string());
         }
         let port: u16 = target_parts[1].parse().unwrap_or(0);
@@ -203,12 +245,12 @@ async fn handle_connect(
     // Validate token if provided
     if let Some(ref token_value) = token {
         if !token_value.is_empty() {
-            let valid = config
+            let valid = auth_config
                 .tokens
                 .iter()
                 .any(|t| t.enabled && t.token == *token_value)
-                || config.auth_tokens.iter().any(|t| t == token_value);
-            if !valid && !config.allow_anonymous {
+                || auth_config.auth_tokens.iter().any(|t| t == token_value);
+            if !valid && !auth_config.allow_anonymous {
                 return Ok("ERROR Invalid token\n".to_string());
             }
         }
@@ -382,6 +424,7 @@ mod tests {
         SharedServiceLimits, SharedServicePortRange, SharedServiceQueueConfig, SharedServiceToken,
     };
     use crate::runtime::AppRuntime;
+    use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UdpSocket;
     use tokio::time::timeout;
@@ -503,6 +546,46 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn shared_relay_reloads_tokens_from_config_file() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let config_path = temp_config_path("shared-relay-token-reload");
+        write_shared_relay_config(&config_path, control_port, public_port, "old-token")?;
+
+        let config = ProxyConfig::load(&config_path)?.shared_service.unwrap();
+        let runtime = Arc::new(AppRuntime::new(false, false, Vec::new()));
+        let relay = tokio::spawn({
+            let config_path = config_path.clone();
+            async move {
+                let _ = start_shared_relay(config, Some(config_path), runtime).await;
+            }
+        });
+
+        wait_for_tcp_port(control_port).await?;
+        assert!(send_control(control_port, "TOKEN old-token\n")
+            .await?
+            .starts_with("OK"));
+        assert!(send_control(control_port, "TOKEN new-token\n")
+            .await?
+            .starts_with("ERROR"));
+
+        write_shared_relay_config(&config_path, control_port, public_port, "new-token")?;
+
+        assert!(send_control(control_port, "TOKEN new-token\n")
+            .await?
+            .starts_with("OK"));
+        assert!(
+            send_control(control_port, "CONNECT new-token:127.0.0.1:19132\n")
+                .await?
+                .starts_with("OK")
+        );
+
+        relay.abort();
+        let _ = fs::remove_file(config_path);
+        Ok(())
+    }
+
     fn spawn_test_relay(control_port: u16, public_port: u16) -> tokio::task::JoinHandle<()> {
         let config = SharedServiceConfig {
             enabled: true,
@@ -525,8 +608,51 @@ mod tests {
         };
         let runtime = Arc::new(AppRuntime::new(false, false, Vec::new()));
         tokio::spawn(async move {
-            let _ = start_shared_relay(config, runtime).await;
+            let _ = start_shared_relay(config, None, runtime).await;
         })
+    }
+
+    fn temp_config_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}-{nanos}.yml"))
+    }
+
+    fn write_shared_relay_config(
+        path: &PathBuf,
+        control_port: u16,
+        public_port: u16,
+        token: &str,
+    ) -> Result<()> {
+        fs::write(
+            path,
+            format!(
+                r#"endpoint: 0
+useRestApi: false
+savePlayerIP: false
+debug: false
+sharedService:
+  enabled: true
+  controlBind: "127.0.0.1:{control_port}"
+  publicBind: "127.0.0.1"
+  publicHost: "127.0.0.1"
+  portRange:
+    start: {public_port}
+    end: {public_port}
+  allowAnonymous: false
+  authTokens: []
+  tokens:
+    - name: live
+      token: "{token}"
+      enabled: true
+      priority: 0
+listeners: []
+"#
+            ),
+        )?;
+        Ok(())
     }
 
     async fn start_tcp_echo() -> Result<u16> {
@@ -694,7 +820,7 @@ async fn handle_udp_associate(
 
 async fn handle_token_validation(
     request: &str,
-    _state: &Arc<SharedRelayState>,
+    state: &Arc<SharedRelayState>,
     config: &SharedServiceConfig,
 ) -> Result<String> {
     let parts: Vec<&str> = request.split_whitespace().collect();
@@ -703,13 +829,17 @@ async fn handle_token_validation(
     }
 
     let token = parts[1];
+    let auth_config = shared_service_auth_config(state, config).await;
 
-    let valid = config.tokens.iter().any(|t| t.enabled && t.token == token)
-        || config.auth_tokens.iter().any(|t| t == token);
+    let valid = auth_config
+        .tokens
+        .iter()
+        .any(|t| t.enabled && t.token == token)
+        || auth_config.auth_tokens.iter().any(|t| t == token);
 
     if valid {
         Ok("OK Token valid\n".to_string())
-    } else if config.allow_anonymous {
+    } else if auth_config.allow_anonymous {
         Ok("OK Anonymous allowed\n".to_string())
     } else {
         Ok("ERROR Invalid token\n".to_string())

@@ -50,6 +50,7 @@ function App() {
   const [configPath, setConfigPath] = useState("config.json");
   const [configReady, setConfigReady] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [tokenVisible, setTokenVisible] = useState(false);
 
   const probeConnection = async (nextForm: ClientConfig) => {
     await invoke<void>("probe_client_connection", { config: nextForm });
@@ -148,11 +149,24 @@ function App() {
             </label>
             <label>
               <span>Auth token</span>
-              <input
-                value={form.token}
-                onChange={(event) => update("token", event.target.value)}
-                placeholder="optional"
-              />
+              <div className="secret-input">
+                <input
+                  type={tokenVisible ? "text" : "password"}
+                  value={form.token}
+                  onChange={(event) => update("token", event.target.value)}
+                  placeholder="optional"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  onClick={() => setTokenVisible((visible) => !visible)}
+                  aria-label={tokenVisible ? "Hide auth token" : "Show auth token"}
+                  title={tokenVisible ? "Hide auth token" : "Show auth token"}
+                >
+                  {tokenVisible ? "Hide" : "Show"}
+                </button>
+              </div>
             </label>
           </section>
 
