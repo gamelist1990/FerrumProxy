@@ -33,6 +33,7 @@ export function SharedRelayDashboard({
   const queue = { enabled: true, maxSize: 128, ...(sharedService.queue || {}) };
   const tokenCount = sharedService.tokens?.length || sharedService.authTokens?.length || 0;
   const portRange = sharedService.portRange || { start: 40000, end: 49999 };
+  const relayUptimeSeconds = performance?.processUptimeSeconds ?? performance?.uptimeSeconds;
   const runtimeLabel =
     runtimeState === 'running'
       ? t('running')
@@ -69,7 +70,7 @@ export function SharedRelayDashboard({
           <div className="performance-grid">
             <article className="metric-card">
               <span>{t('uptime')}</span>
-              <strong>{formatDuration(performance.uptimeSeconds)}</strong>
+              <strong>{formatDuration(relayUptimeSeconds || 0)}</strong>
             </article>
             <article className="metric-card">
               <span>{t('activeSessions')}</span>

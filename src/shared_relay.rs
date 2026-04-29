@@ -12,7 +12,10 @@ use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use crate::bedrock::{describe_unconnected_pong, rewrite_unconnected_pong_ports};
+use crate::bedrock::{
+    describe_unconnected_pong, is_offline_ping, is_unconnected_pong,
+    rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
+};
 use crate::config::SharedServiceConfig;
 use crate::runtime::AppRuntime;
 
@@ -26,6 +29,7 @@ pub struct SharedRelayState {
     pub tcp_tunnels: Arc<Mutex<HashMap<u16, VecDeque<TcpStream>>>>,
     pub udp_tunnels: Arc<Mutex<HashMap<u16, mpsc::Sender<UdpRelayPacket>>>>,
     pub udp_sockets: Arc<Mutex<HashMap<u16, Arc<UdpSocket>>>>,
+    pub udp_cached_pongs: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     pub allocation_notify: Arc<Notify>,
     pub waiting_clients: Arc<Mutex<usize>>,
     pub next_port: Arc<RwLock<u16>>,
@@ -81,6 +85,7 @@ pub async fn start_shared_relay(
         tcp_tunnels: Arc::new(Mutex::new(HashMap::new())),
         udp_tunnels: Arc::new(Mutex::new(HashMap::new())),
         udp_sockets: Arc::new(Mutex::new(HashMap::new())),
+        udp_cached_pongs: Arc::new(RwLock::new(HashMap::new())),
         allocation_notify: Arc::new(Notify::new()),
         waiting_clients: Arc::new(Mutex::new(0)),
         next_port: Arc::new(RwLock::new(config.port_range.start)),
@@ -800,6 +805,7 @@ async fn handle_udp_tunnel(
         }
     });
 
+    let cache_state = Arc::clone(state);
     let read_task = tokio::spawn(async move {
         while let Ok((remote_addr, payload)) = read_udp_frame(&mut reader).await {
             debug!(
@@ -825,6 +831,14 @@ async fn handle_udp_tunnel(
                 }
                 payload
             };
+
+            if is_unconnected_pong(&payload) {
+                cache_state
+                    .udp_cached_pongs
+                    .write()
+                    .await
+                    .insert(udp_peer_key(port, remote_addr), payload.clone());
+            }
 
             let socket_addr = socket
                 .local_addr()
@@ -1017,8 +1031,42 @@ async fn start_udp_relay_port(
 
         if !state.port_allocations.read().await.contains_key(&port) {
             state.udp_sockets.lock().await.remove(&port);
+            clear_udp_cached_pongs_for_port(&state, port).await;
             state.allocation_notify.notify_one();
             return Ok(());
+        }
+
+        if is_offline_ping(&buf[..len]) {
+            if let (Some(cached_pong), Some(timestamp)) = (
+                state
+                    .udp_cached_pongs
+                    .read()
+                    .await
+                    .get(&udp_peer_key(port, remote_addr))
+                    .cloned(),
+                buf.get(1..9),
+            ) {
+                let immediate_pong = rewrite_unconnected_pong_timestamp(&cached_pong, timestamp)
+                    .unwrap_or_else(|| cached_pong.clone());
+                match socket.send_to(&immediate_pong, remote_addr).await {
+                    Ok(sent) => {
+                        debug!(
+                            "[UDP SEND] Sent cached Bedrock pong {} bytes to {} on port {}: {}",
+                            sent,
+                            remote_addr,
+                            port,
+                            describe_unconnected_pong(&immediate_pong)
+                                .unwrap_or_else(|| format!("len={}", immediate_pong.len()))
+                        );
+                    }
+                    Err(err) => {
+                        debug!(
+                            "[UDP SEND] Cached Bedrock pong send to {} on port {} failed: {}",
+                            remote_addr, port, err
+                        );
+                    }
+                }
+            }
         }
 
         let tunnel = state.udp_tunnels.lock().await.get(&port).cloned();
@@ -1036,6 +1084,19 @@ async fn start_udp_relay_port(
             );
         }
     }
+}
+
+fn udp_peer_key(port: u16, remote_addr: SocketAddr) -> String {
+    format!("{port}:{remote_addr}")
+}
+
+async fn clear_udp_cached_pongs_for_port(state: &SharedRelayState, port: u16) {
+    let prefix = format!("{port}:");
+    state
+        .udp_cached_pongs
+        .write()
+        .await
+        .retain(|key, _| !key.starts_with(&prefix));
 }
 
 async fn relay_tcp_connection(

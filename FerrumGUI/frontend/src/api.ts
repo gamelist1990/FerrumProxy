@@ -96,6 +96,8 @@ export interface ProtocolPerformanceMetrics {
 export interface PerformanceMetrics {
   instanceId: string;
   pid?: number;
+  processStartedAt?: string;
+  processUptimeSeconds?: number;
   uptimeSeconds: number;
   totalActiveSessions: number;
   totalSessions: number;

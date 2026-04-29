@@ -220,13 +220,13 @@ async function shouldStartWithSudo(instance: FerrumProxyInstance): Promise<boole
 }
 
 
-processManager.on('log', (instanceId: string, type: string, message: string) => {
+processManager.on('log', (instanceId: string, type: string, message: string, timestamp?: string) => {
   broadcast({
     type: 'log',
     instanceId,
     logType: type,
     message,
-    timestamp: new Date().toISOString(),
+    timestamp: timestamp || new Date().toISOString(),
   });
 });
 
@@ -882,11 +882,17 @@ app.get('/api/instances/:id/performance', async (req, res) => {
       });
     }
 
-    const performance = await response.json();
+    const performance = await response.json() as Record<string, unknown>;
     res.json({
       ...performance,
       instanceId,
       pid: processManager.getPid(instanceId),
+      processStartedAt: processManager.getStartedAt(instanceId)?.toISOString() || instance.lastStarted,
+      processUptimeSeconds:
+        processManager.getUptimeSeconds(instanceId) ??
+        (instance.lastStarted
+          ? Math.max(0, Math.floor((Date.now() - new Date(instance.lastStarted).getTime()) / 1000))
+          : undefined),
       restApiEnabled: true,
       sampledAt: new Date().toISOString(),
     });

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import "./App.css";
 import { useWebSocket } from "./useWebSocket";
 import type {
@@ -68,6 +68,7 @@ function App() {
   const [language, setLang] = useState<Language>(getLanguage());
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const selectedInstanceRef = useRef<string | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -209,7 +210,9 @@ function App() {
         setInstances((prev) =>
           Array.isArray(prev)
             ? prev.map((inst) =>
-                inst.id === data.instanceId ? { ...inst, pid: undefined } : inst
+                inst.id === data.instanceId
+                  ? { ...inst, pid: undefined, lastStarted: undefined }
+                  : inst
               )
             : prev
         );
@@ -254,7 +257,7 @@ function App() {
         alert(`アップデートが完了しました: v${data.version}`);
       }),
       on("log", (data: WebSocketEventMap["log"]) => {
-        if (data.instanceId === selectedInstance) {
+        if (data.instanceId === selectedInstanceRef.current) {
           setLogs((prev) => {
             const next = [
               ...prev,
@@ -273,7 +276,7 @@ function App() {
         }
       }),
       on("configUpdated", (data: WebSocketEventMap["configUpdated"]) => {
-        if (data.instanceId === selectedInstance) {
+        if (data.instanceId === selectedInstanceRef.current) {
           setConfig(data.config);
         }
       }),
@@ -283,9 +286,16 @@ function App() {
     ];
 
     return () => unsubscribes.forEach((unsub) => unsub());
-  }, [on, selectedInstance]);
+  }, [on]);
 
   useEffect(() => {
+    selectedInstanceRef.current = selectedInstance;
+    setLogs([]);
+    setConfig(null);
+    setPlayerIPs([]);
+    setPerformance(null);
+    setPerformanceError(null);
+
     if (selectedInstance) {
       loadLogs(selectedInstance);
       loadConfig(selectedInstance);
@@ -341,7 +351,9 @@ function App() {
   async function loadLogs(instanceId: string) {
     try {
       const data = await fetchLogs(instanceId, LOG_DISPLAY_LIMIT);
-      setLogs(data);
+      if (selectedInstanceRef.current === instanceId) {
+        setLogs(data);
+      }
     } catch (error) {
       console.error(t("errorLoadLogs"), error);
     }
@@ -350,7 +362,9 @@ function App() {
   async function loadConfig(instanceId: string) {
     try {
       const data = await fetchConfig(instanceId);
-      setConfig(data);
+      if (selectedInstanceRef.current === instanceId) {
+        setConfig(data);
+      }
     } catch (error) {
       console.error(t("errorLoadConfig"), error);
     }
@@ -359,22 +373,30 @@ function App() {
   async function loadPlayerIPs(instanceId: string) {
     try {
       const data = await fetchPlayerIPs(instanceId);
-      setPlayerIPs(data);
+      if (selectedInstanceRef.current === instanceId) {
+        setPlayerIPs(data);
+      }
     } catch (error) {
       console.error("Failed to load player IPs", error);
-      setPlayerIPs([]);
+      if (selectedInstanceRef.current === instanceId) {
+        setPlayerIPs([]);
+      }
     }
   }
 
   async function loadPerformance(instanceId: string) {
     try {
       const data = await fetchPerformance(instanceId);
-      setPerformance(data);
-      setPerformanceError(null);
+      if (selectedInstanceRef.current === instanceId) {
+        setPerformance(data);
+        setPerformanceError(null);
+      }
     } catch (error) {
       const err = error as Error;
-      setPerformance(null);
-      setPerformanceError(err.message);
+      if (selectedInstanceRef.current === instanceId) {
+        setPerformance(null);
+        setPerformanceError(err.message);
+      }
     }
   }
 

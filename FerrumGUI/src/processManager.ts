@@ -19,6 +19,8 @@ export interface LogEntry {
 export class ProcessManager extends EventEmitter {
   private processes: Map<string, ChildProcess> = new Map();
   private logs: Map<string, LogEntry[]> = new Map();
+  private logBuffers: Map<string, string> = new Map();
+  private startedAt: Map<string, Date> = new Map();
   private maxLogEntries = 1000;
 
   constructor() {
@@ -51,39 +53,32 @@ export class ProcessManager extends EventEmitter {
     });
 
     this.processes.set(instanceId, child);
+    this.startedAt.set(instanceId, new Date());
     this.logs.set(instanceId, []);
+    this.emitLogEntry(instanceId, this.addLog(instanceId, 'system', `Process started (PID: ${child.pid})`));
 
-    
-    this.addLog(instanceId, 'system', `Process started (PID: ${child.pid})`);
-
-    
     child.stdout?.on('data', (data: Buffer) => {
-      const message = data.toString();
-      this.addLog(instanceId, 'stdout', message);
-      this.emit('log', instanceId, 'stdout', message);
+      this.addBufferedLogs(instanceId, 'stdout', data.toString());
     });
 
-    
     child.stderr?.on('data', (data: Buffer) => {
-      const message = data.toString();
-      this.addLog(instanceId, 'stderr', message);
-      this.emit('log', instanceId, 'stderr', message);
+      this.addBufferedLogs(instanceId, 'stderr', data.toString());
     });
 
-    
     child.on('exit', (code, signal) => {
+      this.flushBufferedLogs(instanceId);
       const message = `Process exited with code ${code}, signal ${signal}`;
       console.log(chalk.yellow(`${instanceId}: ${message}`));
-      this.addLog(instanceId, 'system', message);
+      this.emitLogEntry(instanceId, this.addLog(instanceId, 'system', message));
       this.emit('exit', instanceId, code, signal);
       this.processes.delete(instanceId);
+      this.startedAt.delete(instanceId);
     });
 
-    
     child.on('error', (error) => {
       const message = `Process error: ${error.message}`;
       console.error(chalk.red(`${instanceId}: ${message}`));
-      this.addLog(instanceId, 'system', message);
+      this.emitLogEntry(instanceId, this.addLog(instanceId, 'system', message));
       this.emit('error', instanceId, error);
     });
 
@@ -147,6 +142,19 @@ export class ProcessManager extends EventEmitter {
     return this.processes.get(instanceId)?.pid;
   }
 
+  getStartedAt(instanceId: string): Date | undefined {
+    return this.startedAt.get(instanceId);
+  }
+
+  getUptimeSeconds(instanceId: string): number | undefined {
+    const startedAt = this.startedAt.get(instanceId);
+    if (!startedAt) {
+      return undefined;
+    }
+
+    return Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000));
+  }
+
   getLogs(instanceId: string, limit?: number): LogEntry[] {
     const logs = this.logs.get(instanceId) || [];
     return limit ? logs.slice(-limit) : logs;
@@ -154,23 +162,60 @@ export class ProcessManager extends EventEmitter {
 
   clearLogs(instanceId: string): void {
     this.logs.set(instanceId, []);
+    this.logBuffers.delete(this.logBufferKey(instanceId, 'stdout'));
+    this.logBuffers.delete(this.logBufferKey(instanceId, 'stderr'));
   }
 
-  private addLog(instanceId: string, type: LogEntry['type'], message: string): void {
+  private addLog(instanceId: string, type: LogEntry['type'], message: string): LogEntry {
     const logs = this.logs.get(instanceId) || [];
-    
-    logs.push({
+    const entry = {
       timestamp: new Date().toISOString(),
       type,
       message: message.trim(),
-    });
+    };
 
-    
+    logs.push(entry);
+
     if (logs.length > this.maxLogEntries) {
       logs.splice(0, logs.length - this.maxLogEntries);
     }
 
     this.logs.set(instanceId, logs);
+    return entry;
+  }
+
+  private addBufferedLogs(instanceId: string, type: 'stdout' | 'stderr', chunk: string): void {
+    const key = this.logBufferKey(instanceId, type);
+    const buffered = `${this.logBuffers.get(key) || ''}${chunk}`;
+    const lines = buffered.split(/\r?\n/);
+    const trailing = lines.pop() || '';
+    this.logBuffers.set(key, trailing);
+
+    for (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      this.emitLogEntry(instanceId, this.addLog(instanceId, type, line));
+    }
+  }
+
+  private flushBufferedLogs(instanceId: string): void {
+    for (const type of ['stdout', 'stderr'] as const) {
+      const key = this.logBufferKey(instanceId, type);
+      const buffered = this.logBuffers.get(key);
+      if (buffered?.trim()) {
+        this.emitLogEntry(instanceId, this.addLog(instanceId, type, buffered));
+      }
+      this.logBuffers.delete(key);
+    }
+  }
+
+  private emitLogEntry(instanceId: string, entry: LogEntry): void {
+    this.emit('log', instanceId, entry.type, entry.message, entry.timestamp);
+  }
+
+  private logBufferKey(instanceId: string, type: 'stdout' | 'stderr'): string {
+    return `${instanceId}:${type}`;
   }
 
   stopAll(): void {
