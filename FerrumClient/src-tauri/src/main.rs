@@ -354,10 +354,67 @@ fn run_share_session(
         );
     }
     if udp_enabled {
-        start_udp_tunnel(relay_address, port, local_host, udp_local_port, stop);
+        start_udp_tunnel(
+            relay_address.clone(),
+            port,
+            local_host,
+            udp_local_port,
+            stop.clone(),
+        );
+    }
+
+    monitor_relay_allocation(&relay_address, port, stop, session)
+}
+
+fn monitor_relay_allocation(
+    relay_address: &str,
+    public_port: u16,
+    stop: Arc<AtomicBool>,
+    session: Arc<Mutex<ShareSession>>,
+) -> Result<(), String> {
+    let mut missed_checks = 0usize;
+
+    while !stop.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_secs(2));
+
+        match send_relay_command(relay_address, "LIST\n") {
+            Ok(response) if relay_list_contains_port(&response, public_port) => {
+                missed_checks = 0;
+            }
+            Ok(response) => {
+                missed_checks += 1;
+                if missed_checks >= 2 {
+                    if let Ok(mut guard) = session.lock() {
+                        guard.running = false;
+                        guard.status = ShareSessionStatus::Failed;
+                        guard.error = Some(format!(
+                            "relay allocation {public_port} disappeared: {}",
+                            response.trim()
+                        ));
+                    }
+                    return Err(format!("relay allocation {public_port} disappeared"));
+                }
+            }
+            Err(error) => {
+                missed_checks += 1;
+                if missed_checks >= 3 {
+                    if let Ok(mut guard) = session.lock() {
+                        guard.running = false;
+                        guard.status = ShareSessionStatus::Failed;
+                        guard.error = Some(format!("relay monitor failed: {error}"));
+                    }
+                    return Err(format!("relay monitor failed: {error}"));
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+fn relay_list_contains_port(response: &str, public_port: u16) -> bool {
+    let needle = format!("port={public_port} ");
+    response.lines().any(|line| line.contains(&needle))
 }
 
 fn wait_for_connect_response(

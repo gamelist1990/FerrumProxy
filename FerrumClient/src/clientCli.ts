@@ -1,4 +1,4 @@
-import { SharedServiceManager, SharedServiceStartRequest } from './sharedServiceManager';
+import { RelayShareClient, RelayShareStatus } from './relayShareClient';
 
 type ProtocolMode = 'tcp' | 'udp' | 'both';
 
@@ -8,8 +8,7 @@ interface ClientCliOptions {
   protocol: ProtocolMode;
   tcpPort?: number;
   udpPort?: number;
-  publicHost?: string;
-  bindHost?: string;
+  localHost?: string;
   haproxy: boolean;
 }
 
@@ -39,11 +38,8 @@ function parseArgs(argv: string[]): ClientCliOptions {
       case '--udp-port':
         options.udpPort = Number(next());
         break;
-      case '--public-host':
-        options.publicHost = next();
-        break;
-      case '--bind-host':
-        options.bindHost = next();
+      case '--local-host':
+        options.localHost = next();
         break;
       case '--haproxy':
         options.haproxy = true;
@@ -63,6 +59,9 @@ function parseArgs(argv: string[]): ClientCliOptions {
 function validate(options: ClientCliOptions): void {
   if (!['tcp', 'udp', 'both'].includes(options.protocol)) {
     throw new Error('--protocol must be tcp, udp, or both');
+  }
+  if (!options.relay?.trim()) {
+    throw new Error('--relay <ip:port> is required');
   }
   if ((options.protocol === 'tcp' || options.protocol === 'both') && !isPort(options.tcpPort)) {
     throw new Error('--tcp-port <port> is required for TCP sharing');
@@ -86,10 +85,9 @@ Options:
   --relay <ip:port>     FerrumProxy relay control endpoint (optional)
   --token <token>       Relay authentication token (optional)
   --protocol <mode>     tcp, udp, or both (default: tcp)
+  --local-host <host>   Local service host (default: 127.0.0.1)
   --tcp-port <port>     Local TCP service port
   --udp-port <port>     Local UDP service port
-  --public-host <host>  Public host to advertise (default: 127.0.0.1)
-  --bind-host <host>    Bind host for listeners (default: 0.0.0.0)
   --haproxy             Use HAProxy PROXY protocol v2
 `);
 }
@@ -104,48 +102,32 @@ async function main(): Promise<void> {
   if (options.udpPort) console.log(`  UDP Port: ${options.udpPort}`);
   if (options.haproxy) console.log(`  HAProxy: enabled`);
 
-  const manager = new SharedServiceManager();
+  const client = new RelayShareClient({
+    relayAddress: options.relay!,
+    token: options.token,
+    protocol: options.protocol,
+    localHost: options.localHost || '127.0.0.1',
+    tcpLocalPort: options.tcpPort,
+    udpLocalPort: options.udpPort,
+  });
 
-  const request: SharedServiceStartRequest = {
-    name: 'CLI Shared Service',
-    publicHost: options.publicHost || '127.0.0.1',
-    bindHost: options.bindHost || '0.0.0.0',
-    haproxy: options.haproxy,
-  };
-
-  if (options.protocol === 'tcp' || options.protocol === 'both') {
-    request.tcp = {
-      enabled: true,
-      localPort: options.tcpPort,
-    };
-  }
-
-  if (options.protocol === 'udp' || options.protocol === 'both') {
-    request.udp = {
-      enabled: true,
-      localPort: options.udpPort,
-    };
-  }
-
-  manager.on('change', (status) => {
-    const stats = status.stats;
+  client.on('status', (status: RelayShareStatus) => {
     process.stdout.write(
-      `\r  TCP: ${stats.activeTcpConnections} active / ${stats.totalTcpConnections} total | ` +
-      `UDP: ${stats.activeUdpPeers} active / ${stats.totalUdpPeers} total | ` +
-      `In: ${formatBytes(stats.bytesIn)} Out: ${formatBytes(stats.bytesOut)}  `
+      `\r  TCP tunnels: ${status.tcpTunnels} | ` +
+      `UDP tunnel: ${status.udpTunnel ? 'ready' : 'down'} | ` +
+      `In: ${formatBytes(status.bytesIn)} Out: ${formatBytes(status.bytesOut)}  `
     );
+  });
+  client.on('log', (message) => {
+    process.stdout.write(`\n${message}\n`);
   });
 
   try {
-    const status = await manager.start(request);
+    const endpoint = await client.start();
     console.log(`\nShared service started successfully!`);
-    console.log(`  ID: ${status.id}`);
-    if (status.tcp) {
-      console.log(`  TCP public port: ${status.tcp.publicPort} -> ${status.tcp.localHost}:${status.tcp.localPort}`);
-    }
-    if (status.udp) {
-      console.log(`  UDP public port: ${status.udp.publicPort} -> ${status.udp.localHost}:${status.udp.localPort}`);
-    }
+    console.log(`  Public URL: ${endpoint.display}`);
+    console.log(`  Relay: ${options.relay}`);
+    console.log(`  Local: ${options.localHost || '127.0.0.1'}`);
     console.log(`\nPress Ctrl+C to stop.\n`);
   } catch (error) {
     console.error(`Failed to start shared service: ${(error as Error).message}`);
@@ -154,7 +136,7 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     console.log('\nShutting down...');
-    await manager.stop();
+    await client.stop();
     console.log('Stopped.');
     process.exit(0);
   };
