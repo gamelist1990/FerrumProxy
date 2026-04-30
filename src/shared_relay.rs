@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use crate::bedrock::{
     rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
 };
 use crate::config::{ProxyConfig, SharedServiceConfig};
+use crate::proxy_protocol::build_proxy_v2_header;
 use crate::runtime::AppRuntime;
 use crate::tcp_tuning::apply_tcp_nodelay;
 
@@ -29,7 +30,7 @@ pub struct SharedRelayState {
     pub tcp_connections: Arc<RwLock<HashMap<String, TcpConnection>>>,
     pub udp_peers: Arc<RwLock<HashMap<String, UdpPeer>>>,
     pub port_allocations: Arc<RwLock<HashMap<u16, PortAllocation>>>,
-    pub tcp_tunnels: Arc<Mutex<HashMap<u16, VecDeque<TcpStream>>>>,
+    pub tcp_tunnels: Arc<Mutex<HashMap<u16, VecDeque<ClientTcpTunnel>>>>,
     pub udp_tunnels: Arc<Mutex<HashMap<u16, mpsc::Sender<UdpRelayPacket>>>>,
     pub udp_sockets: Arc<Mutex<HashMap<u16, Arc<UdpSocket>>>>,
     pub udp_cached_pongs: Arc<RwLock<HashMap<String, Vec<u8>>>>,
@@ -63,9 +64,15 @@ pub struct PortAllocation {
     pub client_addr: SocketAddr,
 }
 
+pub struct ClientTcpTunnel {
+    pub stream: TcpStream,
+    pub haproxy: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct UdpRelayPacket {
     pub remote_addr: SocketAddr,
+    pub destination_addr: SocketAddr,
     pub payload: Vec<u8>,
 }
 
@@ -429,7 +436,10 @@ mod tests {
     use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UdpSocket;
+    use tokio::sync::oneshot;
     use tokio::time::timeout;
+
+    const PROXY_V2_SIGNATURE: &[u8; 12] = b"\r\n\r\n\0\r\nQUIT\n";
 
     #[tokio::test]
     async fn shared_relay_forwards_tcp_through_client_tunnel() -> Result<()> {
@@ -504,6 +514,112 @@ mod tests {
 
         let response = udp_roundtrip(public_port, b"hello over udp").await?;
         assert_eq!(response, b"hello over udp");
+
+        relay.abort();
+        tunnel_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_relay_prepends_haproxy_header_for_tcp_tunnel() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let (received_tx, received_rx) = oneshot::channel();
+        let local_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let local_port = local_listener.local_addr()?.port();
+        let relay = spawn_test_relay(control_port, public_port);
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = local_listener.accept().await {
+                let mut buf = vec![0u8; 128];
+                if let Ok(len) = socket.read(&mut buf).await {
+                    buf.truncate(len);
+                    let _ = received_tx.send(buf);
+                }
+            }
+        });
+
+        let response =
+            send_control(control_port, &format!("CONNECT 127.0.0.1:{local_port}\n")).await?;
+        let allocated = parse_test_public_port(&response)?;
+        assert_eq!(allocated, public_port);
+
+        let tunnel_task = tokio::spawn(async move {
+            let mut tunnel = TcpStream::connect(("127.0.0.1", control_port)).await?;
+            tunnel
+                .write_all(format!("TUNNEL {allocated} HAPROXY\n").as_bytes())
+                .await?;
+
+            let mut start = [0u8; 6];
+            tunnel.read_exact(&mut start).await?;
+            assert_eq!(&start, b"START\n");
+
+            let mut local = TcpStream::connect(("127.0.0.1", local_port)).await?;
+            let _ = tokio::io::copy_bidirectional(&mut tunnel, &mut local).await?;
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let mut public = TcpStream::connect(("127.0.0.1", public_port)).await?;
+        public.write_all(b"hello tcp").await?;
+
+        let received = timeout(Duration::from_secs(5), received_rx).await??;
+        assert!(received.starts_with(PROXY_V2_SIGNATURE));
+        assert!(received.ends_with(b"hello tcp"));
+
+        relay.abort();
+        tunnel_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_relay_prepends_haproxy_header_for_udp_tunnel() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let backend = UdpSocket::bind("127.0.0.1:0").await?;
+        let backend_port = backend.local_addr()?.port();
+        let (received_tx, received_rx) = oneshot::channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let relay = spawn_test_relay(control_port, public_port);
+
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 512];
+            if let Ok((len, _)) = backend.recv_from(&mut buf).await {
+                buf.truncate(len);
+                let _ = received_tx.send(buf);
+            }
+        });
+
+        let response =
+            send_control(control_port, &format!("CONNECT 127.0.0.1:{backend_port}\n")).await?;
+        let allocated = parse_test_public_port(&response)?;
+        assert_eq!(allocated, public_port);
+        wait_for_udp_port(public_port).await?;
+
+        let tunnel_task = tokio::spawn(async move {
+            let mut tunnel = TcpStream::connect(("127.0.0.1", control_port)).await?;
+            tunnel
+                .write_all(format!("UDP_TUNNEL {allocated} HAPROXY\n").as_bytes())
+                .await?;
+            let mut ready = [0u8; 6];
+            tunnel.read_exact(&mut ready).await?;
+            assert_eq!(&ready, b"READY\n");
+            let _ = ready_tx.send(());
+            let local = UdpSocket::bind("127.0.0.1:0").await?;
+
+            let (_, payload) = read_udp_frame(&mut tunnel).await?;
+            local.send_to(&payload, ("127.0.0.1", backend_port)).await?;
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        timeout(Duration::from_secs(5), ready_rx).await??;
+        client
+            .send_to(b"hello udp", ("127.0.0.1", public_port))
+            .await?;
+
+        let received = timeout(Duration::from_secs(5), received_rx).await??;
+        assert!(received.starts_with(PROXY_V2_SIGNATURE));
+        assert!(received.ends_with(b"hello udp"));
 
         relay.abort();
         tunnel_task.abort();
@@ -874,7 +990,7 @@ async fn handle_tcp_tunnel(
     state: &Arc<SharedRelayState>,
 ) -> Result<()> {
     let parts: Vec<&str> = request.split_whitespace().collect();
-    if parts.len() != 2 {
+    if !(2..=3).contains(&parts.len()) {
         return Ok(());
     }
 
@@ -887,6 +1003,9 @@ async fn handle_tcp_tunnel(
         return Ok(());
     }
 
+    let haproxy = parts
+        .get(2)
+        .is_some_and(|part| part.eq_ignore_ascii_case("HAPROXY"));
     apply_tcp_nodelay(&stream, "shared relay tcp tunnel");
     state
         .tcp_tunnels
@@ -894,8 +1013,11 @@ async fn handle_tcp_tunnel(
         .await
         .entry(port)
         .or_default()
-        .push_back(stream);
-    debug!("Queued client tunnel for relay port {}", port);
+        .push_back(ClientTcpTunnel { stream, haproxy });
+    debug!(
+        "Queued client tunnel for relay port {} (haproxy={})",
+        port, haproxy
+    );
     Ok(())
 }
 
@@ -905,7 +1027,7 @@ async fn handle_udp_tunnel(
     state: &Arc<SharedRelayState>,
 ) -> Result<()> {
     let parts: Vec<&str> = request.split_whitespace().collect();
-    if parts.len() != 2 {
+    if !(2..=3).contains(&parts.len()) {
         return Ok(());
     }
 
@@ -918,6 +1040,9 @@ async fn handle_udp_tunnel(
         return Ok(());
     }
 
+    let haproxy = parts
+        .get(2)
+        .is_some_and(|part| part.eq_ignore_ascii_case("HAPROXY"));
     apply_tcp_nodelay(&stream, "shared relay udp tunnel");
     let Some(socket) = state.udp_sockets.lock().await.get(&port).cloned() else {
         return Ok(());
@@ -929,8 +1054,28 @@ async fn handle_udp_tunnel(
     stream.write_all(b"READY\n").await?;
     let (mut reader, mut writer) = stream.into_split();
     let write_task = tokio::spawn(async move {
+        let mut proxy_header_sent = HashSet::<SocketAddr>::new();
         while let Some(packet) = rx.recv().await {
-            if write_udp_frame(&mut writer, packet.remote_addr, &packet.payload)
+            let send_proxy_header = haproxy
+                && (is_offline_ping(&packet.payload)
+                    || !proxy_header_sent.contains(&packet.remote_addr));
+            let payload = if send_proxy_header {
+                let header = build_proxy_v2_header(
+                    packet.remote_addr.ip(),
+                    packet.remote_addr.port(),
+                    packet.destination_addr.ip(),
+                    packet.destination_addr.port(),
+                    true,
+                );
+                if !is_offline_ping(&packet.payload) {
+                    proxy_header_sent.insert(packet.remote_addr);
+                }
+                [header, packet.payload].concat()
+            } else {
+                packet.payload
+            };
+
+            if write_udp_frame(&mut writer, packet.remote_addr, &payload)
                 .await
                 .is_err()
             {
@@ -1209,6 +1354,7 @@ async fn start_udp_relay_port(
             let _ = tunnel
                 .send(UdpRelayPacket {
                     remote_addr,
+                    destination_addr: local_addr,
                     payload: buf[..len].to_vec(),
                 })
                 .await;
@@ -1240,7 +1386,18 @@ async fn relay_tcp_connection(
     port: u16,
     state: Arc<SharedRelayState>,
 ) -> Result<()> {
-    let mut target_stream = wait_for_ready_client_tunnel(port, state).await?;
+    let destination_addr = client_stream.local_addr()?;
+    let mut target_tunnel = wait_for_ready_client_tunnel(port, state).await?;
+    if target_tunnel.haproxy {
+        let header = build_proxy_v2_header(
+            client_addr.ip(),
+            client_addr.port(),
+            destination_addr.ip(),
+            destination_addr.port(),
+            false,
+        );
+        target_tunnel.stream.write_all(&header).await?;
+    }
 
     debug!(
         "Relay connection {} -> client tunnel on {}",
@@ -1248,7 +1405,7 @@ async fn relay_tcp_connection(
     );
 
     let (mut client_read, mut client_write) = client_stream.split();
-    let (mut target_read, mut target_write) = target_stream.split();
+    let (mut target_read, mut target_write) = target_tunnel.stream.split();
 
     let client_to_target = async {
         let mut buf = vec![0u8; BUFFER_SIZE];
@@ -1292,7 +1449,10 @@ async fn relay_tcp_connection(
     Ok(())
 }
 
-async fn wait_for_client_tunnel(port: u16, state: Arc<SharedRelayState>) -> Result<TcpStream> {
+async fn wait_for_client_tunnel(
+    port: u16,
+    state: Arc<SharedRelayState>,
+) -> Result<ClientTcpTunnel> {
     loop {
         if let Some(stream) = state
             .tcp_tunnels
@@ -1311,10 +1471,10 @@ async fn wait_for_client_tunnel(port: u16, state: Arc<SharedRelayState>) -> Resu
 async fn wait_for_ready_client_tunnel(
     port: u16,
     state: Arc<SharedRelayState>,
-) -> Result<TcpStream> {
+) -> Result<ClientTcpTunnel> {
     loop {
         let mut stream = wait_for_client_tunnel(port, Arc::clone(&state)).await?;
-        match stream.write_all(b"START\n").await {
+        match stream.stream.write_all(b"START\n").await {
             Ok(()) => return Ok(stream),
             Err(err) => {
                 debug!("Discarded stale client tunnel for relay port {port}: {err}");

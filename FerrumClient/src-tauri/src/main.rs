@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{copy, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -100,12 +100,76 @@ struct ActiveShareSession {
     stop: Arc<AtomicBool>,
 }
 
-fn config_path() -> Result<PathBuf, String> {
+fn legacy_config_path() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|err| err.to_string())?;
     let dir = exe
         .parent()
         .ok_or_else(|| "failed to resolve executable directory".to_string())?;
     Ok(dir.join("config.json"))
+}
+
+fn config_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            return Ok(PathBuf::from(local_app_data).join("FerrumProxy Client"));
+        }
+
+        if let Some(app_data) = std::env::var_os("APPDATA") {
+            return Ok(PathBuf::from(app_data).join("FerrumProxy Client"));
+        }
+
+        return Err("failed to resolve AppData directory".to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+            return Ok(PathBuf::from(config_home).join("ferrumproxy-client"));
+        }
+
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(PathBuf::from(home)
+                .join(".config")
+                .join("ferrumproxy-client"));
+        }
+
+        Err("failed to resolve config directory".to_string())
+    }
+}
+
+fn config_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("config.json"))
+}
+
+fn ensure_config_parent(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn migrate_legacy_config(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    let legacy_path = legacy_config_path()?;
+    if !legacy_path.exists() {
+        return Ok(());
+    }
+
+    ensure_config_parent(path)?;
+    fs::copy(&legacy_path, path).map_err(|err| {
+        format!(
+            "failed to migrate config from {} to {}: {err}",
+            legacy_path.display(),
+            path.display()
+        )
+    })?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -116,6 +180,7 @@ fn shared_client_runtime() -> &'static str {
 #[tauri::command]
 fn load_client_config() -> Result<ClientConfigResponse, String> {
     let path = config_path()?;
+    migrate_legacy_config(&path)?;
     if !path.exists() {
         let config = ClientConfig::default();
         save_client_config(config.clone())?;
@@ -136,6 +201,7 @@ fn load_client_config() -> Result<ClientConfigResponse, String> {
 #[tauri::command]
 fn save_client_config(config: ClientConfig) -> Result<String, String> {
     let path = config_path()?;
+    ensure_config_parent(&path)?;
     let text = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
     fs::write(&path, text).map_err(|err| err.to_string())?;
     Ok(path.display().to_string())
@@ -212,6 +278,7 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
             config.udp_enabled,
             config.tcp_local_port,
             config.udp_local_port,
+            config.haproxy,
             stop,
             Arc::clone(&session),
         ) {
@@ -295,6 +362,7 @@ fn run_share_session(
     udp_enabled: bool,
     tcp_local_port: u16,
     udp_local_port: u16,
+    haproxy: bool,
     stop: Arc<AtomicBool>,
     session: Arc<Mutex<ShareSession>>,
 ) -> Result<(), String> {
@@ -350,6 +418,7 @@ fn run_share_session(
             port,
             local_host.clone(),
             tcp_local_port,
+            haproxy,
             stop.clone(),
         );
     }
@@ -359,6 +428,7 @@ fn run_share_session(
             port,
             local_host,
             udp_local_port,
+            haproxy,
             stop.clone(),
         );
     }
@@ -492,11 +562,19 @@ fn start_udp_tunnel(
     public_port: u16,
     local_host: String,
     local_port: u16,
+    haproxy: bool,
     stop: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
-            match run_udp_tunnel(&relay_address, public_port, &local_host, local_port, &stop) {
+            match run_udp_tunnel(
+                &relay_address,
+                public_port,
+                &local_host,
+                local_port,
+                haproxy,
+                &stop,
+            ) {
                 Ok(()) => {}
                 Err(_) => thread::sleep(Duration::from_millis(500)),
             }
@@ -509,11 +587,17 @@ fn run_udp_tunnel(
     public_port: u16,
     local_host: &str,
     local_port: u16,
+    haproxy: bool,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut tunnel = connect_tcp_endpoint(relay_address, Duration::from_secs(5))?;
+    let command = if haproxy {
+        format!("UDP_TUNNEL {public_port} HAPROXY\n")
+    } else {
+        format!("UDP_TUNNEL {public_port}\n")
+    };
     tunnel
-        .write_all(format!("UDP_TUNNEL {public_port}\n").as_bytes())
+        .write_all(command.as_bytes())
         .map_err(|err| format!("failed to register UDP tunnel: {err}"))?;
 
     let mut ready = [0u8; 6];
@@ -681,6 +765,7 @@ fn start_tcp_tunnel_pool(
     public_port: u16,
     local_host: String,
     local_port: u16,
+    haproxy: bool,
     stop: Arc<AtomicBool>,
 ) {
     for _ in 0..8 {
@@ -689,7 +774,14 @@ fn start_tcp_tunnel_pool(
         let stop = stop.clone();
         thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                match open_tcp_tunnel(&relay_address, public_port, &local_host, local_port, &stop) {
+                match open_tcp_tunnel(
+                    &relay_address,
+                    public_port,
+                    &local_host,
+                    local_port,
+                    haproxy,
+                    &stop,
+                ) {
                     Ok(()) => {}
                     Err(_) => thread::sleep(Duration::from_millis(250)),
                 }
@@ -703,11 +795,17 @@ fn open_tcp_tunnel(
     public_port: u16,
     local_host: &str,
     local_port: u16,
+    haproxy: bool,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut tunnel = connect_tcp_endpoint(relay_address, Duration::from_secs(5))?;
+    let command = if haproxy {
+        format!("TUNNEL {public_port} HAPROXY\n")
+    } else {
+        format!("TUNNEL {public_port}\n")
+    };
     tunnel
-        .write_all(format!("TUNNEL {public_port}\n").as_bytes())
+        .write_all(command.as_bytes())
         .map_err(|err| format!("failed to register tunnel: {err}"))?;
 
     let mut start = [0u8; 6];
