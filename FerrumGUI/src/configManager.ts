@@ -28,6 +28,7 @@ export interface FerrumProxyConfig {
       name?: string;
       token?: string;
       enabled?: boolean;
+      fixedPort?: number;
       priority?: number;
       limits?: {
         maxTcpConnections?: number;
@@ -264,6 +265,7 @@ export class ConfigManager extends EventEmitter {
             if (!token.token || typeof token.token !== 'string') {
               errors.push(`sharedService.tokens[${index}].token must be a non-empty string`);
             }
+            validatePort(token.fixedPort, `sharedService.tokens[${index}].fixedPort`);
             if (
               token.priority !== undefined &&
               (!Number.isInteger(token.priority) || Number(token.priority) < 0)

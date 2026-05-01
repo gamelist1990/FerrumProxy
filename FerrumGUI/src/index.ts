@@ -5,7 +5,7 @@ import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
 import path from 'path';
 import fs from 'fs/promises';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import chalk from 'chalk';
 import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './services.js';
 import { ProcessManager } from './processManager.js';
@@ -36,6 +36,7 @@ const appRoot = isCompiled
 
 const app = express();
 app.set('trust proxy', true);
+app.disable('x-powered-by');
 
 const tlsCertPath = process.env.FERRUMPROXYGUI_TLS_CERT || process.env.HTTPS_CERT_PATH;
 const tlsKeyPath = process.env.FERRUMPROXYGUI_TLS_KEY || process.env.HTTPS_KEY_PATH;
@@ -52,6 +53,79 @@ const serviceManager = new ServiceManager(path.join(appRoot, 'services.json'));
 const processManager = new ProcessManager();
 const configManager = new ConfigManager();
 const authManager = new AuthManager(serviceManager);
+
+type SharedRelayTokenIssuePayload = {
+  tokenName?: unknown;
+  name?: unknown;
+  priority?: unknown;
+  fixedPort?: unknown;
+  fixedPublicPort?: unknown;
+  maxBytesPerSecond?: unknown;
+  tokenBandwidthBytesPerSecond?: unknown;
+  maxTcpConnections?: unknown;
+  maxUdpPeers?: unknown;
+};
+
+function generateSharedRelayToken(): string {
+  return `fp_${randomBytes(32).toString('base64url')}`;
+}
+
+function parseRequiredString(value: unknown, field: string, maxLength: number): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${field} must be a string`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`${field} is required`);
+  }
+  if (trimmed.length > maxLength) {
+    throw new Error(`${field} must be ${maxLength} characters or less`);
+  }
+  return trimmed;
+}
+
+function parseOptionalInteger(
+  value: unknown,
+  field: string,
+  options: { min: number; max: number }
+): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`${field} must be an integer`);
+  }
+  if (value < options.min || value > options.max) {
+    throw new Error(`${field} must be between ${options.min} and ${options.max}`);
+  }
+  return value;
+}
+
+function parseRequiredInteger(
+  value: unknown,
+  field: string,
+  options: { min: number; max: number }
+): number {
+  const parsed = parseOptionalInteger(value, field, options);
+  if (parsed === undefined) {
+    throw new Error(`${field} is required`);
+  }
+  return parsed;
+}
+
+function assertPlainObject(value: unknown, name: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${name} must be a JSON object`);
+  }
+}
+
+function rejectUnknownFields(payload: Record<string, unknown>, allowedFields: string[]): void {
+  const allowed = new Set(allowedFields);
+  const unknown = Object.keys(payload).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new Error(`Unknown field(s): ${unknown.join(', ')}`);
+  }
+}
 
 function isRequestHttps(req: express.Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https';
@@ -90,7 +164,234 @@ function createDefaultConfig(): FerrumProxyConfig {
   };
 }
 
+type SecurityScope = 'web' | 'api' | 'auth' | 'websocket';
 
+type SecurityState = {
+  tokens: number;
+  lastRefillAt: number;
+  violations: number;
+  blockedUntil?: number;
+};
+
+const HTTP_RATE_LIMIT_PER_MINUTE = readPositiveIntegerEnv('FERRUMPROXYGUI_RATE_LIMIT_PER_MINUTE', 240);
+const HTTP_RATE_LIMIT_BURST = readPositiveIntegerEnv('FERRUMPROXYGUI_RATE_LIMIT_BURST', 80);
+const AUTH_RATE_LIMIT_PER_MINUTE = readPositiveIntegerEnv('FERRUMPROXYGUI_AUTH_RATE_LIMIT_PER_MINUTE', 30);
+const AUTH_RATE_LIMIT_BURST = readPositiveIntegerEnv('FERRUMPROXYGUI_AUTH_RATE_LIMIT_BURST', 10);
+const WEBSOCKET_RATE_LIMIT_PER_MINUTE = readPositiveIntegerEnv('FERRUMPROXYGUI_WEBSOCKET_RATE_LIMIT_PER_MINUTE', 30);
+const WEBSOCKET_RATE_LIMIT_BURST = readPositiveIntegerEnv('FERRUMPROXYGUI_WEBSOCKET_RATE_LIMIT_BURST', 12);
+const RATE_LIMIT_BLOCK_AFTER = readPositiveIntegerEnv('FERRUMPROXYGUI_RATE_LIMIT_BLOCK_AFTER', 6);
+const RATE_LIMIT_BLOCK_MS = readPositiveIntegerEnv('FERRUMPROXYGUI_RATE_LIMIT_BLOCK_MS', 10 * 60 * 1000);
+
+const DEFAULT_BLOCKED_USER_AGENT_FRAGMENTS = [
+  'curl/',
+  'wget/',
+  'python-requests',
+  'python-httpx',
+  'aiohttp',
+  'httpx/',
+  'go-http-client',
+  'java/',
+  'libwww-perl',
+  'masscan',
+  'nmap',
+  'nikto',
+  'sqlmap',
+  'nessus',
+  'acunetix',
+  'zgrab',
+  'w3af',
+  'scrapy',
+];
+
+const EXTRA_BLOCKED_USER_AGENT_FRAGMENTS = (process.env.FERRUMPROXYGUI_BLOCKED_USER_AGENTS ?? '')
+  .split(',')
+  .map((fragment) => fragment.trim().toLowerCase())
+  .filter(Boolean);
+
+const blockedUserAgentFragments = new Set([
+  ...DEFAULT_BLOCKED_USER_AGENT_FRAGMENTS,
+  ...EXTRA_BLOCKED_USER_AGENT_FRAGMENTS,
+]);
+
+const securityStateByClient = new Map<string, SecurityState>();
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.warn(chalk.yellow(`Ignoring invalid ${name}=${raw}`));
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function getRequestClientKey(req: express.Request): string {
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
+function getUpgradeClientKey(req: { socket: { remoteAddress?: string | null } }): string {
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
+function isBlockedUserAgent(userAgent: string | undefined): boolean {
+  if (!userAgent || !userAgent.trim()) {
+    return true;
+  }
+
+  const normalized = userAgent.toLowerCase();
+  return Array.from(blockedUserAgentFragments).some((fragment) => normalized.includes(fragment));
+}
+
+function selectSecurityScope(pathname: string): SecurityScope {
+  if (pathname.startsWith('/api/auth/')) {
+    return 'auth';
+  }
+
+  if (pathname.startsWith('/api/')) {
+    return 'api';
+  }
+
+  return 'web';
+}
+
+function getRateLimitPolicy(scope: SecurityScope): { capacity: number; refillPerMs: number } {
+  switch (scope) {
+    case 'auth':
+      return {
+        capacity: AUTH_RATE_LIMIT_BURST,
+        refillPerMs: AUTH_RATE_LIMIT_PER_MINUTE / 60_000,
+      };
+    case 'websocket':
+      return {
+        capacity: WEBSOCKET_RATE_LIMIT_BURST,
+        refillPerMs: WEBSOCKET_RATE_LIMIT_PER_MINUTE / 60_000,
+      };
+    default:
+      return {
+        capacity: HTTP_RATE_LIMIT_BURST,
+        refillPerMs: HTTP_RATE_LIMIT_PER_MINUTE / 60_000,
+      };
+  }
+}
+
+function getSecurityState(clientKey: string, now: number, initialTokens: number): SecurityState {
+  const state = securityStateByClient.get(clientKey);
+  if (state) {
+    return state;
+  }
+
+  const created: SecurityState = {
+    tokens: initialTokens,
+    lastRefillAt: now,
+    violations: 0,
+  };
+  securityStateByClient.set(clientKey, created);
+  return created;
+}
+
+function pruneExpiredSecurityStates(now: number): void {
+  for (const [clientKey, state] of securityStateByClient.entries()) {
+    if (state.blockedUntil && state.blockedUntil > now) {
+      continue;
+    }
+
+    if (now - state.lastRefillAt > 30 * 60 * 1000) {
+      securityStateByClient.delete(clientKey);
+    }
+  }
+}
+
+function consumeSecurityToken(clientKey: string, scope: SecurityScope): { allowed: boolean; retryAfterMs?: number } {
+  const now = Date.now();
+  pruneExpiredSecurityStates(now);
+
+  const policy = getRateLimitPolicy(scope);
+  const state = getSecurityState(clientKey, now, policy.capacity);
+  if (state.blockedUntil && state.blockedUntil > now) {
+    return { allowed: false, retryAfterMs: state.blockedUntil - now };
+  }
+
+  const elapsed = Math.max(0, now - state.lastRefillAt);
+  state.tokens = Math.min(policy.capacity, state.tokens + elapsed * policy.refillPerMs);
+  state.lastRefillAt = now;
+
+  if (state.tokens < 1) {
+    state.violations += 1;
+    if (state.violations >= RATE_LIMIT_BLOCK_AFTER) {
+      state.blockedUntil = now + RATE_LIMIT_BLOCK_MS;
+      return { allowed: false, retryAfterMs: RATE_LIMIT_BLOCK_MS };
+    }
+
+    return { allowed: false, retryAfterMs: Math.ceil((1 - state.tokens) / policy.refillPerMs) };
+  }
+
+  state.tokens -= 1;
+  if (state.violations > 0) {
+    state.violations -= 1;
+  }
+
+  return { allowed: true };
+}
+
+function rejectSuspiciousRequest(
+  req: express.Request,
+  res: express.Response,
+  status: number,
+  message: string,
+  retryAfterMs?: number
+): void {
+  if (retryAfterMs) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+  }
+
+  if (req.path.startsWith('/api/')) {
+    res.status(status).json({ error: message });
+    return;
+  }
+
+  res.status(status).type('text/plain').send(message);
+}
+
+function rejectSuspiciousUpgrade(socket: { write: (chunk: string) => void; destroy: () => void }, message: string): void {
+  socket.write(
+    'HTTP/1.1 403 Forbidden\r\n' +
+    'Connection: close\r\n' +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    `Content-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`
+  );
+  socket.destroy();
+}
+
+function securityGuard(scopeOverride?: SecurityScope) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const clientKey = getRequestClientKey(req);
+    const userAgent = req.get('user-agent');
+    const scope = scopeOverride ?? selectSecurityScope(req.path);
+
+    if (isBlockedUserAgent(userAgent)) {
+      console.warn(chalk.yellow(`Blocked suspicious user agent from ${clientKey}: ${userAgent || '<empty>'}`));
+      rejectSuspiciousRequest(req, res, 403, 'Forbidden');
+      return;
+    }
+
+    const result = consumeSecurityToken(clientKey, scope);
+    if (!result.allowed) {
+      console.warn(chalk.yellow(`Rate limited ${clientKey} on ${scope}`));
+      rejectSuspiciousRequest(req, res, 429, 'Too Many Requests', result.retryAfterMs);
+      return;
+    }
+
+    next();
+  };
+}
+
+
+app.use(securityGuard());
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
 app.use(authManager.authMiddleware());
@@ -170,6 +471,36 @@ if (isCompiled) {
 
 
 const clients: Set<WebSocket> = new Set();
+
+server.prependListener('upgrade', (req, socket) => {
+  const clientKey = getUpgradeClientKey(req);
+  const userAgentHeader = req.headers['user-agent'];
+  const userAgent = Array.isArray(userAgentHeader) ? userAgentHeader.join(' ') : userAgentHeader;
+
+  if (isBlockedUserAgent(userAgent)) {
+    console.warn(chalk.yellow(`Blocked suspicious websocket user agent from ${clientKey}: ${userAgent || '<empty>'}`));
+    rejectSuspiciousUpgrade(socket, 'Forbidden');
+    return;
+  }
+
+  const result = consumeSecurityToken(clientKey, 'websocket');
+  if (!result.allowed) {
+    console.warn(chalk.yellow(`Rate limited websocket upgrade from ${clientKey}`));
+    const message = 'Too Many Requests';
+    if (result.retryAfterMs) {
+      socket.end(
+        'HTTP/1.1 429 Too Many Requests\r\n' +
+        'Connection: close\r\n' +
+        `Retry-After: ${String(Math.max(1, Math.ceil(result.retryAfterMs / 1000)))}\r\n` +
+        'Content-Type: text/plain; charset=utf-8\r\n' +
+        `Content-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`
+      );
+      return;
+    }
+
+    rejectSuspiciousUpgrade(socket, message);
+  }
+});
 
 wss.on('connection', (ws) => {
   console.log(chalk.green('WebSocket client connected'));
@@ -357,11 +688,27 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Username and password required' });
     }
 
+    const loginAttempt = authManager.canAttemptLogin(username);
+    if (!loginAttempt.allowed) {
+      if (loginAttempt.retryAfterMs) {
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil(loginAttempt.retryAfterMs / 1000))));
+      }
+      return res.status(429).json({ error: 'Too many failed login attempts', retryAfterMs: loginAttempt.retryAfterMs });
+    }
+
     const isValid = await serviceManager.verifyAuth(username, password);
 
     if (!isValid) {
+      const failure = authManager.registerFailedLogin(username);
+      if (failure.blocked && failure.retryAfterMs) {
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil(failure.retryAfterMs / 1000))));
+        return res.status(429).json({ error: 'Too many failed login attempts', retryAfterMs: failure.retryAfterMs });
+      }
+
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+
+    authManager.clearFailedLogins(username);
 
     const token = authManager.createSession(username);
     res.cookie('session', token, {
@@ -979,6 +1326,123 @@ app.put('/api/instances/:id/config', async (req, res) => {
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/instances/:id/shared-service/tokens', authManager.strictAuthMiddleware(), async (req, res) => {
+  try {
+    const instanceId = req.params.id;
+    const instance = serviceManager.getById(instanceId);
+
+    if (!instance) {
+      return res.status(404).json({ error: 'Instance not found' });
+    }
+
+    assertPlainObject(req.body, 'payload');
+    rejectUnknownFields(req.body, [
+      'tokenName',
+      'name',
+      'priority',
+      'fixedPort',
+      'fixedPublicPort',
+      'maxBytesPerSecond',
+      'tokenBandwidthBytesPerSecond',
+      'maxTcpConnections',
+      'maxUdpPeers',
+    ]);
+
+    const payload = req.body as SharedRelayTokenIssuePayload;
+    const tokenName = parseRequiredString(payload.tokenName ?? payload.name, 'tokenName', 80);
+    const priority = parseRequiredInteger(payload.priority, 'priority', { min: 0, max: 65535 });
+    const fixedPort = parseOptionalInteger(payload.fixedPort ?? payload.fixedPublicPort, 'fixedPort', {
+      min: 1,
+      max: 65535,
+    });
+    const maxBytesPerSecond = parseRequiredInteger(
+      payload.maxBytesPerSecond ?? payload.tokenBandwidthBytesPerSecond,
+      'maxBytesPerSecond',
+      { min: 1024, max: Number.MAX_SAFE_INTEGER }
+    );
+    const maxTcpConnections = parseRequiredInteger(payload.maxTcpConnections, 'maxTcpConnections', {
+      min: 1,
+      max: 1_000_000,
+    });
+    const maxUdpPeers = parseRequiredInteger(payload.maxUdpPeers, 'maxUdpPeers', {
+      min: 1,
+      max: 1_000_000,
+    });
+
+    const config = await configManager.read(instance.configPath);
+    const sharedService = {
+      ...(config.sharedService || {}),
+      tokens: [...(config.sharedService?.tokens || [])],
+    };
+
+    if (fixedPort !== undefined) {
+      const range = sharedService.portRange;
+      if (
+        range &&
+        typeof range.start === 'number' &&
+        typeof range.end === 'number' &&
+        (fixedPort < range.start || fixedPort > range.end)
+      ) {
+        return res.status(400).json({
+          error: `fixedPort must be inside sharedService.portRange (${range.start}-${range.end})`,
+        });
+      }
+
+      const duplicateFixedPort = sharedService.tokens.some((token) => token.fixedPort === fixedPort);
+      if (duplicateFixedPort) {
+        return res.status(409).json({ error: `fixedPort ${fixedPort} is already assigned to another token` });
+      }
+    }
+
+    const duplicateName = sharedService.tokens.some((token) => token.name === tokenName);
+    if (duplicateName) {
+      return res.status(409).json({ error: `tokenName "${tokenName}" already exists` });
+    }
+
+    let tokenValue = generateSharedRelayToken();
+    while (sharedService.tokens.some((token) => token.token === tokenValue)) {
+      tokenValue = generateSharedRelayToken();
+    }
+
+    const issuedToken = {
+      name: tokenName,
+      token: tokenValue,
+      enabled: true,
+      fixedPort,
+      priority,
+      limits: {
+        maxBytesPerSecond,
+        maxTcpConnections,
+        maxUdpPeers,
+      },
+    };
+
+    sharedService.tokens.push(issuedToken);
+    config.sharedService = sharedService;
+
+    const validation = await configManager.validate(config, !!config.sharedService?.enabled);
+    if (!validation.valid) {
+      return res.status(400).json({ errors: validation.errors });
+    }
+
+    await configManager.write(instance.configPath, config);
+
+    broadcast({
+      type: 'configUpdated',
+      instanceId,
+      config,
+    });
+
+    res.status(201).json({ success: true, token: issuedToken });
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes(' must ') || message.includes(' is required') || message.startsWith('Unknown field')) {
+      return res.status(400).json({ error: message });
+    }
+    res.status(500).json({ error: message });
   }
 });
 

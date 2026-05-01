@@ -128,6 +128,15 @@ export interface SharedServiceToken {
   limits?: Partial<SharedServiceLimits>;
 }
 
+export interface IssueSharedServiceTokenRequest {
+  tokenName: string;
+  priority: number;
+  fixedPort?: number;
+  maxBytesPerSecond: number;
+  maxTcpConnections: number;
+  maxUdpPeers: number;
+}
+
 export interface Release {
   version: string;
   tag: string;
@@ -232,6 +241,23 @@ export async function updateConfig(id: string, config: FerrumProxyConfig): Promi
     const error = await res.json();
     throw new Error(error.errors?.join(', ') || 'Failed to update config');
   }
+}
+
+export async function issueSharedServiceToken(
+  id: string,
+  payload: IssueSharedServiceTokenRequest
+): Promise<SharedServiceToken> {
+  const res = await fetch(`${API_BASE}/instances/${id}/shared-service/tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: 'Failed to issue shared relay token' }));
+    throw new Error(error.error || error.errors?.join(', ') || 'Failed to issue shared relay token');
+  }
+  const data = await res.json();
+  return data.token;
 }
 
 export async function uploadListenerTlsAssets(

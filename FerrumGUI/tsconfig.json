@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022"],
+    "types": ["bun", "node"],
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "strict": true,

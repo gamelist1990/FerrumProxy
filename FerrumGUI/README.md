@@ -99,6 +99,17 @@ bun run build:all
 1. ブラウザで `http://localhost:3000` を開く
 2. 初回アクセス時に認証設定を促されます（任意のユーザー名とパスワードを設定）
 
+### 公開時の保護設定
+
+GUI を外部公開する場合は、既定の rate limit と User-Agent フィルタを有効にしたまま使うのが前提です。必要に応じて以下の環境変数で調整できます。
+
+- `FERRUMPROXYGUI_RATE_LIMIT_PER_MINUTE` - 一般 HTTP リクエストの許容量
+- `FERRUMPROXYGUI_AUTH_RATE_LIMIT_PER_MINUTE` - `/api/auth/*` の許容量
+- `FERRUMPROXYGUI_WEBSOCKET_RATE_LIMIT_PER_MINUTE` - WebSocket 接続試行の許容量
+- `FERRUMPROXYGUI_BLOCKED_USER_AGENTS` - 追加で拒否する User-Agent 断片をカンマ区切りで指定
+
+空の User-Agent や、`curl` / `wget` / `python-requests` / `nmap` / `sqlmap` などのスキャナ系 User-Agent は既定で拒否されます。
+
 ### インスタンスの作成
 
 1. サイドバーの「新規インスタンス作成」セクションに入力
