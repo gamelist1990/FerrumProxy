@@ -388,16 +388,6 @@ function App() {
           {isWaiting ? text.cancelWaiting : isRunning ? text.stopSharing : text.startSharing}
         </button>
 
-        {isWaiting && (
-          <div className="queue-status" role="status" aria-live="polite">
-            <span className="queue-spinner" aria-hidden="true" />
-            <div>
-              <strong>{text.waitingRelayAllocation}</strong>
-              <p>{queueLabel ? `${text.queue}: ${queueLabel}` : text.waitingAvailablePort}</p>
-            </div>
-          </div>
-        )}
-
         {displayError && (
           <section className="error-panel" role="alert">
             <div>
@@ -410,6 +400,33 @@ function App() {
           </section>
         )}
       </section>
+
+      {isWaiting && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="queue-modal" role="dialog" aria-modal="true" aria-live="polite">
+            <span className="queue-spinner" aria-hidden="true" />
+            <div>
+              <h2>{text.waitingRelayAllocation}</h2>
+              <p>{queueLabel ? `${text.queue}: ${queueLabel}` : text.waitingAvailablePort}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void (async () => {
+                  try {
+                    await invoke<void>("stop_sharing");
+                  } finally {
+                    setShareSession(null);
+                    setConnectionError(null);
+                  }
+                })();
+              }}
+            >
+              {text.cancelWaiting}
+            </button>
+          </section>
+        </div>
+      )}
 
       {statusModalOpen && (
         <div className="modal-backdrop" role="presentation" onClick={() => setStatusModalOpen(false)}>

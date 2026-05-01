@@ -422,26 +422,6 @@ input:focus {
   background: linear-gradient(135deg, #f2ae45, #d98f0f);
 }
 
-.queue-status {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid #f0c27a;
-  background: linear-gradient(180deg, #fff8ec, #fff2db);
-}
-
-.queue-status strong,
-.queue-status p {
-  margin: 0;
-}
-
-.queue-status p {
-  margin-top: 4px;
-  color: #725015;
-  font-size: 0.78rem;
-}
-
 .queue-spinner {
   flex: 0 0 auto;
   width: 20px;
@@ -515,6 +495,46 @@ input:focus {
   border: 1px solid #bdbdbd;
   background: #ffffff;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24);
+}
+
+.queue-modal {
+  width: min(420px, 100%);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #d79f4e;
+  background: #ffffff;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24);
+}
+
+.queue-modal h2,
+.queue-modal p {
+  margin: 0;
+}
+
+.queue-modal h2 {
+  color: #1d1d1d;
+  font-size: 1rem;
+}
+
+.queue-modal p {
+  margin-top: 5px;
+  color: #725015;
+  font-size: 0.82rem;
+}
+
+.queue-modal button {
+  grid-column: 1 / -1;
+  min-height: 34px;
+  border: 1px solid #c08a31;
+  background: #fff8ec;
+  color: #2c1b00;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .status-modal {

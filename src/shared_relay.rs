@@ -749,7 +749,58 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn shared_relay_queues_when_public_ports_are_exhausted() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let relay = spawn_test_relay_with_queue(control_port, public_port, 1);
+
+        let first = send_control(control_port, "CONNECT 127.0.0.1:19132\n").await?;
+        let allocated = parse_test_public_port(&first)?;
+        assert_eq!(allocated, public_port);
+
+        let queued =
+            tokio::spawn(
+                async move { send_control(control_port, "CONNECT 127.0.0.1:19133\n").await },
+            );
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let stats = send_control(control_port, "STATS\n").await?;
+                if stats.contains("waiting=1") && stats.contains("queue_max=1") {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await??;
+
+        let full = send_control(control_port, "CONNECT 127.0.0.1:19134\n").await?;
+        assert_eq!(full.trim(), "ERROR Waiting queue full");
+
+        let released = send_control(control_port, &format!("RELEASE {public_port}\n")).await?;
+        assert_eq!(released.trim(), "OK Released");
+
+        let second = timeout(Duration::from_secs(5), queued).await???;
+        let allocated_after_wait = parse_test_public_port(&second)?;
+        assert_eq!(allocated_after_wait, public_port);
+
+        let released = send_control(control_port, &format!("RELEASE {public_port}\n")).await?;
+        assert_eq!(released.trim(), "OK Released");
+
+        relay.abort();
+        Ok(())
+    }
+
     fn spawn_test_relay(control_port: u16, public_port: u16) -> tokio::task::JoinHandle<()> {
+        spawn_test_relay_with_queue(control_port, public_port, 128)
+    }
+
+    fn spawn_test_relay_with_queue(
+        control_port: u16,
+        public_port: u16,
+        queue_max_size: usize,
+    ) -> tokio::task::JoinHandle<()> {
         let config = SharedServiceConfig {
             enabled: true,
             control_bind: format!("127.0.0.1:{control_port}"),
@@ -763,7 +814,7 @@ mod tests {
             allow_anonymous: true,
             queue: SharedServiceQueueConfig {
                 enabled: true,
-                max_size: 128,
+                max_size: queue_max_size,
             },
             tokens: Vec::<SharedServiceToken>::new(),
             defaults: SharedServiceLimits::default(),
