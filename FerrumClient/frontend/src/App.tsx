@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { detectLanguage, getTranslation, saveLanguage, type ClientLanguage } from "./lang";
 import "./App.css";
 
 type ClientConfig = {
@@ -30,6 +31,11 @@ type ShareSession = {
   } | null;
   queueWaitingClients?: number | null;
   queueMaxSize?: number | null;
+  relayPingMs?: number | null;
+  tcpTunnels?: number;
+  udpTunnel?: boolean;
+  bytesIn?: number;
+  bytesOut?: number;
   error?: string | null;
 };
 
@@ -46,11 +52,23 @@ const defaultForm: ClientConfig = {
 
 function App() {
   const [form, setForm] = useState(defaultForm);
+  const [tcpPortInput, setTcpPortInput] = useState(String(defaultForm.tcpLocalPort));
+  const [udpPortInput, setUdpPortInput] = useState(String(defaultForm.udpLocalPort));
   const [shareSession, setShareSession] = useState<ShareSession | null>(null);
   const [configPath, setConfigPath] = useState("config.json");
   const [configReady, setConfigReady] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [tokenVisible, setTokenVisible] = useState(false);
+  const [copiedEndpoint, setCopiedEndpoint] = useState(false);
+  const [errorModalOpen, setErrorModalOpen] = useState(false);
+  const [statusModalOpen, setStatusModalOpen] = useState(false);
+  const [language, setLanguage] = useState<ClientLanguage>(() => detectLanguage());
+  const text = getTranslation(language);
+
+  const changeLanguage = (nextLanguage: ClientLanguage) => {
+    setLanguage(nextLanguage);
+    saveLanguage(nextLanguage);
+  };
 
   const probeConnection = async (nextForm: ClientConfig) => {
     await invoke<void>("probe_client_connection", { config: nextForm });
@@ -58,11 +76,19 @@ function App() {
   };
 
   useEffect(() => {
+    const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+    window.addEventListener("contextmenu", preventContextMenu);
+    return () => window.removeEventListener("contextmenu", preventContextMenu);
+  }, []);
+
+  useEffect(() => {
     void (async () => {
       try {
         const response = await invoke<ClientConfigResponse>("load_client_config");
         const nextForm = { ...defaultForm, ...response.config };
         setForm(nextForm);
+        setTcpPortInput(String(nextForm.tcpLocalPort));
+        setUdpPortInput(String(nextForm.udpLocalPort));
         setConfigPath(response.path);
         await probeConnection(nextForm);
         const session = await invoke<ShareSession | null>("get_share_session");
@@ -70,16 +96,16 @@ function App() {
       } catch (error) {
         console.error("failed to load or probe client config", error);
         setConnectionError(
-          error instanceof Error ? error.message : "failed to probe relay connection"
+          error instanceof Error ? error.message : text.failedProbe
         );
       } finally {
         setConfigReady(true);
       }
     })();
-  }, []);
+  }, [text.failedProbe]);
 
   useEffect(() => {
-    if (!configReady || shareSession?.status !== "waiting") return;
+    if (!configReady || (shareSession?.status !== "waiting" && shareSession?.status !== "running")) return;
 
     const timer = window.setInterval(() => {
       invoke<ShareSession | null>("get_share_session")
@@ -108,11 +134,37 @@ function App() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
+  const updatePortInput = (key: "tcpLocalPort" | "udpLocalPort", value: string) => {
+    const digits = value.replace(/\D/g, "");
+    if (key === "tcpLocalPort") {
+      setTcpPortInput(digits);
+    } else {
+      setUdpPortInput(digits);
+    }
+
+    if (digits === "") return;
+    const port = Number(digits);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      update(key, port);
+    }
+  };
+
+  const restorePortInput = (key: "tcpLocalPort" | "udpLocalPort") => {
+    if (key === "tcpLocalPort" && tcpPortInput === "") {
+      setTcpPortInput(String(form.tcpLocalPort));
+    }
+    if (key === "udpLocalPort" && udpPortInput === "") {
+      setUdpPortInput(String(form.udpLocalPort));
+    }
+  };
+
   const protocols = [
-    form.tcpEnabled ? `TCP ${form.localHost || "127.0.0.1"}:${form.tcpLocalPort}` : null,
-    form.udpEnabled ? `UDP ${form.localHost || "127.0.0.1"}:${form.udpLocalPort}` : null,
+    form.tcpEnabled ? `TCP ${form.localHost || "127.0.0.1"}:${tcpPortInput || form.tcpLocalPort}` : null,
+    form.udpEnabled ? `UDP ${form.localHost || "127.0.0.1"}:${udpPortInput || form.udpLocalPort}` : null,
   ].filter(Boolean);
-  const canStart = form.relayAddress.trim() !== "" && protocols.length > 0;
+  const tcpPortReady = !form.tcpEnabled || tcpPortInput !== "";
+  const udpPortReady = !form.udpEnabled || udpPortInput !== "";
+  const canStart = form.relayAddress.trim() !== "" && protocols.length > 0 && tcpPortReady && udpPortReady;
   const isWaiting = shareSession?.status === "waiting";
   const isRunning = shareSession?.status === "running";
   const displayError = connectionError || shareSession?.error || null;
@@ -121,26 +173,55 @@ function App() {
     typeof shareSession?.queueMaxSize === "number"
       ? `${shareSession.queueWaitingClients}/${shareSession.queueMaxSize}`
       : null;
-  const endpointLabel = shareSession?.endpoint?.display || (isWaiting ? "waiting for allocation" : null);
+  const endpointLabel = shareSession?.endpoint?.display || (isWaiting ? text.waitingForAllocation : null);
+  const copyEndpoint = shareSession?.endpoint
+    ? `${shareSession.endpoint.host}:${shareSession.endpoint.port}`
+    : null;
+  const statusMetrics = [
+    { label: text.ping, value: typeof shareSession?.relayPingMs === "number" ? `${shareSession.relayPingMs} ms` : text.notMeasured },
+    { label: text.tcpTunnels, value: String(shareSession?.tcpTunnels ?? 0) },
+    { label: text.udpTunnel, value: shareSession?.udpTunnel ? text.ready : text.down },
+    { label: text.bytesIn, value: formatBytes(shareSession?.bytesIn ?? 0) },
+    { label: text.bytesOut, value: formatBytes(shareSession?.bytesOut ?? 0) },
+  ];
+  const currentStatusLabel = isRunning ? text.connected : isWaiting ? text.waiting : text.stopped;
+  const currentStatusDetail = isRunning ? text.statusConnected : isWaiting ? text.statusAllocating : text.statusIdle;
+
+  const copyPublicEndpoint = async () => {
+    if (!copyEndpoint) return;
+    try {
+      await navigator.clipboard.writeText(copyEndpoint);
+      setCopiedEndpoint(true);
+      window.setTimeout(() => setCopiedEndpoint(false), 1400);
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : text.failedCopy);
+    }
+  };
 
   return (
     <main className="client-shell">
       <section className="client-panel" aria-label="FerrumProxy Client">
         <header className="client-header">
           <div>
-            <p>FerrumProxy Client</p>
-            <h1>共有クライアント</h1>
+            <p>{text.appName}</p>
+            <h1>{text.title}</h1>
           </div>
-          <span className={`status ${isRunning ? "running" : isWaiting ? "waiting" : "stopped"}`}>
-            {isRunning ? "Connected" : isWaiting ? "Waiting" : "Stopped"}
-          </span>
+          <div className="header-actions">
+            <span className={`status ${isRunning ? "running" : isWaiting ? "waiting" : "stopped"}`}>
+              {currentStatusLabel}
+            </span>
+            <button type="button" className="status-button" onClick={() => setStatusModalOpen(true)}>
+              <span>{text.status}</span>
+              <strong>{currentStatusDetail}</strong>
+            </button>
+          </div>
         </header>
 
         <div className="form-grid">
           <section className="form-section">
-            <h2>Relay</h2>
+            <h2>{text.relay}</h2>
             <label>
-              <span>FerrumProxy ip:port</span>
+              <span>{text.relayAddress}</span>
               <input
                 value={form.relayAddress}
                 onChange={(event) => update("relayAddress", event.target.value)}
@@ -148,30 +229,30 @@ function App() {
               />
             </label>
             <label>
-              <span>Auth token</span>
+              <span>{text.authToken}</span>
               <div className="secret-input">
                 <input
                   type={tokenVisible ? "text" : "password"}
                   value={form.token}
                   onChange={(event) => update("token", event.target.value)}
-                  placeholder="optional"
+                  placeholder={text.optional}
                   autoComplete="off"
                   spellCheck={false}
                 />
                 <button
                   type="button"
                   onClick={() => setTokenVisible((visible) => !visible)}
-                  aria-label={tokenVisible ? "Hide auth token" : "Show auth token"}
-                  title={tokenVisible ? "Hide auth token" : "Show auth token"}
+                  aria-label={tokenVisible ? text.hideAuthToken : text.showAuthToken}
+                  title={tokenVisible ? text.hideAuthToken : text.showAuthToken}
                 >
-                  {tokenVisible ? "Hide" : "Show"}
+                  {tokenVisible ? text.hide : text.show}
                 </button>
               </div>
             </label>
           </section>
 
           <section className="form-section">
-            <h2>Local Service</h2>
+            <h2>{text.localService}</h2>
             <div className="segmented">
               <label>
                 <input
@@ -192,7 +273,7 @@ function App() {
             </div>
 
             <label>
-              <span>Local IPv4 / host</span>
+              <span>{text.localHost}</span>
               <input
                 value={form.localHost}
                 onChange={(event) => update("localHost", event.target.value)}
@@ -203,26 +284,28 @@ function App() {
             <div className="port-grid">
               {form.tcpEnabled && (
                 <label>
-                  <span>TCP port</span>
+                  <span>{text.tcpPort}</span>
                   <input
                     type="number"
                     min={1}
                     max={65535}
-                    value={form.tcpLocalPort}
-                    onChange={(event) => update("tcpLocalPort", Number(event.target.value))}
+                    value={tcpPortInput}
+                    onChange={(event) => updatePortInput("tcpLocalPort", event.target.value)}
+                    onBlur={() => restorePortInput("tcpLocalPort")}
                   />
                 </label>
               )}
 
               {form.udpEnabled && (
                 <label>
-                  <span>UDP port</span>
+                  <span>{text.udpPort}</span>
                   <input
                     type="number"
                     min={1}
                     max={65535}
-                    value={form.udpLocalPort}
-                    onChange={(event) => update("udpLocalPort", Number(event.target.value))}
+                    value={udpPortInput}
+                    onChange={(event) => updatePortInput("udpLocalPort", event.target.value)}
+                    onBlur={() => restorePortInput("udpLocalPort")}
                   />
                 </label>
               )}
@@ -234,30 +317,37 @@ function App() {
                 checked={form.haproxy}
                 onChange={(event) => update("haproxy", event.target.checked)}
               />
-              <span>HAProxy PROXY protocol</span>
+              <span>{text.haproxy}</span>
             </label>
           </section>
         </div>
 
         <section className="summary">
           <div className="public-endpoint">
-            <span>Public URL</span>
-            <strong>{endpointLabel || "not shared"}</strong>
+            <span>{text.publicUrl}</span>
+            {copyEndpoint ? (
+              <button type="button" className="copy-endpoint" onClick={copyPublicEndpoint}>
+                <strong>{endpointLabel}</strong>
+                <small>{copiedEndpoint ? text.copied : text.copyIpPort}</small>
+              </button>
+            ) : (
+              <strong>{endpointLabel || text.notShared}</strong>
+            )}
           </div>
           <div>
-            <span>Relay</span>
+            <span>{text.relay}</span>
             <strong>{shareSession?.relayAddress || form.relayAddress || "not set"}</strong>
           </div>
           <div>
-            <span>Mode</span>
-            <strong>{protocols.length ? protocols.join(" / ") : "none"}</strong>
+            <span>{text.mode}</span>
+            <strong>{protocols.length ? protocols.join(" / ") : text.none}</strong>
           </div>
           <div>
             <span>HAProxy</span>
-            <strong>{form.haproxy ? "On" : "Off"}</strong>
+            <strong>{form.haproxy ? text.on : text.off}</strong>
           </div>
           <div>
-            <span>Config</span>
+            <span>{text.config}</span>
             <strong title={configPath}>{configPath.split(/[\\/]/).pop()}</strong>
           </div>
         </section>
@@ -288,34 +378,113 @@ function App() {
               } catch (error) {
                 console.error("failed to connect relay", error);
                 setConnectionError(
-                  error instanceof Error ? error.message : "failed to connect to relay"
+                  error instanceof Error ? error.message : text.failedConnect
                 );
               }
             })();
           }}
           disabled={!canStart && !isWaiting && !isRunning}
         >
-          {isWaiting ? "Cancel waiting" : isRunning ? "Stop sharing" : "Start sharing"}
+          {isWaiting ? text.cancelWaiting : isRunning ? text.stopSharing : text.startSharing}
         </button>
 
         {isWaiting && (
           <div className="queue-status" role="status" aria-live="polite">
             <span className="queue-spinner" aria-hidden="true" />
             <div>
-              <strong>Waiting for relay allocation</strong>
-              <p>{queueLabel ? `Queue: ${queueLabel}` : "Waiting for an available port"}</p>
+              <strong>{text.waitingRelayAllocation}</strong>
+              <p>{queueLabel ? `${text.queue}: ${queueLabel}` : text.waitingAvailablePort}</p>
             </div>
           </div>
         )}
 
         {displayError && (
-          <p className="connection-error" role="alert">
-            {displayError}
-          </p>
+          <section className="error-panel" role="alert">
+            <div>
+              <span>{text.error}</span>
+              <strong>{displayError}</strong>
+            </div>
+            <button type="button" onClick={() => setErrorModalOpen(true)}>
+              {text.details}
+            </button>
+          </section>
         )}
       </section>
+
+      {statusModalOpen && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setStatusModalOpen(false)}>
+          <section
+            className="status-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={text.statusDetails}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <p>{text.status}</p>
+                <h2>{text.statusDetails}</h2>
+              </div>
+              <button type="button" onClick={() => setStatusModalOpen(false)} aria-label={text.close}>
+                {text.close}
+              </button>
+            </header>
+            <div className="status-modal-body">
+              <div className="status-panel-head">
+                <div>
+                  <span>{text.status}</span>
+                  <strong>{currentStatusDetail}</strong>
+                </div>
+                <span className={`status-dot ${isRunning ? "running" : isWaiting ? "waiting" : ""}`} />
+              </div>
+              <div className="status-metrics">
+                {statusMetrics.map((metric) => (
+                  <div key={metric.label}>
+                    <span>{metric.label}</span>
+                    <strong>{metric.value}</strong>
+                  </div>
+                ))}
+              </div>
+              <label className="language-select">
+                <span>{text.language}</span>
+                <select value={language} onChange={(event) => changeLanguage(event.target.value as ClientLanguage)}>
+                  <option value="en">{text.english}</option>
+                  <option value="ja">{text.japanese}</option>
+                </select>
+              </label>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {displayError && errorModalOpen && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setErrorModalOpen(false)}>
+          <section
+            className="error-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={text.details}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <h2>{text.connectionError}</h2>
+              <button type="button" onClick={() => setErrorModalOpen(false)} aria-label={text.close}>
+                {text.close}
+              </button>
+            </header>
+            <pre>{displayError}</pre>
+          </section>
+        </div>
+      )}
     </main>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 export default App;

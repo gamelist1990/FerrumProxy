@@ -158,6 +158,7 @@ export const en_US = {
   tokenName: 'Token name',
   tokenValue: 'Token',
   tokenPriority: 'Priority',
+  tokenFixedPort: 'Fixed public port',
   tokenEnabled: 'Enabled',
   tokenBandwidth: 'Token bandwidth bytes/sec',
   tokenMaxTcp: 'Token max TCP',

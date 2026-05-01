@@ -80,6 +80,8 @@ pub struct SharedServiceToken {
     pub token: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub fixed_port: Option<u16>,
     #[serde(default = "default_shared_token_priority")]
     pub priority: u16,
     #[serde(default)]

@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{copy, Read, Write};
+use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, WindowEvent};
@@ -87,6 +87,11 @@ struct ShareSession {
     endpoint: Option<PublicEndpoint>,
     queue_waiting_clients: Option<usize>,
     queue_max_size: Option<usize>,
+    relay_ping_ms: Option<u64>,
+    tcp_tunnels: usize,
+    udp_tunnel: bool,
+    bytes_in: u64,
+    bytes_out: u64,
     error: Option<String>,
 }
 
@@ -98,6 +103,16 @@ struct ClientState {
 struct ActiveShareSession {
     public: Arc<Mutex<ShareSession>>,
     stop: Arc<AtomicBool>,
+    stats: Arc<SessionStats>,
+}
+
+#[derive(Default)]
+struct SessionStats {
+    tcp_tunnels: AtomicUsize,
+    bytes_in: AtomicU64,
+    bytes_out: AtomicU64,
+    udp_tunnel: AtomicBool,
+    relay_ping_ms: AtomicU64,
 }
 
 fn legacy_config_path() -> Result<PathBuf, String> {
@@ -232,6 +247,7 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
         format!("{}:{local_host}:{local_port}", config.token.trim())
     };
     let stop = Arc::new(AtomicBool::new(false));
+    let stats = Arc::new(SessionStats::default());
     let session = Arc::new(Mutex::new(ShareSession {
         running: false,
         status: ShareSessionStatus::Waiting,
@@ -239,6 +255,11 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
         endpoint: None,
         queue_waiting_clients: None,
         queue_max_size: None,
+        relay_ping_ms: None,
+        tcp_tunnels: 0,
+        udp_tunnel: false,
+        bytes_in: 0,
+        bytes_out: 0,
         error: None,
     }));
     let session_handle = Arc::clone(&session);
@@ -263,6 +284,7 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
         *current = Some(ActiveShareSession {
             public: Arc::clone(&session),
             stop: Arc::clone(&stop),
+            stats: Arc::clone(&stats),
         });
     }
 
@@ -280,6 +302,7 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
             config.udp_local_port,
             config.haproxy,
             stop,
+            stats,
             Arc::clone(&session),
         ) {
             if let Ok(mut guard) = session.lock() {
@@ -342,15 +365,26 @@ fn get_share_session(state: State<ClientState>) -> Result<Option<ShareSession>, 
         .lock()
         .map_err(|_| "failed to lock client session".to_string())?;
     Ok(match current.as_ref() {
-        Some(active) => Some(
-            active
+        Some(active) => {
+            let mut session = active
                 .public
                 .lock()
                 .map_err(|_| "failed to lock client session".to_string())?
-                .clone(),
-        ),
+                .clone();
+            apply_session_stats(&mut session, &active.stats);
+            Some(session)
+        }
         None => None,
     })
+}
+
+fn apply_session_stats(session: &mut ShareSession, stats: &SessionStats) {
+    session.tcp_tunnels = stats.tcp_tunnels.load(Ordering::Relaxed);
+    session.udp_tunnel = stats.udp_tunnel.load(Ordering::Relaxed);
+    session.bytes_in = stats.bytes_in.load(Ordering::Relaxed);
+    session.bytes_out = stats.bytes_out.load(Ordering::Relaxed);
+    let ping = stats.relay_ping_ms.load(Ordering::Relaxed);
+    session.relay_ping_ms = if ping > 0 { Some(ping) } else { None };
 }
 
 fn run_share_session(
@@ -364,6 +398,7 @@ fn run_share_session(
     udp_local_port: u16,
     haproxy: bool,
     stop: Arc<AtomicBool>,
+    stats: Arc<SessionStats>,
     session: Arc<Mutex<ShareSession>>,
 ) -> Result<(), String> {
     let request = format!("CONNECT {target}\n");
@@ -420,6 +455,7 @@ fn run_share_session(
             tcp_local_port,
             haproxy,
             stop.clone(),
+            Arc::clone(&stats),
         );
     }
     if udp_enabled {
@@ -430,16 +466,18 @@ fn run_share_session(
             udp_local_port,
             haproxy,
             stop.clone(),
+            Arc::clone(&stats),
         );
     }
 
-    monitor_relay_allocation(&relay_address, port, stop, session)
+    monitor_relay_allocation(&relay_address, port, stop, stats, session)
 }
 
 fn monitor_relay_allocation(
     relay_address: &str,
     public_port: u16,
     stop: Arc<AtomicBool>,
+    stats: Arc<SessionStats>,
     session: Arc<Mutex<ShareSession>>,
 ) -> Result<(), String> {
     let mut missed_checks = 0usize;
@@ -447,8 +485,13 @@ fn monitor_relay_allocation(
     while !stop.load(Ordering::Relaxed) {
         thread::sleep(Duration::from_secs(2));
 
+        let started = Instant::now();
         match send_relay_command(relay_address, "LIST\n") {
             Ok(response) if relay_list_contains_port(&response, public_port) => {
+                stats.relay_ping_ms.store(
+                    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                    Ordering::Relaxed,
+                );
                 missed_checks = 0;
             }
             Ok(response) => {
@@ -564,6 +607,7 @@ fn start_udp_tunnel(
     local_port: u16,
     haproxy: bool,
     stop: Arc<AtomicBool>,
+    stats: Arc<SessionStats>,
 ) {
     thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
@@ -574,6 +618,7 @@ fn start_udp_tunnel(
                 local_port,
                 haproxy,
                 &stop,
+                &stats,
             ) {
                 Ok(()) => {}
                 Err(_) => thread::sleep(Duration::from_millis(500)),
@@ -589,6 +634,7 @@ fn run_udp_tunnel(
     local_port: u16,
     haproxy: bool,
     stop: &Arc<AtomicBool>,
+    stats: &Arc<SessionStats>,
 ) -> Result<(), String> {
     let mut tunnel = connect_tcp_endpoint(relay_address, Duration::from_secs(5))?;
     let command = if haproxy {
@@ -607,6 +653,7 @@ fn run_udp_tunnel(
     if &ready != b"READY\n" {
         return Err("relay rejected UDP tunnel readiness".to_string());
     }
+    stats.udp_tunnel.store(true, Ordering::Relaxed);
 
     let local_target = format!("{local_host}:{local_port}");
     let local_target_addr = resolve_single_addr(&local_target)?;
@@ -620,106 +667,124 @@ fn run_udp_tunnel(
 
     eprintln!("[UDP] Tunnel started: forwarding to {}", local_target);
 
-    while !stop.load(Ordering::Relaxed) {
-        let (remote_addr, payload) = match read_udp_frame_blocking(&mut tunnel) {
-            Ok(frame) => frame,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
-            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => continue,
-            Err(err) => return Err(format!("UDP tunnel read failed: {err}")),
-        };
+    let result = (|| -> Result<(), String> {
+        while !stop.load(Ordering::Relaxed) {
+            let (remote_addr, payload) = match read_udp_frame_blocking(&mut tunnel) {
+                Ok(frame) => frame,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::TimedOut => continue,
+                Err(err) => return Err(format!("UDP tunnel read failed: {err}")),
+            };
+            stats
+                .bytes_in
+                .fetch_add(payload.len() as u64, Ordering::Relaxed);
 
-        eprintln!(
-            "[UDP] Received from relay: {} bytes from {}",
-            payload.len(),
-            remote_addr
-        );
-        let local = match peers.get(&remote_addr) {
-            Some(local) => Arc::clone(local),
-            None => {
-                let local = Arc::new(UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?);
-                local
-                    .set_read_timeout(Some(Duration::from_millis(500)))
-                    .map_err(|err| err.to_string())?;
-                let local_addr = local.local_addr().map_err(|err| err.to_string())?;
-                eprintln!(
-                    "[UDP] Peer started: {} via local {} -> {}",
-                    remote_addr, local_addr, local_target
-                );
+            eprintln!(
+                "[UDP] Received from relay: {} bytes from {}",
+                payload.len(),
+                remote_addr
+            );
+            let local = match peers.get(&remote_addr) {
+                Some(local) => Arc::clone(local),
+                None => {
+                    let local =
+                        Arc::new(UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?);
+                    local
+                        .set_read_timeout(Some(Duration::from_millis(500)))
+                        .map_err(|err| err.to_string())?;
+                    let local_addr = local.local_addr().map_err(|err| err.to_string())?;
+                    eprintln!(
+                        "[UDP] Peer started: {} via local {} -> {}",
+                        remote_addr, local_addr, local_target
+                    );
 
-                let local_reader = Arc::clone(&local);
-                let tunnel_writer = Arc::clone(&tunnel_writer);
-                let local_target_addr = local_target_addr;
-                let tunnel_alive = Arc::clone(&tunnel_alive);
-                let stop = Arc::clone(stop);
-                thread::spawn(move || {
-                    let mut response = vec![0u8; 65_507];
-                    while !stop.load(Ordering::Relaxed) && tunnel_alive.load(Ordering::Relaxed) {
-                        match local_reader.recv_from(&mut response) {
-                            Ok((len, from)) => {
-                                eprintln!("[UDP] Received from local: {} bytes from {}", len, from);
-                                if from != local_target_addr {
+                    let local_reader = Arc::clone(&local);
+                    let tunnel_writer = Arc::clone(&tunnel_writer);
+                    let local_target_addr = local_target_addr;
+                    let tunnel_alive = Arc::clone(&tunnel_alive);
+                    let stop = Arc::clone(stop);
+                    let stats = Arc::clone(stats);
+                    thread::spawn(move || {
+                        let mut response = vec![0u8; 65_507];
+                        while !stop.load(Ordering::Relaxed) && tunnel_alive.load(Ordering::Relaxed)
+                        {
+                            match local_reader.recv_from(&mut response) {
+                                Ok((len, from)) => {
                                     eprintln!(
+                                        "[UDP] Received from local: {} bytes from {}",
+                                        len, from
+                                    );
+                                    if from != local_target_addr {
+                                        eprintln!(
                                         "[UDP] Ignored local UDP response from unexpected source: {}",
                                         from
                                     );
-                                    continue;
-                                }
+                                        continue;
+                                    }
 
-                                let write_result = tunnel_writer
-                                    .lock()
-                                    .map_err(|err| err.to_string())
-                                    .and_then(|mut tunnel| {
-                                        write_udp_frame_blocking(
-                                            &mut tunnel,
-                                            remote_addr,
-                                            &response[..len],
-                                        )
-                                    });
-                                match write_result {
-                                    Ok(()) => eprintln!(
-                                        "[UDP] Forwarded response to relay: {} bytes for {}",
-                                        len, remote_addr
-                                    ),
-                                    Err(err) => {
-                                        eprintln!(
-                                            "[UDP] Failed to forward local response: {}",
-                                            err
+                                    let write_result = tunnel_writer
+                                        .lock()
+                                        .map_err(|err| err.to_string())
+                                        .and_then(|mut tunnel| {
+                                            write_udp_frame_blocking(
+                                                &mut tunnel,
+                                                remote_addr,
+                                                &response[..len],
+                                            )
+                                        });
+                                    match write_result {
+                                        Ok(()) => {
+                                            stats
+                                                .bytes_out
+                                                .fetch_add(len as u64, Ordering::Relaxed);
+                                            eprintln!(
+                                            "[UDP] Forwarded response to relay: {} bytes for {}",
+                                            len, remote_addr
                                         );
-                                        break;
+                                        }
+                                        Err(err) => {
+                                            eprintln!(
+                                                "[UDP] Failed to forward local response: {}",
+                                                err
+                                            );
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                            Err(err)
-                                if err.kind() == std::io::ErrorKind::WouldBlock
-                                    || err.kind() == std::io::ErrorKind::TimedOut =>
-                            {
-                                continue;
-                            }
-                            Err(err) => {
-                                eprintln!("[UDP] Failed to read from local service: {}", err);
-                                break;
+                                Err(err)
+                                    if err.kind() == std::io::ErrorKind::WouldBlock
+                                        || err.kind() == std::io::ErrorKind::TimedOut =>
+                                {
+                                    continue;
+                                }
+                                Err(err) => {
+                                    eprintln!("[UDP] Failed to read from local service: {}", err);
+                                    break;
+                                }
                             }
                         }
-                    }
-                });
+                    });
 
-                peers.insert(remote_addr, Arc::clone(&local));
-                local
-            }
-        };
+                    peers.insert(remote_addr, Arc::clone(&local));
+                    local
+                }
+            };
 
-        match local.send_to(&payload, local_target_addr) {
-            Ok(sent) => eprintln!("[UDP] Sent to local service: {} bytes", sent),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
-            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => continue,
-            Err(err) => {
-                eprintln!("[UDP] Failed to send to local service: {}", err);
-                return Err(format!("failed to send UDP to local service: {err}"));
+            match local.send_to(&payload, local_target_addr) {
+                Ok(sent) => eprintln!("[UDP] Sent to local service: {} bytes", sent),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::TimedOut => continue,
+                Err(err) => {
+                    eprintln!("[UDP] Failed to send to local service: {}", err);
+                    return Err(format!("failed to send UDP to local service: {err}"));
+                }
             }
         }
-    }
 
-    Ok(())
+        Ok(())
+    })();
+    stats.udp_tunnel.store(false, Ordering::Relaxed);
+    result
 }
 
 fn write_udp_frame_blocking(
@@ -767,11 +832,13 @@ fn start_tcp_tunnel_pool(
     local_port: u16,
     haproxy: bool,
     stop: Arc<AtomicBool>,
+    stats: Arc<SessionStats>,
 ) {
     for _ in 0..8 {
         let relay_address = relay_address.clone();
         let local_host = local_host.clone();
         let stop = stop.clone();
+        let stats = Arc::clone(&stats);
         thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 match open_tcp_tunnel(
@@ -781,6 +848,7 @@ fn start_tcp_tunnel_pool(
                     local_port,
                     haproxy,
                     &stop,
+                    &stats,
                 ) {
                     Ok(()) => {}
                     Err(_) => thread::sleep(Duration::from_millis(250)),
@@ -797,6 +865,7 @@ fn open_tcp_tunnel(
     local_port: u16,
     haproxy: bool,
     stop: &Arc<AtomicBool>,
+    stats: &Arc<SessionStats>,
 ) -> Result<(), String> {
     let mut tunnel = connect_tcp_endpoint(relay_address, Duration::from_secs(5))?;
     let command = if haproxy {
@@ -818,27 +887,56 @@ fn open_tcp_tunnel(
 
     let local_addr = format!("{local_host}:{local_port}");
     let local = connect_tcp_endpoint(&local_addr, Duration::from_secs(5))?;
-    pipe_bidirectional(tunnel, local, stop)
+    stats.tcp_tunnels.fetch_add(1, Ordering::Relaxed);
+    let result = pipe_bidirectional(tunnel, local, stop, stats);
+    stats.tcp_tunnels.fetch_sub(1, Ordering::Relaxed);
+    result
 }
 
 fn pipe_bidirectional(
     mut left: TcpStream,
     mut right: TcpStream,
     stop: &Arc<AtomicBool>,
+    stats: &Arc<SessionStats>,
 ) -> Result<(), String> {
     let mut left_read = left.try_clone().map_err(|err| err.to_string())?;
     let mut right_write = right.try_clone().map_err(|err| err.to_string())?;
     let stop_copy = stop.clone();
+    let forward_stats = Arc::clone(stats);
     let forward = thread::spawn(move || {
-        let _ = copy(&mut left_read, &mut right_write);
+        let _ = copy_counting(&mut left_read, &mut right_write, |bytes| {
+            forward_stats.bytes_in.fetch_add(bytes, Ordering::Relaxed);
+        });
         let _ = right_write.shutdown(Shutdown::Write);
         stop_copy.load(Ordering::Relaxed)
     });
 
-    let _ = copy(&mut right, &mut left);
+    let _ = copy_counting(&mut right, &mut left, |bytes| {
+        stats.bytes_out.fetch_add(bytes, Ordering::Relaxed);
+    });
     let _ = left.shutdown(Shutdown::Write);
     let _ = forward.join();
     Ok(())
+}
+
+fn copy_counting<R, W, F>(reader: &mut R, writer: &mut W, mut on_bytes: F) -> std::io::Result<u64>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(u64),
+{
+    let mut total = 0;
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            return Ok(total);
+        }
+        writer.write_all(&buffer[..bytes_read])?;
+        let bytes = bytes_read as u64;
+        total += bytes;
+        on_bytes(bytes);
+    }
 }
 
 fn send_relay_command(address: &str, command: &str) -> Result<String, String> {

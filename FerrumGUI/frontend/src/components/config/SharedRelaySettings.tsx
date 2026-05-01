@@ -28,6 +28,11 @@ const toPositiveInt = (value: string, fallback: number) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const toOptionalPort = (value: string) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : undefined;
+};
+
 export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config, onChange }) => {
   const sharedService = config.sharedService || {};
   const defaults = { ...defaultLimits, ...(sharedService.defaults || {}) };
@@ -205,6 +210,15 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
                     value={token.priority ?? 10}
                     onChange={(event) => updateToken(index, { priority: Math.max(0, Number.parseInt(event.target.value, 10) || 0) })}
                     min="0"
+                  />
+                  <Input
+                    label={t('tokenFixedPort')}
+                    type="number"
+                    value={token.fixedPort || ''}
+                    onChange={(event) => updateToken(index, { fixedPort: toOptionalPort(event.target.value) })}
+                    min="1"
+                    max="65535"
+                    placeholder="optional"
                   />
                   <Input
                     label={t('tokenBandwidth')}

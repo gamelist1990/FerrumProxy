@@ -252,23 +252,40 @@ async fn handle_connect(
     }
 
     // Validate token if provided
-    if let Some(ref token_value) = token {
+    let fixed_port = if let Some(ref token_value) = token {
         if !token_value.is_empty() {
-            let valid = auth_config
+            let token_config = auth_config
                 .tokens
                 .iter()
-                .any(|t| t.enabled && t.token == *token_value)
-                || auth_config.auth_tokens.iter().any(|t| t == token_value);
+                .find(|t| t.enabled && t.token == *token_value);
+            let valid =
+                token_config.is_some() || auth_config.auth_tokens.iter().any(|t| t == token_value);
             if !valid && !auth_config.allow_anonymous {
                 return Ok("ERROR Invalid token\n".to_string());
             }
+            token_config.and_then(|token| token.fixed_port)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(fixed_port) = fixed_port {
+        if fixed_port < config.port_range.start || fixed_port > config.port_range.end {
+            return Ok(format!(
+                "ERROR Fixed port {fixed_port} is outside port range {}-{}\n",
+                config.port_range.start, config.port_range.end
+            ));
         }
     }
 
-    let port = match allocate_or_wait_for_port(state, config, token.clone(), client_addr).await? {
-        Some(port) => port,
-        None => return Ok("ERROR Waiting queue full\n".to_string()),
-    };
+    let port =
+        match allocate_or_wait_for_port(state, config, token.clone(), client_addr, fixed_port)
+            .await?
+        {
+            Some(port) => port,
+            None => return Ok("ERROR Waiting queue full\n".to_string()),
+        };
     let _bind_addr = format!("{}:{}", config.public_bind, port);
     let public_host =
         public_host_for_response(&config.public_host, &config.control_bind, client_addr);
@@ -358,13 +375,16 @@ async fn allocate_or_wait_for_port(
     config: &SharedServiceConfig,
     token: Option<String>,
     client_addr: SocketAddr,
+    fixed_port: Option<u16>,
 ) -> Result<Option<u16>> {
     let queue_enabled = config.queue.enabled;
     let queue_max_size = config.queue.max_size;
     let mut queued = false;
 
     loop {
-        if let Some(port) = try_allocate_port(state, config, token.clone(), client_addr).await {
+        if let Some(port) =
+            try_allocate_port(state, config, token.clone(), client_addr, fixed_port).await
+        {
             if queued {
                 *state.waiting_clients.lock().await -= 1;
                 info!(
@@ -401,12 +421,37 @@ async fn try_allocate_port(
     config: &SharedServiceConfig,
     token: Option<String>,
     client_addr: SocketAddr,
+    fixed_port: Option<u16>,
 ) -> Option<u16> {
     let port_range_start = config.port_range.start;
     let port_range_end = config.port_range.end;
     let port_range_size = (port_range_end - port_range_start + 1) as usize;
 
     let mut port_allocations = state.port_allocations.write().await;
+    if let Some(candidate) = fixed_port {
+        if candidate < port_range_start || candidate > port_range_end {
+            warn!(
+                "Fixed shared relay port {} is outside configured range {}-{}",
+                candidate, port_range_start, port_range_end
+            );
+            return None;
+        }
+
+        if !port_allocations.contains_key(&candidate) {
+            port_allocations.insert(
+                candidate,
+                PortAllocation {
+                    port: candidate,
+                    token,
+                    client_addr,
+                },
+            );
+            return Some(candidate);
+        }
+
+        return None;
+    }
+
     let random_offset = random_port_offset(port_range_size);
     for i in 0..port_range_size {
         let candidate = port_range_start + ((random_offset + i) % port_range_size) as u16;

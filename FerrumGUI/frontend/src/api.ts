@@ -123,6 +123,7 @@ export interface SharedServiceToken {
   name?: string;
   token: string;
   enabled?: boolean;
+  fixedPort?: number;
   priority?: number;
   limits?: Partial<SharedServiceLimits>;
 }

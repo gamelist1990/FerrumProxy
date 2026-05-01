@@ -160,6 +160,7 @@ export const ja_JP: Translation = {
   tokenName: 'トークン名',
   tokenValue: 'トークン',
   tokenPriority: '優先度',
+  tokenFixedPort: '固定公開ポート',
   tokenEnabled: '有効',
   tokenBandwidth: 'トークン帯域 bytes/sec',
   tokenMaxTcp: 'トークン最大TCP',
