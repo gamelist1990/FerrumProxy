@@ -283,8 +283,11 @@ async fn handle_connect(
         match allocate_or_wait_for_port(state, config, token.clone(), client_addr, fixed_port)
             .await?
         {
-            Some(port) => port,
-            None => return Ok("ERROR Waiting queue full\n".to_string()),
+            AllocationResult::Allocated(port) => port,
+            AllocationResult::TokenInUse => {
+                return Ok("ERROR Token already has an active relay\n".to_string())
+            }
+            AllocationResult::Full => return Ok("ERROR Waiting queue full\n".to_string()),
         };
     let _bind_addr = format!("{}:{}", config.public_bind, port);
     let public_host =
@@ -370,39 +373,52 @@ fn random_port_offset(range_size: usize) -> usize {
     (mixed % range_size as u128) as usize
 }
 
+enum AllocationResult {
+    Allocated(u16),
+    TokenInUse,
+    Full,
+}
+
 async fn allocate_or_wait_for_port(
     state: &Arc<SharedRelayState>,
     config: &SharedServiceConfig,
     token: Option<String>,
     client_addr: SocketAddr,
     fixed_port: Option<u16>,
-) -> Result<Option<u16>> {
+) -> Result<AllocationResult> {
     let queue_enabled = config.queue.enabled;
     let queue_max_size = config.queue.max_size;
     let mut queued = false;
 
     loop {
-        if let Some(port) =
-            try_allocate_port(state, config, token.clone(), client_addr, fixed_port).await
-        {
-            if queued {
-                *state.waiting_clients.lock().await -= 1;
-                info!(
-                    "Dequeued shared relay client {}; allocated port {}",
-                    client_addr, port
-                );
+        match try_allocate_port(state, config, token.clone(), client_addr, fixed_port).await {
+            AllocationResult::Allocated(port) => {
+                if queued {
+                    *state.waiting_clients.lock().await -= 1;
+                    info!(
+                        "Dequeued shared relay client {}; allocated port {}",
+                        client_addr, port
+                    );
+                }
+                return Ok(AllocationResult::Allocated(port));
             }
-            return Ok(Some(port));
+            AllocationResult::TokenInUse => {
+                if queued {
+                    *state.waiting_clients.lock().await -= 1;
+                }
+                return Ok(AllocationResult::TokenInUse);
+            }
+            AllocationResult::Full => {}
         }
 
         if !queue_enabled {
-            return Ok(None);
+            return Ok(AllocationResult::Full);
         }
 
         if !queued {
             let mut waiting = state.waiting_clients.lock().await;
             if *waiting >= queue_max_size {
-                return Ok(None);
+                return Ok(AllocationResult::Full);
             }
             *waiting += 1;
             queued = true;
@@ -422,19 +438,28 @@ async fn try_allocate_port(
     token: Option<String>,
     client_addr: SocketAddr,
     fixed_port: Option<u16>,
-) -> Option<u16> {
+) -> AllocationResult {
     let port_range_start = config.port_range.start;
     let port_range_end = config.port_range.end;
     let port_range_size = (port_range_end - port_range_start + 1) as usize;
 
     let mut port_allocations = state.port_allocations.write().await;
+    if let Some(token_value) = token.as_deref().filter(|token| !token.is_empty()) {
+        if port_allocations
+            .values()
+            .any(|allocation| allocation.token.as_deref() == Some(token_value))
+        {
+            return AllocationResult::TokenInUse;
+        }
+    }
+
     if let Some(candidate) = fixed_port {
         if candidate < port_range_start || candidate > port_range_end {
             warn!(
                 "Fixed shared relay port {} is outside configured range {}-{}",
                 candidate, port_range_start, port_range_end
             );
-            return None;
+            return AllocationResult::Full;
         }
 
         if !port_allocations.contains_key(&candidate) {
@@ -446,10 +471,10 @@ async fn try_allocate_port(
                     client_addr,
                 },
             );
-            return Some(candidate);
+            return AllocationResult::Allocated(candidate);
         }
 
-        return None;
+        return AllocationResult::Full;
     }
 
     let random_offset = random_port_offset(port_range_size);
@@ -464,11 +489,11 @@ async fn try_allocate_port(
                     client_addr,
                 },
             );
-            return Some(candidate);
+            return AllocationResult::Allocated(candidate);
         }
     }
 
-    None
+    AllocationResult::Full
 }
 
 #[cfg(test)]
@@ -792,6 +817,49 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn shared_relay_rejects_second_active_relay_for_same_token() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let first_public_port = free_dual_stack_port().await?;
+        let second_public_port = free_dual_stack_port().await?;
+        let relay = spawn_test_relay_with_config(
+            control_port,
+            SharedServicePortRange {
+                start: first_public_port.min(second_public_port),
+                end: first_public_port.max(second_public_port),
+            },
+            128,
+            false,
+            vec![SharedServiceToken {
+                name: "single-use".to_string(),
+                token: "single-token".to_string(),
+                enabled: true,
+                fixed_port: None,
+                priority: 0,
+                limits: SharedServiceLimits::default(),
+            }],
+        );
+
+        let first = send_control(control_port, "CONNECT single-token:127.0.0.1:19132\n").await?;
+        assert!(first.starts_with("OK"), "{first}");
+        let allocated = parse_test_public_port(&first)?;
+
+        let second = send_control(control_port, "CONNECT single-token:127.0.0.1:19133\n").await?;
+        assert_eq!(second.trim(), "ERROR Token already has an active relay");
+
+        let released = send_control(control_port, &format!("RELEASE {allocated}\n")).await?;
+        assert_eq!(released.trim(), "OK Released");
+
+        let third = send_control(control_port, "CONNECT single-token:127.0.0.1:19134\n").await?;
+        assert!(third.starts_with("OK"), "{third}");
+        let allocated = parse_test_public_port(&third)?;
+        let released = send_control(control_port, &format!("RELEASE {allocated}\n")).await?;
+        assert_eq!(released.trim(), "OK Released");
+
+        relay.abort();
+        Ok(())
+    }
+
     fn spawn_test_relay(control_port: u16, public_port: u16) -> tokio::task::JoinHandle<()> {
         spawn_test_relay_with_queue(control_port, public_port, 128)
     }
@@ -801,22 +869,38 @@ mod tests {
         public_port: u16,
         queue_max_size: usize,
     ) -> tokio::task::JoinHandle<()> {
+        spawn_test_relay_with_config(
+            control_port,
+            SharedServicePortRange {
+                start: public_port,
+                end: public_port,
+            },
+            queue_max_size,
+            true,
+            Vec::<SharedServiceToken>::new(),
+        )
+    }
+
+    fn spawn_test_relay_with_config(
+        control_port: u16,
+        port_range: SharedServicePortRange,
+        queue_max_size: usize,
+        allow_anonymous: bool,
+        tokens: Vec<SharedServiceToken>,
+    ) -> tokio::task::JoinHandle<()> {
         let config = SharedServiceConfig {
             enabled: true,
             control_bind: format!("127.0.0.1:{control_port}"),
             public_bind: "127.0.0.1".to_string(),
             public_host: "127.0.0.1".to_string(),
-            port_range: SharedServicePortRange {
-                start: public_port,
-                end: public_port,
-            },
+            port_range,
             auth_tokens: Vec::new(),
-            allow_anonymous: true,
+            allow_anonymous,
             queue: SharedServiceQueueConfig {
                 enabled: true,
                 max_size: queue_max_size,
             },
-            tokens: Vec::<SharedServiceToken>::new(),
+            tokens,
             defaults: SharedServiceLimits::default(),
             maximums: SharedServiceLimits::default(),
         };
