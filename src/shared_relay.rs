@@ -913,27 +913,27 @@ mod tests {
             Vec::new(),
         );
 
-            assert_eq!(
-                send_control(control_port, "TOKEN\n").await?.trim(),
-                "OK Anonymous allowed"
-            );
+        assert_eq!(
+            send_control(control_port, "TOKEN\n").await?.trim(),
+            "OK Anonymous allowed"
+        );
 
         let anonymous = send_control(control_port, "CONNECT 127.0.0.1:19132\n").await?;
         assert!(anonymous.starts_with("OK"), "{anonymous}");
 
         assert_eq!(
-                send_control(control_port, "TOKEN aaaaaaaaaaaaaaaaaaa\n")
-                    .await?
-                    .trim(),
+            send_control(control_port, "TOKEN aaaaaaaaaaaaaaaaaaa\n")
+                .await?
+                .trim(),
             "ERROR Invalid token"
         );
         assert_eq!(
-                send_control(
-                    control_port,
-                    "CONNECT aaaaaaaaaaaaaaaaaaa:127.0.0.1:19133\n"
-                )
-                .await?
-                .trim(),
+            send_control(
+                control_port,
+                "CONNECT aaaaaaaaaaaaaaaaaaa:127.0.0.1:19133\n"
+            )
+            .await?
+            .trim(),
             "ERROR Invalid token"
         );
 
