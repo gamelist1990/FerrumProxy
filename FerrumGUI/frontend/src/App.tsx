@@ -1014,6 +1014,7 @@ function App() {
                 <InstanceSettingsModal
                   isOpen={settingsModalOpen}
                   onClose={() => setSettingsModalOpen(false)}
+                  instanceId={selectedInstanceData.id}
                   instanceName={selectedInstanceData.name}
                   instanceVersion={selectedInstanceData.version}
                   autoStart={!!selectedInstanceData.autoStart}

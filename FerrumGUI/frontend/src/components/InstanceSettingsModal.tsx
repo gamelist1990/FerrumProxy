@@ -5,6 +5,7 @@ import "./InstanceSettingsModal.css";
 interface InstanceSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  instanceId: string;
   instanceName: string;
   instanceVersion: string;
   autoRestart: boolean;
@@ -24,6 +25,7 @@ interface InstanceSettingsModalProps {
 export function InstanceSettingsModal({
   isOpen,
   onClose,
+  instanceId,
   instanceName,
   instanceVersion,
   autoRestart,
@@ -46,6 +48,8 @@ export function InstanceSettingsModal({
   const [managerTokenInput, setManagerTokenInput] = useState(managerToken ?? "");
   const [managerTokenVisible, setManagerTokenVisible] = useState(false);
   const [managerTokenCopied, setManagerTokenCopied] = useState(false);
+  const [instanceIdCopied, setInstanceIdCopied] = useState(false);
+  const [managerTokenListPathCopied, setManagerTokenListPathCopied] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState("latest");
   const [isSaving, setIsSaving] = useState(false);
   const resolvedSelectedVersion =
@@ -59,7 +63,9 @@ export function InstanceSettingsModal({
     setManagerPortInput(managerPort ? String(managerPort) : "");
     setManagerTokenInput(managerToken ?? "");
     setManagerTokenCopied(false);
-  }, [instanceName, autoRestart, autoStart, managerPort, managerToken]);
+    setInstanceIdCopied(false);
+    setManagerTokenListPathCopied(false);
+  }, [instanceId, instanceName, autoRestart, autoStart, managerPort, managerToken]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -161,6 +167,19 @@ export function InstanceSettingsModal({
     await navigator.clipboard.writeText(managerTokenInput.trim());
     setManagerTokenCopied(true);
     window.setTimeout(() => setManagerTokenCopied(false), 1400);
+  };
+
+  const copyInstanceId = async () => {
+    await navigator.clipboard.writeText(instanceId);
+    setInstanceIdCopied(true);
+    window.setTimeout(() => setInstanceIdCopied(false), 1400);
+  };
+
+  const managerTokenListPath = `/api/instances/${instanceId}/manager/api/v1/tokens`;
+  const copyManagerTokenListPath = async () => {
+    await navigator.clipboard.writeText(managerTokenListPath);
+    setManagerTokenListPathCopied(true);
+    window.setTimeout(() => setManagerTokenListPathCopied(false), 1400);
   };
 
   return (
@@ -273,6 +292,16 @@ export function InstanceSettingsModal({
             <small className="setting-description">
               FerrumProxy の --manager-port と --manager-token に合わせて設定します。
             </small>
+            <div className="copy-value-row">
+              <code title={instanceId}>{instanceId}</code>
+              <button
+                type="button"
+                className="small-action-button"
+                onClick={copyInstanceId}
+              >
+                {instanceIdCopied ? "コピー済み" : "Instance IDをコピー"}
+              </button>
+            </div>
             <input
               id="manager-port"
               type="number"
@@ -305,6 +334,16 @@ export function InstanceSettingsModal({
                 disabled={!managerTokenInput.trim()}
               >
                 {managerTokenCopied ? "コピー済み" : "コピー"}
+              </button>
+            </div>
+            <div className="copy-value-row">
+              <code title={managerTokenListPath}>{managerTokenListPath}</code>
+              <button
+                type="button"
+                className="small-action-button"
+                onClick={copyManagerTokenListPath}
+              >
+                {managerTokenListPathCopied ? "コピー済み" : "Token list pathをコピー"}
               </button>
             </div>
           </div>

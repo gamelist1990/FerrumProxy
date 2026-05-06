@@ -248,6 +248,37 @@
   gap: 0.45rem;
 }
 
+.copy-value-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.copy-value-row code {
+  min-width: 0;
+  min-height: 2.1rem;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 9px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-secondary) 84%, transparent);
+  color: var(--text-primary);
+  padding: 0.25rem 0.65rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
 .manager-api-section {
   border-color: color-mix(in srgb, var(--primary-color) 36%, var(--border-color));
+}
+
+@media (max-width: 640px) {
+  .manager-token-row,
+  .copy-value-row {
+    grid-template-columns: 1fr;
+  }
 }
