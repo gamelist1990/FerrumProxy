@@ -95,9 +95,7 @@ function App() {
         setShareSession(session);
       } catch (error) {
         console.error("failed to load or probe client config", error);
-        setConnectionError(
-          error instanceof Error ? error.message : text.failedProbe
-        );
+        setConnectionError(errorMessage(error, text.failedProbe));
       } finally {
         setConfigReady(true);
       }
@@ -194,7 +192,7 @@ function App() {
       setCopiedEndpoint(true);
       window.setTimeout(() => setCopiedEndpoint(false), 1400);
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : text.failedCopy);
+      setConnectionError(errorMessage(error, text.failedCopy));
     }
   };
 
@@ -377,9 +375,7 @@ function App() {
                 setConnectionError(null);
               } catch (error) {
                 console.error("failed to connect relay", error);
-                setConnectionError(
-                  error instanceof Error ? error.message : text.failedConnect
-                );
+                setConnectionError(errorMessage(error, text.failedConnect));
               }
             })();
           }}
@@ -502,6 +498,16 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return fallback;
 }
 
 export default App;

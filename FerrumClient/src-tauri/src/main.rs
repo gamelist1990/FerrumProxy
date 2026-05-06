@@ -224,9 +224,7 @@ fn save_client_config(config: ClientConfig) -> Result<String, String> {
 
 #[tauri::command]
 fn probe_client_connection(config: ClientConfig) -> Result<(), String> {
-    probe_tcp_endpoint(&config.relay_address, Duration::from_secs(2))?;
-
-    Ok(())
+    validate_shared_relay_api(&config)
 }
 
 #[tauri::command]
@@ -234,6 +232,7 @@ fn start_sharing(config: ClientConfig, state: State<ClientState>) -> Result<Shar
     if !config.tcp_enabled && !config.udp_enabled {
         return Err("Enable TCP, UDP, or both".to_string());
     }
+    validate_shared_relay_api(&config)?;
 
     let local_port = if config.tcp_enabled {
         config.tcp_local_port
@@ -528,6 +527,57 @@ fn monitor_relay_allocation(
 fn relay_list_contains_port(response: &str, public_port: u16) -> bool {
     let needle = format!("port={public_port} ");
     response.lines().any(|line| line.contains(&needle))
+}
+
+fn validate_shared_relay_api(config: &ClientConfig) -> Result<(), String> {
+    validate_shared_relay_control_api(&config.relay_address)?;
+    validate_shared_relay_auth(&config.relay_address, config.token.trim())?;
+    Ok(())
+}
+
+fn validate_shared_relay_control_api(relay_address: &str) -> Result<(), String> {
+    let response = send_relay_command(relay_address, "STATS\n")
+        .map_err(|err| format!("Shared relay API check failed: {err}"))?;
+    let trimmed = response.trim();
+    if trimmed.starts_with("STAT ") {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Shared relay API check failed: {relay_address} is reachable, but it did not respond as a FerrumProxy shared relay API. Response: {}",
+        if trimmed.is_empty() { "<empty>" } else { trimmed }
+    ))
+}
+
+fn validate_shared_relay_auth(relay_address: &str, token: &str) -> Result<(), String> {
+    let probe_token = if token.is_empty() {
+        "__ferrumproxy_client_anonymous_probe__"
+    } else {
+        token
+    };
+    let response = send_relay_command(relay_address, &format!("TOKEN {probe_token}\n"))
+        .map_err(|err| format!("Shared relay token check failed: {err}"))?;
+    let trimmed = response.trim();
+    if trimmed.starts_with("OK ") {
+        return Ok(());
+    }
+    if trimmed.eq_ignore_ascii_case("ERROR Invalid token") {
+        return Err(if token.is_empty() {
+            "Shared relay token check failed: this relay requires an authentication token."
+                .to_string()
+        } else {
+            "Shared relay token check failed: invalid authentication token.".to_string()
+        });
+    }
+
+    Err(format!(
+        "Shared relay token check failed: unexpected response from relay: {}",
+        if trimmed.is_empty() {
+            "<empty>"
+        } else {
+            trimmed
+        }
+    ))
 }
 
 fn wait_for_connect_response(
@@ -1042,36 +1092,6 @@ fn parse_connect_response(response: &str) -> Result<(String, u16), String> {
         .ok_or_else(|| format!("relay returned invalid endpoint: {endpoint}"))?;
     let port = port_text.parse::<u16>().unwrap_or(fallback_port);
     Ok((host.to_string(), port))
-}
-
-fn probe_tcp_endpoint(address: &str, timeout: Duration) -> Result<(), String> {
-    let endpoint = address.trim();
-    if endpoint.is_empty() {
-        return Err("relay address is required".to_string());
-    }
-
-    let mut last_error = None;
-    let resolved = endpoint
-        .to_socket_addrs()
-        .map_err(|err| format!("failed to resolve {endpoint}: {err}"))?;
-
-    for socket_address in resolved {
-        match TcpStream::connect_timeout(&socket_address, timeout) {
-            Ok(stream) => {
-                apply_tcp_nodelay(&stream);
-                let _ = stream.shutdown(Shutdown::Both);
-                return Ok(());
-            }
-            Err(err) => {
-                last_error = Some(err);
-            }
-        }
-    }
-
-    match last_error {
-        Some(err) => Err(format!("{endpoint} did not respond: {err}")),
-        None => Err(format!("no socket addresses resolved for {endpoint}")),
-    }
 }
 
 fn apply_tcp_nodelay(stream: &TcpStream) {
