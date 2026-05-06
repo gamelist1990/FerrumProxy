@@ -127,7 +127,12 @@ export class AuthManager {
   authMiddleware() {
     return async (req: Request, res: Response, next: NextFunction) => {
 
-      if (req.path === '/api/auth/login' || req.path === '/api/auth/status' || !req.path.startsWith('/api/')) {
+      if (
+        req.path === '/api/auth/login' ||
+        req.path === '/api/auth/status' ||
+        /^\/api\/instances\/[^/]+\/manager\//.test(req.path) ||
+        !req.path.startsWith('/api/')
+      ) {
         return next();
       }
 

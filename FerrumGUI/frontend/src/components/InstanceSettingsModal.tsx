@@ -162,24 +162,59 @@ export function InstanceSettingsModal({
     setManagerTokenCopied(false);
   };
 
+  const writeClipboardText = async (text: string) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+
+    if (!copied) {
+      throw new Error("Clipboard copy is not available in this browser");
+    }
+  };
+
   const copyManagerToken = async () => {
     if (!managerTokenInput.trim()) return;
-    await navigator.clipboard.writeText(managerTokenInput.trim());
-    setManagerTokenCopied(true);
-    window.setTimeout(() => setManagerTokenCopied(false), 1400);
+    try {
+      await writeClipboardText(managerTokenInput.trim());
+      setManagerTokenCopied(true);
+      window.setTimeout(() => setManagerTokenCopied(false), 1400);
+    } catch (error) {
+      alert((error as Error).message);
+    }
   };
 
   const copyInstanceId = async () => {
-    await navigator.clipboard.writeText(instanceId);
-    setInstanceIdCopied(true);
-    window.setTimeout(() => setInstanceIdCopied(false), 1400);
+    try {
+      await writeClipboardText(instanceId);
+      setInstanceIdCopied(true);
+      window.setTimeout(() => setInstanceIdCopied(false), 1400);
+    } catch (error) {
+      alert((error as Error).message);
+    }
   };
 
   const managerTokenListPath = `/api/instances/${instanceId}/manager/api/v1/tokens`;
   const copyManagerTokenListPath = async () => {
-    await navigator.clipboard.writeText(managerTokenListPath);
-    setManagerTokenListPathCopied(true);
-    window.setTimeout(() => setManagerTokenListPathCopied(false), 1400);
+    try {
+      await writeClipboardText(managerTokenListPath);
+      setManagerTokenListPathCopied(true);
+      window.setTimeout(() => setManagerTokenListPathCopied(false), 1400);
+    } catch (error) {
+      alert((error as Error).message);
+    }
   };
 
   return (
