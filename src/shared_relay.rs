@@ -236,7 +236,11 @@ async fn handle_connect(
             return Ok("ERROR Invalid token\n".to_string());
         }
         let port: u16 = target_parts[2].parse().unwrap_or(0);
-        (Some(token_value.to_string()), target_parts[1].trim().to_string(), port)
+        (
+            Some(token_value.to_string()),
+            target_parts[1].trim().to_string(),
+            port,
+        )
     } else if target_parts.len() == 2 {
         // host:port (anonymous)
         if !auth_config.allow_anonymous {
@@ -909,17 +913,25 @@ mod tests {
             Vec::new(),
         );
 
-        assert_eq!(send_control(control_port, "TOKEN\n").await?.trim(), "OK Anonymous allowed");
+            assert_eq!(
+                send_control(control_port, "TOKEN\n").await?.trim(),
+                "OK Anonymous allowed"
+            );
 
         let anonymous = send_control(control_port, "CONNECT 127.0.0.1:19132\n").await?;
         assert!(anonymous.starts_with("OK"), "{anonymous}");
 
         assert_eq!(
-            send_control(control_port, "TOKEN aaaaaaaaaaaaaaaaaaa\n").await?.trim(),
+                send_control(control_port, "TOKEN aaaaaaaaaaaaaaaaaaa\n")
+                    .await?
+                    .trim(),
             "ERROR Invalid token"
         );
         assert_eq!(
-            send_control(control_port, "CONNECT aaaaaaaaaaaaaaaaaaa:127.0.0.1:19133\n")
+                send_control(
+                    control_port,
+                    "CONNECT aaaaaaaaaaaaaaaaaaa:127.0.0.1:19133\n"
+                )
                 .await?
                 .trim(),
             "ERROR Invalid token"
