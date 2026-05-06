@@ -150,7 +150,8 @@ label {
   font-weight: 600;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 36px;
   padding: 0 10px;
@@ -166,11 +167,130 @@ input::placeholder {
   color: #9a9a9a;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: #0b5cad;
   outline: 1px solid #0b5cad;
   outline-offset: 1px;
   box-shadow: none;
+}
+
+.server-list-state {
+  margin-top: -4px;
+  color: #666666;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.relay-picker-field {
+  position: relative;
+  display: grid;
+  gap: 5px;
+  color: #4a4a4a;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.relay-picker-button {
+  width: 100%;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 1px solid #bdbdbd;
+  border-radius: 0;
+  background: #ffffff;
+  color: #1d1d1d;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.relay-picker-button strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-picker-button:hover,
+.relay-picker-button:focus {
+  border-color: #0b5cad;
+  outline: 1px solid #0b5cad;
+  outline-offset: 1px;
+}
+
+.relay-picker-menu {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  z-index: 12;
+  display: grid;
+  border: 1px solid #a8a8a8;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+.relay-picker-menu button {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid #d6d6d6;
+  background: #ffffff;
+  color: #1d1d1d;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.relay-picker-menu button:last-child {
+  border-bottom: 0;
+}
+
+.relay-picker-menu button:hover,
+.relay-picker-menu button:focus,
+.relay-picker-menu button.selected {
+  background: #f2f6fb;
+  outline: none;
+}
+
+.relay-picker-menu button.selected {
+  box-shadow: inset 4px 0 0 #0b5cad;
+}
+
+.relay-picker-menu strong {
+  overflow: hidden;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-picker-menu span {
+  overflow-wrap: anywhere;
+  color: #1d1d1d;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.relay-picker-menu small {
+  display: none;
+  color: #555555;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.relay-picker-menu button:hover small,
+.relay-picker-menu button:focus small {
+  display: block;
 }
 
 .secret-input {
@@ -461,7 +581,8 @@ input:focus {
 }
 
 .error-panel button,
-.error-modal button {
+.error-modal button,
+.error-code-modal button {
   min-height: 32px;
   border: 1px solid #c47b7b;
   background: #ffffff;
@@ -487,7 +608,8 @@ input:focus {
   z-index: 20;
 }
 
-.error-modal {
+.error-modal,
+.error-code-modal {
   width: min(560px, 100%);
   max-height: min(70vh, 520px);
   display: grid;
@@ -584,6 +706,24 @@ input:focus {
   cursor: pointer;
 }
 
+.error-code-list-button {
+  min-height: 34px;
+  justify-self: start;
+  padding: 0 12px;
+  border: 1px solid #b7b7b7;
+  background: #ffffff;
+  color: #1d1d1d;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.error-code-list-button:hover {
+  border-color: #99b8dd;
+  background: #f2f6fb;
+}
+
 .status-modal-body {
   display: grid;
   gap: 12px;
@@ -596,17 +736,8 @@ input:focus {
   gap: 6px;
 }
 
-.language-select select {
-  min-height: 36px;
-  padding: 0 10px;
-  border: 1px solid #bdbdbd;
-  border-radius: 0;
-  background: #ffffff;
-  color: #1d1d1d;
-  font: inherit;
-}
-
-.error-modal header {
+.error-modal header,
+.error-code-modal header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -615,23 +746,150 @@ input:focus {
   border-bottom: 1px solid #d6d6d6;
 }
 
-.error-modal h2 {
+.error-modal header p,
+.error-code-modal header p {
+  margin: 0;
+  color: #666666;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.error-modal h2,
+.error-code-modal h2 {
   margin: 0;
   font-size: 1rem;
 }
 
-.error-modal button {
+.error-modal button,
+.error-code-modal button {
   padding: 0 10px;
+}
+
+.error-detail-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.error-code-summary {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #f0a7a7;
+  background: #fff5f5;
+}
+
+.error-code-summary span {
+  color: #666666;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.error-code-summary strong {
+  color: #9b1c1c;
+  font-size: 0.98rem;
+}
+
+.error-code-summary small {
+  color: #4a4a4a;
+  font-size: 0.76rem;
+  font-weight: 600;
 }
 
 .error-modal pre {
   margin: 0;
-  padding: 12px;
+  padding: 10px;
   overflow: auto;
+  border: 1px solid #d6d6d6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: #1d1d1d;
   font: 0.82rem/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.error-code-modal {
+  width: min(680px, 100%);
+  max-height: min(78vh, 620px);
+}
+
+.error-code-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.error-code-body > p {
+  margin: 0;
+  color: #4a4a4a;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.error-code-focus {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 2px solid #9b1c1c;
+  background: #fff5f5;
+}
+
+.error-code-focus span {
+  color: #666666;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.error-code-focus strong {
+  color: #9b1c1c;
+  font-size: 1rem;
+}
+
+.error-code-focus small {
+  color: #1d1d1d;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.error-code-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.error-code-grid div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid #d6d6d6;
+  background: #ffffff;
+}
+
+.error-code-grid div.selected {
+  order: -1;
+  border: 2px solid #9b1c1c;
+  background: #fff5f5;
+  box-shadow: inset 4px 0 0 #9b1c1c;
+}
+
+.error-code-grid strong {
+  color: #9b1c1c;
+  font-size: 0.9rem;
+}
+
+.error-code-grid span {
+  color: #1d1d1d;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.error-code-grid small {
+  color: #555555;
+  font-size: 0.74rem;
+  line-height: 1.4;
 }
 
 @media (max-width: 780px) {

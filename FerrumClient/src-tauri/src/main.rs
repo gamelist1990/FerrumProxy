@@ -157,6 +157,33 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("config.json"))
 }
 
+fn official_server_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "failed to resolve executable directory".to_string())?;
+
+    let mut candidates = vec![
+        exe_dir.join("OfficialServer.json"),
+        exe_dir.join("../OfficialServer.json"),
+    ];
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("OfficialServer.json"));
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("OfficialServer.json"));
+        candidates.push(current_dir.join("../OfficialServer.json"));
+        candidates.push(current_dir.join("../../OfficialServer.json"));
+    }
+
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .ok_or_else(|| "OfficialServer.json was not found".to_string())
+}
+
 fn ensure_config_parent(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -220,6 +247,12 @@ fn save_client_config(config: ClientConfig) -> Result<String, String> {
     let text = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
     fs::write(&path, text).map_err(|err| err.to_string())?;
     Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn load_official_servers(app: tauri::AppHandle) -> Result<String, String> {
+    let path = official_server_path(&app)?;
+    fs::read_to_string(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))
 }
 
 #[tauri::command]
@@ -1109,6 +1142,7 @@ fn main() {
             shared_client_runtime,
             load_client_config,
             save_client_config,
+            load_official_servers,
             probe_client_connection,
             start_sharing,
             stop_sharing,

@@ -39,6 +39,114 @@ type ShareSession = {
   error?: string | null;
 };
 
+type OfficialServer = {
+  id: string;
+  name: string;
+  address: string;
+  enabled?: boolean;
+  description?: string;
+};
+
+type OfficialServerFile = {
+  servers?: OfficialServer[];
+};
+
+type ClientErrorInfo = {
+  code: string;
+  title: string;
+  titleJa: string;
+  cause: string;
+  causeJa: string;
+  pattern: RegExp;
+};
+
+const customRelayValue = "__custom__";
+const officialServerUrl =
+  "https://raw.githubusercontent.com/gamelist1990/FerrumProxy/main/FerrumClient/OfficialServer.json";
+
+const clientErrorCodes: ClientErrorInfo[] = [
+  {
+    code: "FPC-1001",
+    title: "Relay address is missing",
+    titleJa: "リレーアドレス未入力",
+    cause: "The FerrumProxy relay ip:port field is empty.",
+    causeJa: "FerrumProxy relay の ip:port が空です。",
+    pattern: /relay.*address.*empty|ip:port.*empty|not set/i,
+  },
+  {
+    code: "FPC-1101",
+    title: "Relay API unreachable",
+    titleJa: "リレーAPIに到達できません",
+    cause: "The client could not connect to the selected relay address.",
+    causeJa: "選択したリレーアドレスへ接続できませんでした。",
+    pattern: /shared relay api check failed|connection refused|timed out|failed to lookup address|could not resolve|network is unreachable/i,
+  },
+  {
+    code: "FPC-1102",
+    title: "Unexpected relay API response",
+    titleJa: "リレーAPIの応答が不正です",
+    cause: "The selected server is reachable, but it is not responding as a FerrumProxy shared relay.",
+    causeJa: "サーバーには到達できましたが、FerrumProxy shared relay として応答していません。",
+    pattern: /did not respond as a ferrumproxy shared relay api|unexpected response from relay/i,
+  },
+  {
+    code: "FPC-1201",
+    title: "Invalid auth token",
+    titleJa: "認証トークンが無効です",
+    cause: "The relay rejected the configured authentication token.",
+    causeJa: "設定された認証トークンがリレーに拒否されました。",
+    pattern: /invalid authentication token|invalid token|token check failed/i,
+  },
+  {
+    code: "FPC-1301",
+    title: "No protocol selected",
+    titleJa: "プロトコル未選択",
+    cause: "TCP, UDP, or both must be enabled before sharing.",
+    causeJa: "共有開始前に TCP、UDP、または両方を有効にしてください。",
+    pattern: /enable tcp, udp, or both/i,
+  },
+  {
+    code: "FPC-1401",
+    title: "Relay allocation failed",
+    titleJa: "リレー割り当て失敗",
+    cause: "The relay could not allocate or keep the public port for this session.",
+    causeJa: "このセッション用の公開ポートをリレーが割り当て、または維持できませんでした。",
+    pattern: /allocation|waiting.*available port|relay returned invalid|disappeared/i,
+  },
+  {
+    code: "FPC-1501",
+    title: "Relay session interrupted",
+    titleJa: "リレーセッション中断",
+    cause: "The active relay session was closed or cancelled before it completed.",
+    causeJa: "アクティブなリレーセッションが完了前に閉じられた、またはキャンセルされました。",
+    pattern: /sharing cancelled|closed the connection|failed to read relay response|failed to write relay command|failed to flush relay command/i,
+  },
+  {
+    code: "FPC-1601",
+    title: "Local service connection failed",
+    titleJa: "ローカルサービス接続失敗",
+    cause: "The local service host or port is not reachable from FerrumProxy Client.",
+    causeJa: "FerrumProxy Client からローカルサービスの host または port に到達できません。",
+    pattern: /local.*error|local service|failed to connect local|connection reset/i,
+  },
+  {
+    code: "FPC-1701",
+    title: "Clipboard failed",
+    titleJa: "クリップボード操作失敗",
+    cause: "The operating system did not allow copying the public endpoint.",
+    causeJa: "OS が公開エンドポイントのコピーを許可しませんでした。",
+    pattern: /clipboard|copy/i,
+  },
+  {
+    code: "FPC-9000",
+    title: "Unknown client error",
+    titleJa: "未分類のクライアントエラー",
+    cause: "The message did not match a known FerrumProxy Client error category.",
+    causeJa: "既知の FerrumProxy Client エラー分類に一致しないメッセージです。",
+    pattern: /.*/,
+  },
+];
+
 const defaultForm: ClientConfig = {
   relayAddress: "127.0.0.1:7000",
   token: "",
@@ -62,8 +170,15 @@ function App() {
   const [copiedEndpoint, setCopiedEndpoint] = useState(false);
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
+  const [errorCodeModalOpen, setErrorCodeModalOpen] = useState(false);
+  const [highlightedErrorCode, setHighlightedErrorCode] = useState<string | null>(null);
+  const [officialServers, setOfficialServers] = useState<OfficialServer[]>([]);
+  const [officialServerStatus, setOfficialServerStatus] = useState("");
+  const [relayDropdownOpen, setRelayDropdownOpen] = useState(false);
+  const [relaySelection, setRelaySelection] = useState(customRelayValue);
   const [language, setLanguage] = useState<ClientLanguage>(() => detectLanguage());
   const previousErrorRef = useRef<string | null>(null);
+  const relayAddressRef = useRef(defaultForm.relayAddress);
   const text = getTranslation(language);
 
   const changeLanguage = (nextLanguage: ClientLanguage) => {
@@ -84,10 +199,52 @@ function App() {
 
   useEffect(() => {
     void (async () => {
+      let loadedLocal = false;
+      try {
+        const localText = await invoke<string>("load_official_servers");
+        const localServers = parseOfficialServers(localText);
+        if (localServers.length) {
+          loadedLocal = true;
+          setOfficialServers(localServers);
+          setRelaySelection(selectRelayForAddress(localServers, relayAddressRef.current));
+          setOfficialServerStatus(text.officialServerListFallback);
+        }
+      } catch (error) {
+        console.warn("failed to load bundled official servers", error);
+      }
+
+      try {
+        const response = await fetch(`${officialServerUrl}?t=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const remoteServers = parseOfficialServers(await response.text());
+        if (remoteServers.length) {
+          setOfficialServers(remoteServers);
+          setRelaySelection(selectRelayForAddress(remoteServers, relayAddressRef.current));
+          setOfficialServerStatus(text.officialServerListLoaded);
+          return;
+        }
+      } catch (error) {
+        console.warn("failed to refresh official servers", error);
+      }
+
+      if (!loadedLocal) {
+        setOfficialServers([]);
+        setRelaySelection(customRelayValue);
+        setOfficialServerStatus(text.officialServerListFailed);
+      }
+    })();
+  }, [text.officialServerListFailed, text.officialServerListFallback, text.officialServerListLoaded]);
+
+  useEffect(() => {
+    void (async () => {
       try {
         const response = await invoke<ClientConfigResponse>("load_client_config");
         const nextForm = { ...defaultForm, ...response.config };
+        relayAddressRef.current = nextForm.relayAddress;
         setForm(nextForm);
+        setRelaySelection(selectRelayForAddress(officialServers, nextForm.relayAddress));
         setTcpPortInput(String(nextForm.tcpLocalPort));
         setUdpPortInput(String(nextForm.udpLocalPort));
         setConfigPath(response.path);
@@ -130,6 +287,9 @@ function App() {
     key: K,
     value: ClientConfig[K]
   ) => {
+    if (key === "relayAddress") {
+      relayAddressRef.current = String(value);
+    }
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -167,6 +327,15 @@ function App() {
   const isWaiting = shareSession?.status === "waiting";
   const isRunning = shareSession?.status === "running";
   const displayError = connectionError || shareSession?.error || null;
+  const displayErrorInfo = displayError ? getClientErrorInfo(displayError) : null;
+  const displayErrorWithCode = displayError && displayErrorInfo ? `[${displayErrorInfo.code}] ${displayError}` : null;
+  const displayErrorTitle = displayErrorInfo ? localizeErrorTitle(displayErrorInfo, language) : "";
+  const highlightedError = highlightedErrorCode
+    ? clientErrorCodes.find((item) => item.code === highlightedErrorCode) ?? null
+    : null;
+  const selectedOfficialServer =
+    relaySelection === customRelayValue ? null : officialServers.find((server) => server.id === relaySelection) ?? null;
+  const relayButtonLabel = selectedOfficialServer?.name ?? text.customRelay;
   const queueLabel =
     typeof shareSession?.queueWaitingClients === "number" &&
     typeof shareSession?.queueMaxSize === "number"
@@ -228,14 +397,81 @@ function App() {
         <div className="form-grid">
           <section className="form-section">
             <h2>{text.relay}</h2>
-            <label>
-              <span>{text.relayAddress}</span>
-              <input
-                value={form.relayAddress}
-                onChange={(event) => update("relayAddress", event.target.value)}
-                placeholder="203.0.113.10:7000"
-              />
-            </label>
+            <div
+              className="relay-picker-field"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) {
+                  setRelayDropdownOpen(false);
+                }
+              }}
+            >
+              <span>{text.relayServer}</span>
+              <button
+                type="button"
+                className="relay-picker-button"
+                aria-haspopup="listbox"
+                aria-expanded={relayDropdownOpen}
+                onClick={() => setRelayDropdownOpen((open) => !open)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setRelayDropdownOpen(false);
+                  }
+                }}
+              >
+                <strong>{relayButtonLabel}</strong>
+                <span aria-hidden="true">⌄</span>
+              </button>
+              {relayDropdownOpen && (
+                <div className="relay-picker-menu" role="listbox" aria-label={text.relayServer}>
+                  {officialServers.map((server) => (
+                    <button
+                      key={server.id}
+                      type="button"
+                      className={selectedOfficialServer?.id === server.id ? "selected" : undefined}
+                      role="option"
+                      aria-selected={selectedOfficialServer?.id === server.id}
+                      onClick={() => {
+                        setRelaySelection(server.id);
+                        update("relayAddress", server.address);
+                        setRelayDropdownOpen(false);
+                      }}
+                    >
+                      <strong>{server.name}</strong>
+                      <span>{server.address}</span>
+                      {server.description && <small>{server.description}</small>}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className={relaySelection === customRelayValue ? "selected" : undefined}
+                    role="option"
+                    aria-selected={relaySelection === customRelayValue}
+                    onClick={() => {
+                      setRelaySelection(customRelayValue);
+                      setRelayDropdownOpen(false);
+                    }}
+                  >
+                    <strong>{text.customRelay}</strong>
+                    <span>{form.relayAddress || "ip:port"}</span>
+                    <small>{text.customRelayDescription}</small>
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="server-list-state">{officialServerStatus || text.officialServerList}</div>
+            {!selectedOfficialServer && (
+              <label>
+                <span>{text.manualRelayAddress}</span>
+                <input
+                  value={form.relayAddress}
+                  onChange={(event) => {
+                    setRelaySelection(customRelayValue);
+                    update("relayAddress", event.target.value);
+                  }}
+                  placeholder="203.0.113.10:7000"
+                />
+              </label>
+            )}
             <label>
               <span>{text.authToken}</span>
               <div className="secret-input">
@@ -397,8 +633,8 @@ function App() {
         {displayError && (
           <section className="error-panel" role="alert">
             <div>
-              <span>{text.error}</span>
-              <strong>{displayError}</strong>
+              <span>{displayErrorInfo ? `${text.error} ${displayErrorInfo.code}` : text.error}</span>
+              <strong>{displayErrorWithCode}</strong>
             </div>
             <button type="button" onClick={() => setErrorModalOpen(true)}>
               {text.details}
@@ -475,6 +711,16 @@ function App() {
                   <option value="ja">{text.japanese}</option>
                 </select>
               </label>
+              <button
+                type="button"
+                className="error-code-list-button"
+                onClick={() => {
+                  setHighlightedErrorCode(null);
+                  setErrorCodeModalOpen(true);
+                }}
+              >
+                {text.errorCodeList}
+              </button>
             </div>
           </section>
         </div>
@@ -495,12 +741,109 @@ function App() {
                 {text.close}
               </button>
             </header>
-            <pre>{displayError}</pre>
+            <div className="error-detail-body">
+              {displayErrorInfo && (
+                <div className="error-code-summary">
+                  <span>{text.errorCode}</span>
+                  <strong>{displayErrorInfo.code}</strong>
+                  <small>{displayErrorTitle}</small>
+                </div>
+              )}
+              <pre>{displayError}</pre>
+              <button
+                type="button"
+                className="error-code-list-button"
+                onClick={() => {
+                  setHighlightedErrorCode(displayErrorInfo?.code ?? null);
+                  setErrorCodeModalOpen(true);
+                }}
+              >
+                {text.errorCodeList}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {errorCodeModalOpen && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setErrorCodeModalOpen(false)}>
+          <section
+            className="error-code-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={text.errorCodeList}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <p>{text.errorCode}</p>
+                <h2>{text.errorCodeList}</h2>
+              </div>
+              <button type="button" onClick={() => setErrorCodeModalOpen(false)} aria-label={text.close}>
+                {text.close}
+              </button>
+            </header>
+            <div className="error-code-body">
+              {highlightedError && (
+                <div className="error-code-focus">
+                  <span>{text.errorCode}</span>
+                  <strong>{highlightedError.code}</strong>
+                  <small>
+                    {localizeErrorTitle(highlightedError, language)} - {localizeErrorCause(highlightedError, language)}
+                  </small>
+                </div>
+              )}
+              <p>{text.errorCodeListDescription}</p>
+              <div className="error-code-grid">
+                {clientErrorCodes.map((item) => (
+                  <div
+                    key={item.code}
+                    className={highlightedErrorCode === item.code ? "selected" : undefined}
+                    aria-current={highlightedErrorCode === item.code ? "true" : undefined}
+                  >
+                    <strong>{item.code}</strong>
+                    <span>{localizeErrorTitle(item, language)}</span>
+                    <small>{text.possibleCause}: {localizeErrorCause(item, language)}</small>
+                  </div>
+                ))}
+              </div>
+            </div>
           </section>
         </div>
       )}
     </main>
   );
+}
+
+function parseOfficialServers(text: string): OfficialServer[] {
+  const parsed = JSON.parse(text) as OfficialServerFile;
+  if (!Array.isArray(parsed.servers)) return [];
+
+  return parsed.servers
+    .filter((server) => server.enabled !== false && server.id && server.name && server.address)
+    .map((server) => ({
+      id: String(server.id),
+      name: String(server.name),
+      address: String(server.address),
+      enabled: server.enabled,
+      description: server.description ? String(server.description) : undefined,
+    }));
+}
+
+function selectRelayForAddress(servers: OfficialServer[], address: string): string {
+  return servers.find((server) => server.address === address)?.id ?? customRelayValue;
+}
+
+function getClientErrorInfo(message: string): ClientErrorInfo {
+  return clientErrorCodes.find((item) => item.pattern.test(message)) ?? clientErrorCodes[clientErrorCodes.length - 1];
+}
+
+function localizeErrorTitle(error: ClientErrorInfo, language: ClientLanguage): string {
+  return language === "ja" ? error.titleJa : error.title;
+}
+
+function localizeErrorCause(error: ClientErrorInfo, language: ClientLanguage): string {
+  return language === "ja" ? error.causeJa : error.cause;
 }
 
 function formatBytes(bytes: number): string {
