@@ -74,6 +74,8 @@
 }
 
 .setting-section input[type="text"],
+.setting-section input[type="number"],
+.setting-section input[type="password"],
 .setting-section select {
   width: 100%;
   min-height: 2.35rem;
@@ -85,6 +87,8 @@
 }
 
 .setting-section input[type="text"]:focus,
+.setting-section input[type="number"]:focus,
+.setting-section input[type="password"]:focus,
 .setting-section select:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--primary-color) 72%, var(--border-color));
@@ -212,4 +216,38 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
   }
+}
+
+.setting-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.small-action-button {
+  min-height: 2rem;
+  border-radius: 9px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-secondary) 84%, transparent);
+  color: var(--text-primary);
+  padding: 0.25rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.small-action-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.manager-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.45rem;
+}
+
+.manager-api-section {
+  border-color: color-mix(in srgb, var(--primary-color) 36%, var(--border-color));
 }

@@ -1018,6 +1018,8 @@ function App() {
                   instanceVersion={selectedInstanceData.version}
                   autoStart={!!selectedInstanceData.autoStart}
                   autoRestart={!!selectedInstanceData.autoRestart}
+                  managerPort={selectedInstanceData.managerPort}
+                  managerToken={selectedInstanceData.managerToken}
                   onUpdateName={async (name) => {
                     await updateInstanceMetadata(selectedInstanceData.id, {
                       name,
@@ -1050,6 +1052,20 @@ function App() {
                       prev.map((instance) =>
                         instance.id === selectedInstanceData.id
                           ? { ...instance, autoRestart: enabled }
+                          : instance
+                      )
+                    );
+                  }}
+                  onUpdateManagerApi={async (settings) => {
+                    await updateInstanceMetadata(selectedInstanceData.id, settings);
+                    const nextSettings = {
+                      managerPort: settings.managerPort ?? undefined,
+                      managerToken: settings.managerToken ?? undefined,
+                    };
+                    setInstances((prev) =>
+                      prev.map((instance) =>
+                        instance.id === selectedInstanceData.id
+                          ? { ...instance, ...nextSettings }
                           : instance
                       )
                     );

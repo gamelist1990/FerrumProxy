@@ -58,6 +58,18 @@ function isRequestHttps(req: express.Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https';
 }
 
+function getManagerApiArgs(instance: FerrumProxyInstance): string[] {
+  if (!instance.managerPort || !instance.managerToken) {
+    return [];
+  }
+  return [
+    '--manager-port',
+    String(instance.managerPort),
+    '--manager-token',
+    instance.managerToken,
+  ];
+}
+
 function createDefaultConfig(): FerrumProxyConfig {
   return {
     endpoint: 6000,
@@ -563,6 +575,7 @@ processManager.on('exit', async (instanceId: string, code: number, signal: strin
           const pid = processManager.start(instanceId, {
             binaryPath: fresh.binaryPath,
             workingDirectory: fresh.dataDir,
+            args: getManagerApiArgs(fresh),
             useSudo,
           });
 
@@ -859,6 +872,7 @@ app.post('/api/instances', async (req, res) => {
       const pid = processManager.start(instanceId, {
         binaryPath: instance.binaryPath,
         workingDirectory: instance.dataDir,
+        args: getManagerApiArgs(instance),
         useSudo,
       });
 
@@ -959,6 +973,7 @@ app.post('/api/instances/:id/start', async (req, res) => {
     const pid = processManager.start(instanceId, {
       binaryPath: instance.binaryPath,
       workingDirectory: instance.dataDir,
+      args: getManagerApiArgs(instance),
       useSudo,
     });
 
@@ -1039,6 +1054,7 @@ app.post('/api/instances/:id/restart', async (req, res) => {
     const pid = await processManager.restart(instanceId, {
       binaryPath: instance.binaryPath,
       workingDirectory: instance.dataDir,
+      args: getManagerApiArgs(instance),
       useSudo,
     });
 
@@ -1189,21 +1205,25 @@ app.put('/api/instances/:id', async (req, res) => {
       name?: string;
       autoStart?: boolean;
       autoRestart?: boolean;
-      managerPort?: number;
-      managerToken?: string;
+      managerPort?: number | null;
+      managerToken?: string | null;
     };
 
     const updates: any = {};
     if (typeof name === 'string') updates.name = name.trim();
     if (typeof autoStart === 'boolean') updates.autoStart = autoStart;
     if (typeof autoRestart === 'boolean') updates.autoRestart = autoRestart;
-    if (managerPort !== undefined) {
+    if (managerPort === null) {
+      updates.managerPort = undefined;
+    } else if (managerPort !== undefined) {
       if (!Number.isInteger(managerPort) || managerPort < 1 || managerPort > 65535) {
         return res.status(400).json({ error: 'managerPort must be a valid port number' });
       }
       updates.managerPort = managerPort;
     }
-    if (typeof managerToken === 'string') {
+    if (managerToken === null) {
+      updates.managerToken = undefined;
+    } else if (typeof managerToken === 'string') {
       const trimmed = managerToken.trim();
       if (!trimmed) {
         return res.status(400).json({ error: 'managerToken cannot be empty' });
@@ -1614,6 +1634,7 @@ async function init() {
           const pid = processManager.start(instance.id, {
             binaryPath: instance.binaryPath,
             workingDirectory: instance.dataDir,
+            args: getManagerApiArgs(instance),
             useSudo,
           });
 

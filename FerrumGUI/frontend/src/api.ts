@@ -332,7 +332,7 @@ export async function updateInstance(id: string, version: string, forceReinstall
 
 export async function updateInstanceMetadata(
   id: string,
-  data: { name?: string; autoStart?: boolean; autoRestart?: boolean; managerPort?: number; managerToken?: string }
+  data: { name?: string; autoStart?: boolean; autoRestart?: boolean; managerPort?: number | null; managerToken?: string | null }
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/instances/${id}`, {
     method: 'PUT',

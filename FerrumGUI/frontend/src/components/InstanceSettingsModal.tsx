@@ -9,9 +9,12 @@ interface InstanceSettingsModalProps {
   instanceVersion: string;
   autoRestart: boolean;
   autoStart?: boolean;
+  managerPort?: number;
+  managerToken?: string;
   onUpdateName: (name: string) => Promise<void>;
   onToggleAutoRestart: (enabled: boolean) => Promise<void>;
   onToggleAutoStart?: (enabled: boolean) => Promise<void>;
+  onUpdateManagerApi?: (settings: { managerPort?: number | null; managerToken?: string | null }) => Promise<void>;
   onUpdateInstance: (version: string, forceReinstall?: boolean) => Promise<void>;
   availableVersions: string[];
   latestVersion: string;
@@ -25,9 +28,12 @@ export function InstanceSettingsModal({
   instanceVersion,
   autoRestart,
   autoStart,
+  managerPort,
+  managerToken,
   onUpdateName,
   onToggleAutoRestart,
   onToggleAutoStart,
+  onUpdateManagerApi,
   onUpdateInstance,
   availableVersions,
   latestVersion,
@@ -36,6 +42,10 @@ export function InstanceSettingsModal({
   const [nameInput, setNameInput] = useState(instanceName);
   const [autoRestartChecked, setAutoRestartChecked] = useState(autoRestart);
   const [autoStartChecked, setAutoStartChecked] = useState(autoStart ?? false);
+  const [managerPortInput, setManagerPortInput] = useState(managerPort ? String(managerPort) : "");
+  const [managerTokenInput, setManagerTokenInput] = useState(managerToken ?? "");
+  const [managerTokenVisible, setManagerTokenVisible] = useState(false);
+  const [managerTokenCopied, setManagerTokenCopied] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState("latest");
   const [isSaving, setIsSaving] = useState(false);
   const resolvedSelectedVersion =
@@ -46,7 +56,10 @@ export function InstanceSettingsModal({
     setNameInput(instanceName);
     setAutoRestartChecked(autoRestart);
     setAutoStartChecked(autoStart ?? false);
-  }, [instanceName, autoRestart, autoStart]);
+    setManagerPortInput(managerPort ? String(managerPort) : "");
+    setManagerTokenInput(managerToken ?? "");
+    setManagerTokenCopied(false);
+  }, [instanceName, autoRestart, autoStart, managerPort, managerToken]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -88,6 +101,24 @@ export function InstanceSettingsModal({
         await onToggleAutoStart(autoStartChecked);
       }
 
+      const nextManagerPort = managerPortInput.trim() ? Number(managerPortInput) : undefined;
+      const nextManagerToken = managerTokenInput.trim();
+      if (
+        typeof onUpdateManagerApi === "function" &&
+        (nextManagerPort !== managerPort || nextManagerToken !== (managerToken ?? ""))
+      ) {
+        if (
+          nextManagerPort !== undefined &&
+          (!Number.isInteger(nextManagerPort) || nextManagerPort < 1 || nextManagerPort > 65535)
+        ) {
+          throw new Error("managerPort must be a valid port number");
+        }
+        await onUpdateManagerApi({
+          managerPort: nextManagerPort ?? null,
+          managerToken: nextManagerToken || null,
+        });
+      }
+
       onClose();
     } catch (error) {
       const err = error as Error;
@@ -111,6 +142,25 @@ export function InstanceSettingsModal({
         void onUpdateInstance(selectedVersion, isReinstall);
       }
     }
+  };
+
+  const regenerateManagerToken = () => {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const token = btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+    setManagerTokenInput(token);
+    setManagerTokenVisible(true);
+    setManagerTokenCopied(false);
+  };
+
+  const copyManagerToken = async () => {
+    if (!managerTokenInput.trim()) return;
+    await navigator.clipboard.writeText(managerTokenInput.trim());
+    setManagerTokenCopied(true);
+    window.setTimeout(() => setManagerTokenCopied(false), 1400);
   };
 
   return (
@@ -207,6 +257,56 @@ export function InstanceSettingsModal({
                   ? t("reinstallNow") || "今すぐ再インストール"
                   : t("updateNow") || "今すぐアップデート"}
             </button>
+          </div>
+
+          <div className="setting-section manager-api-section">
+            <div className="setting-title-row">
+              <label htmlFor="manager-port">Manager API</label>
+              <button
+                type="button"
+                className="small-action-button"
+                onClick={regenerateManagerToken}
+              >
+                再発行
+              </button>
+            </div>
+            <small className="setting-description">
+              FerrumProxy の --manager-port と --manager-token に合わせて設定します。
+            </small>
+            <input
+              id="manager-port"
+              type="number"
+              min={1}
+              max={65535}
+              value={managerPortInput}
+              onChange={(e) => setManagerPortInput(e.target.value.replace(/\D/g, ""))}
+              placeholder="7600"
+            />
+            <div className="manager-token-row">
+              <input
+                type={managerTokenVisible ? "text" : "password"}
+                value={managerTokenInput}
+                onChange={(e) => setManagerTokenInput(e.target.value)}
+                placeholder="manager-token"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                className="small-action-button"
+                onClick={() => setManagerTokenVisible((visible) => !visible)}
+              >
+                {managerTokenVisible ? "隠す" : "表示"}
+              </button>
+              <button
+                type="button"
+                className="small-action-button"
+                onClick={copyManagerToken}
+                disabled={!managerTokenInput.trim()}
+              >
+                {managerTokenCopied ? "コピー済み" : "コピー"}
+              </button>
+            </div>
           </div>
         </div>
 
