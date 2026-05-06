@@ -3,10 +3,10 @@
   "servers": [
     {
       "id": "official-server-osaka-1",
-      "name": "FerrumProxy Official Osaka Server1",
+      "name": "Official Osaka Server1",
       "address": "150.230.3.155:7000",
       "enabled": true,
-      "description": "大阪サーバーに拠点を置いた公式の大阪サーバー1です。安定した通信を提供します、但し、地理的な距離により通信遅延と使用人数によりラグが発生する可能性があります。"
+      "description": "公式の大阪サーバー①です。安定した通信を提供します、但し通信遅延と使用人数によりラグが発生する可能性があります。"
     }
   ]
 }

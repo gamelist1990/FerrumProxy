@@ -179,6 +179,7 @@ function App() {
   const [language, setLanguage] = useState<ClientLanguage>(() => detectLanguage());
   const previousErrorRef = useRef<string | null>(null);
   const relayAddressRef = useRef(defaultForm.relayAddress);
+  const officialServersRef = useRef<OfficialServer[]>([]);
   const text = getTranslation(language);
 
   const changeLanguage = (nextLanguage: ClientLanguage) => {
@@ -205,6 +206,7 @@ function App() {
         const localServers = parseOfficialServers(localText);
         if (localServers.length) {
           loadedLocal = true;
+          officialServersRef.current = localServers;
           setOfficialServers(localServers);
           setRelaySelection(selectRelayForAddress(localServers, relayAddressRef.current));
           setOfficialServerStatus(text.officialServerListFallback);
@@ -220,6 +222,7 @@ function App() {
         }
         const remoteServers = parseOfficialServers(await response.text());
         if (remoteServers.length) {
+          officialServersRef.current = remoteServers;
           setOfficialServers(remoteServers);
           setRelaySelection(selectRelayForAddress(remoteServers, relayAddressRef.current));
           setOfficialServerStatus(text.officialServerListLoaded);
@@ -230,6 +233,7 @@ function App() {
       }
 
       if (!loadedLocal) {
+        officialServersRef.current = [];
         setOfficialServers([]);
         setRelaySelection(customRelayValue);
         setOfficialServerStatus(text.officialServerListFailed);
@@ -244,7 +248,7 @@ function App() {
         const nextForm = { ...defaultForm, ...response.config };
         relayAddressRef.current = nextForm.relayAddress;
         setForm(nextForm);
-        setRelaySelection(selectRelayForAddress(officialServers, nextForm.relayAddress));
+        setRelaySelection(selectRelayForAddress(officialServersRef.current, nextForm.relayAddress));
         setTcpPortInput(String(nextForm.tcpLocalPort));
         setUdpPortInput(String(nextForm.udpLocalPort));
         setConfigPath(response.path);
@@ -336,6 +340,8 @@ function App() {
   const selectedOfficialServer =
     relaySelection === customRelayValue ? null : officialServers.find((server) => server.id === relaySelection) ?? null;
   const relayButtonLabel = selectedOfficialServer?.name ?? text.customRelay;
+  const summaryRelayAddress = shareSession?.relayAddress || form.relayAddress || "not set";
+  const summaryOfficialServer = officialServers.find((server) => server.address === summaryRelayAddress);
   const queueLabel =
     typeof shareSession?.queueWaitingClients === "number" &&
     typeof shareSession?.queueMaxSize === "number"
@@ -437,7 +443,6 @@ function App() {
                       }}
                     >
                       <strong>{server.name}</strong>
-                      <span>{server.address}</span>
                       {server.description && <small>{server.description}</small>}
                     </button>
                   ))}
@@ -580,7 +585,11 @@ function App() {
           </div>
           <div>
             <span>{text.relay}</span>
-            <strong>{shareSession?.relayAddress || form.relayAddress || "not set"}</strong>
+            {summaryOfficialServer ? (
+              <strong>{summaryOfficialServer.name}</strong>
+            ) : (
+              <strong>{summaryRelayAddress}</strong>
+            )}
           </div>
           <div>
             <span>{text.mode}</span>
