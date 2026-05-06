@@ -5,7 +5,7 @@ import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
 import path from 'path';
 import fs from 'fs/promises';
-import { randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import chalk from 'chalk';
 import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './services.js';
 import { ProcessManager } from './processManager.js';
@@ -53,79 +53,6 @@ const serviceManager = new ServiceManager(path.join(appRoot, 'services.json'));
 const processManager = new ProcessManager();
 const configManager = new ConfigManager();
 const authManager = new AuthManager(serviceManager);
-
-type SharedRelayTokenIssuePayload = {
-  tokenName?: unknown;
-  name?: unknown;
-  priority?: unknown;
-  fixedPort?: unknown;
-  fixedPublicPort?: unknown;
-  maxBytesPerSecond?: unknown;
-  tokenBandwidthBytesPerSecond?: unknown;
-  maxTcpConnections?: unknown;
-  maxUdpPeers?: unknown;
-};
-
-function generateSharedRelayToken(): string {
-  return `fp_${randomBytes(32).toString('base64url')}`;
-}
-
-function parseRequiredString(value: unknown, field: string, maxLength: number): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${field} must be a string`);
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${field} is required`);
-  }
-  if (trimmed.length > maxLength) {
-    throw new Error(`${field} must be ${maxLength} characters or less`);
-  }
-  return trimmed;
-}
-
-function parseOptionalInteger(
-  value: unknown,
-  field: string,
-  options: { min: number; max: number }
-): number | undefined {
-  if (value === undefined || value === null || value === '') {
-    return undefined;
-  }
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
-    throw new Error(`${field} must be an integer`);
-  }
-  if (value < options.min || value > options.max) {
-    throw new Error(`${field} must be between ${options.min} and ${options.max}`);
-  }
-  return value;
-}
-
-function parseRequiredInteger(
-  value: unknown,
-  field: string,
-  options: { min: number; max: number }
-): number {
-  const parsed = parseOptionalInteger(value, field, options);
-  if (parsed === undefined) {
-    throw new Error(`${field} is required`);
-  }
-  return parsed;
-}
-
-function assertPlainObject(value: unknown, name: string): asserts value is Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${name} must be a JSON object`);
-  }
-}
-
-function rejectUnknownFields(payload: Record<string, unknown>, allowedFields: string[]): void {
-  const allowed = new Set(allowedFields);
-  const unknown = Object.keys(payload).filter((key) => !allowed.has(key));
-  if (unknown.length > 0) {
-    throw new Error(`Unknown field(s): ${unknown.join(', ')}`);
-  }
-}
 
 function isRequestHttps(req: express.Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https';
@@ -1258,16 +1185,31 @@ app.put('/api/instances/:id', async (req, res) => {
       return res.status(404).json({ error: 'Instance not found' });
     }
 
-    const { name, autoStart, autoRestart } = req.body as {
+    const { name, autoStart, autoRestart, managerPort, managerToken } = req.body as {
       name?: string;
       autoStart?: boolean;
       autoRestart?: boolean;
+      managerPort?: number;
+      managerToken?: string;
     };
 
     const updates: any = {};
     if (typeof name === 'string') updates.name = name.trim();
     if (typeof autoStart === 'boolean') updates.autoStart = autoStart;
     if (typeof autoRestart === 'boolean') updates.autoRestart = autoRestart;
+    if (managerPort !== undefined) {
+      if (!Number.isInteger(managerPort) || managerPort < 1 || managerPort > 65535) {
+        return res.status(400).json({ error: 'managerPort must be a valid port number' });
+      }
+      updates.managerPort = managerPort;
+    }
+    if (typeof managerToken === 'string') {
+      const trimmed = managerToken.trim();
+      if (!trimmed) {
+        return res.status(400).json({ error: 'managerToken cannot be empty' });
+      }
+      updates.managerToken = trimmed;
+    }
 
     
     if (Object.keys(updates).length === 0) {
@@ -1329,7 +1271,21 @@ app.put('/api/instances/:id/config', async (req, res) => {
   }
 });
 
-app.post('/api/instances/:id/shared-service/tokens', authManager.strictAuthMiddleware(), async (req, res) => {
+function requestHasValidGuiSession(req: express.Request): boolean {
+  if (!serviceManager.hasAuth()) {
+    return false;
+  }
+  const token = authManager.sessionTokenFromRequest(req);
+  return !!token && authManager.validateSession(token);
+}
+
+function requestHasManagerBearer(req: express.Request, instance: FerrumProxyInstance): boolean {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : '';
+  return !!instance.managerToken && token === instance.managerToken;
+}
+
+app.all('/api/instances/:id/manager/*', async (req, res) => {
   try {
     const instanceId = req.params.id;
     const instance = serviceManager.getById(instanceId);
@@ -1337,112 +1293,48 @@ app.post('/api/instances/:id/shared-service/tokens', authManager.strictAuthMiddl
     if (!instance) {
       return res.status(404).json({ error: 'Instance not found' });
     }
+    if (!instance.managerPort || !instance.managerToken) {
+      return res.status(400).json({ error: 'Manager API is not configured for this instance' });
+    }
+    if (!requestHasValidGuiSession(req) && !requestHasManagerBearer(req, instance)) {
+      return res.status(401).json({ error: 'Unauthorized', requireAuth: true });
+    }
 
-    assertPlainObject(req.body, 'payload');
-    rejectUnknownFields(req.body, [
-      'tokenName',
-      'name',
-      'priority',
-      'fixedPort',
-      'fixedPublicPort',
-      'maxBytesPerSecond',
-      'tokenBandwidthBytesPerSecond',
-      'maxTcpConnections',
-      'maxUdpPeers',
-    ]);
+    const managerPath = String((req.params as Record<string, string>)[0] || '');
+    if (!managerPath.startsWith('api/v1/')) {
+      return res.status(400).json({ error: 'Manager proxy path must start with api/v1/' });
+    }
 
-    const payload = req.body as SharedRelayTokenIssuePayload;
-    const tokenName = parseRequiredString(payload.tokenName ?? payload.name, 'tokenName', 80);
-    const priority = parseRequiredInteger(payload.priority, 'priority', { min: 0, max: 65535 });
-    const fixedPort = parseOptionalInteger(payload.fixedPort ?? payload.fixedPublicPort, 'fixedPort', {
-      min: 1,
-      max: 65535,
-    });
-    const maxBytesPerSecond = parseRequiredInteger(
-      payload.maxBytesPerSecond ?? payload.tokenBandwidthBytesPerSecond,
-      'maxBytesPerSecond',
-      { min: 1024, max: Number.MAX_SAFE_INTEGER }
-    );
-    const maxTcpConnections = parseRequiredInteger(payload.maxTcpConnections, 'maxTcpConnections', {
-      min: 1,
-      max: 1_000_000,
-    });
-    const maxUdpPeers = parseRequiredInteger(payload.maxUdpPeers, 'maxUdpPeers', {
-      min: 1,
-      max: 1_000_000,
-    });
-
-    const config = await configManager.read(instance.configPath);
-    const sharedService = {
-      ...(config.sharedService || {}),
-      tokens: [...(config.sharedService?.tokens || [])],
-    };
-
-    if (fixedPort !== undefined) {
-      const range = sharedService.portRange;
-      if (
-        range &&
-        typeof range.start === 'number' &&
-        typeof range.end === 'number' &&
-        (fixedPort < range.start || fixedPort > range.end)
-      ) {
-        return res.status(400).json({
-          error: `fixedPort must be inside sharedService.portRange (${range.start}-${range.end})`,
-        });
-      }
-
-      const duplicateFixedPort = sharedService.tokens.some((token) => token.fixedPort === fixedPort);
-      if (duplicateFixedPort) {
-        return res.status(409).json({ error: `fixedPort ${fixedPort} is already assigned to another token` });
+    const url = new URL(`http://127.0.0.1:${instance.managerPort}/${managerPath}`);
+    for (const [key, value] of Object.entries(req.query)) {
+      if (Array.isArray(value)) {
+        for (const item of value) url.searchParams.append(key, String(item));
+      } else if (value !== undefined) {
+        url.searchParams.set(key, String(value));
       }
     }
 
-    const duplicateName = sharedService.tokens.some((token) => token.name === tokenName);
-    if (duplicateName) {
-      return res.status(409).json({ error: `tokenName "${tokenName}" already exists` });
-    }
-
-    let tokenValue = generateSharedRelayToken();
-    while (sharedService.tokens.some((token) => token.token === tokenValue)) {
-      tokenValue = generateSharedRelayToken();
-    }
-
-    const issuedToken = {
-      name: tokenName,
-      token: tokenValue,
-      enabled: true,
-      fixedPort,
-      priority,
-      limits: {
-        maxBytesPerSecond,
-        maxTcpConnections,
-        maxUdpPeers,
-      },
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${instance.managerToken}`,
     };
-
-    sharedService.tokens.push(issuedToken);
-    config.sharedService = sharedService;
-
-    const validation = await configManager.validate(config, !!config.sharedService?.enabled);
-    if (!validation.valid) {
-      return res.status(400).json({ errors: validation.errors });
+    const hasBody = !['GET', 'HEAD'].includes(req.method.toUpperCase()) && req.body !== undefined;
+    if (hasBody) {
+      headers['Content-Type'] = 'application/json';
     }
 
-    await configManager.write(instance.configPath, config);
-
-    broadcast({
-      type: 'configUpdated',
-      instanceId,
-      config,
+    const response = await fetch(url, {
+      method: req.method,
+      headers,
+      body: hasBody ? JSON.stringify(req.body) : undefined,
     });
 
-    res.status(201).json({ success: true, token: issuedToken });
+    if (response.status === 204) {
+      return res.status(204).send();
+    }
+    const data = await response.json().catch(() => ({}));
+    res.status(response.status).json(data);
   } catch (error: any) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes(' must ') || message.includes(' is required') || message.startsWith('Unknown field')) {
-      return res.status(400).json({ error: message });
-    }
-    res.status(500).json({ error: message });
+    res.status(500).json({ error: error.message });
   }
 });
 

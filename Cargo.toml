@@ -7,9 +7,11 @@ description = "Low-latency Rust proxy for Minecraft Bedrock and HTTP/HTTPS forwa
 [dependencies]
 anyhow = "1.0"
 axum = "0.7"
+base64 = "0.22"
 bytes = "1.6"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+rand = "0.8"
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls-native-certs = "0.8"
@@ -17,6 +19,7 @@ rustls-pemfile = "2.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+sha2 = "0.10"
 tokio = { version = "1.38", features = ["full"] }
 tokio-rustls = "0.26"
 tower-http = { version = "0.6", features = ["cors"] }

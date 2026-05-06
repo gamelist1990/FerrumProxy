@@ -4,12 +4,14 @@ mod ddos_guard;
 mod discord;
 mod http_rewrite;
 mod management_api;
+mod manager_api;
 mod proxy_protocol;
 mod runtime;
 mod shared_relay;
 mod tcp;
 mod tcp_tuning;
 mod tls_config;
+mod token_security;
 mod udp;
 mod webhook_queue;
 
@@ -28,6 +30,10 @@ use tracing_subscriber::EnvFilter;
 struct Args {
     #[arg(short, long, default_value = "config.yml")]
     config: PathBuf,
+    #[arg(long)]
+    manager_port: Option<u16>,
+    #[arg(long, env = "FERRUMPROXY_MANAGER_TOKEN")]
+    manager_token: Option<String>,
 }
 
 #[tokio::main]
@@ -74,6 +80,32 @@ async fn main() -> Result<()> {
                 Err(err) => {
                     if !err.to_string().contains("Address already in use") {
                         error!("Management API stopped: {err:#}");
+                    }
+                }
+            }
+        });
+    }
+
+    if let Some(manager_port) = args.manager_port {
+        let Some(manager_token) = args
+            .manager_token
+            .clone()
+            .filter(|token| !token.trim().is_empty())
+        else {
+            anyhow::bail!(
+                "--manager-token or FERRUMPROXY_MANAGER_TOKEN is required when --manager-port is set"
+            );
+        };
+        let runtime = Arc::clone(&runtime);
+        let config_path = args.config.clone();
+        tasks.spawn(async move {
+            match manager_api::start_manager_api(manager_port, config_path, manager_token, runtime)
+                .await
+            {
+                Ok(_) => {}
+                Err(err) => {
+                    if !err.to_string().contains("Address already in use") {
+                        error!("Manager API stopped: {err:#}");
                     }
                 }
             }

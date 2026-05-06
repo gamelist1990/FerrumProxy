@@ -19,6 +19,8 @@ export interface FerrumProxyInstance {
   lastStarted?: string;
   autoStart: boolean;
   autoRestart: boolean;
+  managerPort?: number;
+  managerToken?: string;
   downloadSource: {
     url: string;
   };

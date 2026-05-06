@@ -25,9 +25,16 @@ export interface FerrumProxyConfig {
       maxSize?: number;
     };
     tokens?: Array<{
+      id?: string;
       name?: string;
       token?: string;
       enabled?: boolean;
+      tokenHash?: string;
+      scopes?: string[];
+      expiresAt?: string;
+      createdAt?: string;
+      lastUsedAt?: string;
+      issuerId?: string;
       fixedPort?: number;
       priority?: number;
       limits?: {
@@ -262,8 +269,14 @@ export class ConfigManager extends EventEmitter {
           errors.push('sharedService.tokens must be an array');
         } else {
           shared.tokens.forEach((token, index) => {
-            if (!token.token || typeof token.token !== 'string') {
-              errors.push(`sharedService.tokens[${index}].token must be a non-empty string`);
+            if (
+              (!token.token || typeof token.token !== 'string') &&
+              (!token.tokenHash || typeof token.tokenHash !== 'string')
+            ) {
+              errors.push(`sharedService.tokens[${index}] must have token or tokenHash`);
+            }
+            if (token.scopes !== undefined && !Array.isArray(token.scopes)) {
+              errors.push(`sharedService.tokens[${index}].scopes must be an array`);
             }
             validatePort(token.fixedPort, `sharedService.tokens[${index}].fixedPort`);
             if (

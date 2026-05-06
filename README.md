@@ -94,6 +94,8 @@ Public relay listeners bind on `0.0.0.0`, and public share ports are temporary. 
 
 See [`docs/shared-service-design.md`](docs/shared-service-design.md) for the current design.
 
+See [`docs/manager-api.md`](docs/manager-api.md) for the FerrumProxy Manager API and FerrumProxyGUI proxy API.
+
 ## FerrumProxyGUI
 
 FerrumProxyGUI lives in `FerrumGUI`.

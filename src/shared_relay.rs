@@ -21,6 +21,7 @@ use crate::config::{ProxyConfig, SharedServiceConfig};
 use crate::proxy_protocol::build_proxy_v2_header;
 use crate::runtime::AppRuntime;
 use crate::tcp_tuning::apply_tcp_nodelay;
+use crate::token_security::hash_token;
 
 const BUFFER_SIZE: usize = 16 * 1024;
 
@@ -257,7 +258,7 @@ async fn handle_connect(
             let token_config = auth_config
                 .tokens
                 .iter()
-                .find(|t| t.enabled && t.token == *token_value);
+                .find(|t| shared_token_matches(t, token_value, &auth_config.server_salt));
             let valid =
                 token_config.is_some() || auth_config.auth_tokens.iter().any(|t| t == token_value);
             if !valid && !auth_config.allow_anonymous {
@@ -358,6 +359,29 @@ fn public_host_for_response(
 
 fn is_loopback_or_unspecified_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "0.0.0.0" | "::1" | "::")
+}
+
+fn shared_token_matches(
+    token_config: &crate::config::SharedServiceToken,
+    token_value: &str,
+    server_salt: &str,
+) -> bool {
+    if !token_config.enabled {
+        return false;
+    }
+    if let Some(expires_at) = token_config.expires_at.as_deref() {
+        if let Ok(expires_at) = chrono::DateTime::parse_from_rfc3339(expires_at) {
+            if expires_at <= chrono::Utc::now() {
+                return false;
+            }
+        }
+    }
+    if !token_config.token.is_empty() && token_config.token == token_value {
+        return true;
+    }
+    !token_config.token_hash.is_empty()
+        && !server_salt.is_empty()
+        && token_config.token_hash == hash_token(token_value, server_salt)
 }
 
 fn random_port_offset(range_size: usize) -> usize {
@@ -831,8 +855,15 @@ mod tests {
             128,
             false,
             vec![SharedServiceToken {
+                id: String::new(),
                 name: "single-use".to_string(),
                 token: "single-token".to_string(),
+                token_hash: String::new(),
+                scopes: Vec::new(),
+                expires_at: None,
+                created_at: None,
+                last_used_at: None,
+                issuer_id: None,
                 enabled: true,
                 fixed_port: None,
                 priority: 0,
@@ -894,6 +925,7 @@ mod tests {
             public_bind: "127.0.0.1".to_string(),
             public_host: "127.0.0.1".to_string(),
             port_range,
+            server_salt: String::new(),
             auth_tokens: Vec::new(),
             allow_anonymous,
             queue: SharedServiceQueueConfig {
@@ -1132,7 +1164,7 @@ async fn handle_token_validation(
     let valid = auth_config
         .tokens
         .iter()
-        .any(|t| t.enabled && t.token == token)
+        .any(|t| shared_token_matches(t, token, &auth_config.server_salt))
         || auth_config.auth_tokens.iter().any(|t| t == token);
 
     if valid {

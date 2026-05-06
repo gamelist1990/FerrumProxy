@@ -12,6 +12,8 @@ export interface FerrumProxyInstance {
   lastStarted?: string;
   autoStart: boolean;
   autoRestart: boolean;
+  managerPort?: number;
+  managerToken?: string;
   downloadSource: {
     url: string;
   };
@@ -120,21 +122,19 @@ export interface SharedServiceQueueConfig {
 }
 
 export interface SharedServiceToken {
+  id?: string;
   name?: string;
-  token: string;
+  token?: string;
+  tokenHash?: string;
+  scopes?: string[];
+  expiresAt?: string;
+  createdAt?: string;
+  lastUsedAt?: string;
+  issuerId?: string;
   enabled?: boolean;
   fixedPort?: number;
   priority?: number;
   limits?: Partial<SharedServiceLimits>;
-}
-
-export interface IssueSharedServiceTokenRequest {
-  tokenName: string;
-  priority: number;
-  fixedPort?: number;
-  maxBytesPerSecond: number;
-  maxTcpConnections: number;
-  maxUdpPeers: number;
 }
 
 export interface Release {
@@ -243,21 +243,47 @@ export async function updateConfig(id: string, config: FerrumProxyConfig): Promi
   }
 }
 
-export async function issueSharedServiceToken(
+export async function issueManagerSharedServiceToken(
   id: string,
-  payload: IssueSharedServiceTokenRequest
-): Promise<SharedServiceToken> {
-  const res = await fetch(`${API_BASE}/instances/${id}/shared-service/tokens`, {
+  payload: {
+    name: string;
+    scopes?: string[];
+    expiresIn?: number;
+    issuerId?: string;
+    priority?: number;
+    fixedPort?: number;
+    limits?: Partial<SharedServiceLimits>;
+  }
+): Promise<{ id: string; token: string; expiresAt?: string }> {
+  const res = await fetch(`${API_BASE}/instances/${id}/manager/api/v1/tokens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Failed to issue shared relay token' }));
-    throw new Error(error.error || error.errors?.join(', ') || 'Failed to issue shared relay token');
+    const error = await res.json().catch(() => ({ error: 'Failed to issue manager token' }));
+    throw new Error(error.error || 'Failed to issue manager token');
   }
-  const data = await res.json();
-  return data.token;
+  return res.json();
+}
+
+export async function fetchManagerSharedServiceTokens(id: string): Promise<SharedServiceToken[]> {
+  const res = await fetch(`${API_BASE}/instances/${id}/manager/api/v1/tokens`);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: 'Failed to fetch manager tokens' }));
+    throw new Error(error.error || 'Failed to fetch manager tokens');
+  }
+  return res.json();
+}
+
+export async function deleteManagerSharedServiceToken(id: string, tokenId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/instances/${id}/manager/api/v1/tokens/${encodeURIComponent(tokenId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: 'Failed to delete manager token' }));
+    throw new Error(error.error || 'Failed to delete manager token');
+  }
 }
 
 export async function uploadListenerTlsAssets(
@@ -306,7 +332,7 @@ export async function updateInstance(id: string, version: string, forceReinstall
 
 export async function updateInstanceMetadata(
   id: string,
-  data: { name?: string; autoStart?: boolean; autoRestart?: boolean }
+  data: { name?: string; autoStart?: boolean; autoRestart?: boolean; managerPort?: number; managerToken?: string }
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/instances/${id}`, {
     method: 'PUT',

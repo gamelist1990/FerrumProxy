@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 #[derive(Debug, Clone, Copy)]
@@ -11,7 +11,7 @@ pub enum Protocol {
     Udp,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyConfig {
     #[serde(default = "default_endpoint")]
@@ -27,7 +27,7 @@ pub struct ProxyConfig {
     pub listeners: Vec<ListenerRule>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedServiceConfig {
     #[serde(default)]
@@ -40,6 +40,8 @@ pub struct SharedServiceConfig {
     pub public_host: String,
     #[serde(default = "default_shared_port_range")]
     pub port_range: SharedServicePortRange,
+    #[serde(default)]
+    pub server_salt: String,
     #[serde(default)]
     pub auth_tokens: Vec<String>,
     #[serde(default = "default_true")]
@@ -54,7 +56,7 @@ pub struct SharedServiceConfig {
     pub maximums: SharedServiceLimits,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedServicePortRange {
     #[serde(default = "default_shared_port_start")]
@@ -63,7 +65,7 @@ pub struct SharedServicePortRange {
     pub end: u16,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedServiceQueueConfig {
     #[serde(default = "default_true")]
@@ -72,12 +74,27 @@ pub struct SharedServiceQueueConfig {
     pub max_size: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedServiceToken {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_id: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -88,7 +105,7 @@ pub struct SharedServiceToken {
     pub limits: SharedServiceLimits,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedServiceLimits {
     #[serde(default = "default_max_tcp_connections")]
@@ -103,7 +120,7 @@ pub struct SharedServiceLimits {
     pub udp_session_timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerRule {
     #[serde(default = "default_bind")]
@@ -126,7 +143,7 @@ pub struct ListenerRule {
     pub http_mappings: Vec<HttpTargetMapping>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProxyTarget {
     pub host: String,
     pub tcp: Option<u16>,
@@ -141,7 +158,7 @@ pub struct ProxyTarget {
     pub original_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpTargetMapping {
     pub path: String,
@@ -151,7 +168,7 @@ pub struct HttpTargetMapping {
     pub targets: Vec<ProxyTarget>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerHttpsConfig {
     #[serde(default)]
@@ -175,6 +192,21 @@ impl ProxyConfig {
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         config.normalize_targets();
         Ok(config)
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create config directory {}", parent.display())
+            })?;
+        }
+
+        let text = serde_yaml::to_string(self)
+            .with_context(|| format!("failed to serialize config {}", path.display()))?;
+        fs::write(path, text).with_context(|| format!("failed to write config {}", path.display()))
     }
 
     fn normalize_targets(&mut self) {
@@ -218,6 +250,7 @@ sharedService:
   controlBind: 0.0.0.0:7000
   publicBind: 0.0.0.0
   publicHost: ""
+  serverSalt: ""
   portRange:
     start: 40000
     end: 49999
