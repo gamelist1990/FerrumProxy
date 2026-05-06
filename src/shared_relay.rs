@@ -156,7 +156,7 @@ async fn handle_control_connection(
         handle_connect(request, client_addr, &state, &config).await
     } else if request.starts_with("UDP ") {
         handle_udp_associate(request, &state, &config).await
-    } else if request.starts_with("TOKEN ") {
+    } else if request == "TOKEN" || request.starts_with("TOKEN ") {
         handle_token_validation(request, &state, &config).await
     } else if request == "STATS" {
         handle_stats(&state).await
@@ -231,12 +231,12 @@ async fn handle_connect(
 
     let (token, target_host, target_port) = if target_parts.len() == 3 {
         // token:host:port
+        let token_value = target_parts[0].trim();
+        if token_value.is_empty() {
+            return Ok("ERROR Invalid token\n".to_string());
+        }
         let port: u16 = target_parts[2].parse().unwrap_or(0);
-        (
-            Some(target_parts[0].to_string()),
-            target_parts[1].to_string(),
-            port,
-        )
+        (Some(token_value.to_string()), target_parts[1].trim().to_string(), port)
     } else if target_parts.len() == 2 {
         // host:port (anonymous)
         if !auth_config.allow_anonymous {
@@ -254,20 +254,14 @@ async fn handle_connect(
 
     // Validate token if provided
     let fixed_port = if let Some(ref token_value) = token {
-        if !token_value.is_empty() {
-            let token_config = auth_config
-                .tokens
-                .iter()
-                .find(|t| shared_token_matches(t, token_value, &auth_config.server_salt));
-            let valid =
-                token_config.is_some() || auth_config.auth_tokens.iter().any(|t| t == token_value);
-            if !valid && !auth_config.allow_anonymous {
-                return Ok("ERROR Invalid token\n".to_string());
-            }
-            token_config.and_then(|token| token.fixed_port)
-        } else {
-            None
+        if !shared_token_is_valid(&auth_config, token_value) {
+            return Ok("ERROR Invalid token\n".to_string());
         }
+        auth_config
+            .tokens
+            .iter()
+            .find(|t| shared_token_matches(t, token_value, &auth_config.server_salt))
+            .and_then(|token| token.fixed_port)
     } else {
         None
     };
@@ -382,6 +376,14 @@ fn shared_token_matches(
     !token_config.token_hash.is_empty()
         && !server_salt.is_empty()
         && token_config.token_hash == hash_token(token_value, server_salt)
+}
+
+fn shared_token_is_valid(auth_config: &SharedServiceConfig, token_value: &str) -> bool {
+    auth_config
+        .tokens
+        .iter()
+        .any(|t| shared_token_matches(t, token_value, &auth_config.server_salt))
+        || auth_config.auth_tokens.iter().any(|t| t == token_value)
 }
 
 fn random_port_offset(range_size: usize) -> usize {
@@ -891,6 +893,42 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn shared_relay_rejects_invalid_token_even_when_anonymous_access_is_allowed() -> Result<()>
+    {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let relay = spawn_test_relay_with_config(
+            control_port,
+            SharedServicePortRange {
+                start: public_port,
+                end: public_port,
+            },
+            128,
+            true,
+            Vec::new(),
+        );
+
+        assert_eq!(send_control(control_port, "TOKEN\n").await?.trim(), "OK Anonymous allowed");
+
+        let anonymous = send_control(control_port, "CONNECT 127.0.0.1:19132\n").await?;
+        assert!(anonymous.starts_with("OK"), "{anonymous}");
+
+        assert_eq!(
+            send_control(control_port, "TOKEN aaaaaaaaaaaaaaaaaaa\n").await?.trim(),
+            "ERROR Invalid token"
+        );
+        assert_eq!(
+            send_control(control_port, "CONNECT aaaaaaaaaaaaaaaaaaa:127.0.0.1:19133\n")
+                .await?
+                .trim(),
+            "ERROR Invalid token"
+        );
+
+        relay.abort();
+        Ok(())
+    }
+
     fn spawn_test_relay(control_port: u16, public_port: u16) -> tokio::task::JoinHandle<()> {
         spawn_test_relay_with_queue(control_port, public_port, 128)
     }
@@ -1155,22 +1193,19 @@ async fn handle_token_validation(
 ) -> Result<String> {
     let parts: Vec<&str> = request.split_whitespace().collect();
     if parts.len() < 2 {
-        return Ok("ERROR Usage: TOKEN <token>\n".to_string());
+        let auth_config = shared_service_auth_config(state, config).await;
+        return if auth_config.allow_anonymous {
+            Ok("OK Anonymous allowed\n".to_string())
+        } else {
+            Ok("ERROR Token required\n".to_string())
+        };
     }
 
     let token = parts[1];
     let auth_config = shared_service_auth_config(state, config).await;
 
-    let valid = auth_config
-        .tokens
-        .iter()
-        .any(|t| shared_token_matches(t, token, &auth_config.server_salt))
-        || auth_config.auth_tokens.iter().any(|t| t == token);
-
-    if valid {
+    if shared_token_is_valid(&auth_config, token) {
         Ok("OK Token valid\n".to_string())
-    } else if auth_config.allow_anonymous {
-        Ok("OK Anonymous allowed\n".to_string())
     } else {
         Ok("ERROR Invalid token\n".to_string())
     }
