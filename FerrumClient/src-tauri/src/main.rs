@@ -531,7 +531,10 @@ fn relay_list_contains_port(response: &str, public_port: u16) -> bool {
 
 fn validate_shared_relay_api(config: &ClientConfig) -> Result<(), String> {
     validate_shared_relay_control_api(&config.relay_address)?;
-    validate_shared_relay_auth(&config.relay_address, config.token.trim())?;
+    let token = config.token.trim();
+    if !token.is_empty() {
+        validate_shared_relay_auth(&config.relay_address, token)?;
+    }
     Ok(())
 }
 
@@ -550,32 +553,18 @@ fn validate_shared_relay_control_api(relay_address: &str) -> Result<(), String> 
 }
 
 fn validate_shared_relay_auth(relay_address: &str, token: &str) -> Result<(), String> {
-    let response = if token.is_empty() {
-        send_relay_command(relay_address, "TOKEN\n")
-    } else {
-        send_relay_command(relay_address, &format!("TOKEN {token}\n"))
+    if token.is_empty() {
+        return Ok(());
     }
+
+    let response = send_relay_command(relay_address, &format!("TOKEN {token}\n"))
         .map_err(|err| format!("Shared relay token check failed: {err}"))?;
     let trimmed = response.trim();
-    if token.is_empty() {
-        if trimmed.eq_ignore_ascii_case("OK Anonymous allowed") {
-            return Ok(());
-        }
-        if trimmed.eq_ignore_ascii_case("ERROR Token required")
-            || trimmed.eq_ignore_ascii_case("ERROR Invalid token")
-        {
-            return Err(
-                "Shared relay token check failed: this relay requires an authentication token."
-                    .to_string(),
-            );
-        }
-    } else {
-        if trimmed.starts_with("OK ") {
-            return Ok(());
-        }
-        if trimmed.eq_ignore_ascii_case("ERROR Invalid token") {
-            return Err("Shared relay token check failed: invalid authentication token.".to_string());
-        }
+    if trimmed.starts_with("OK ") {
+        return Ok(());
+    }
+    if trimmed.eq_ignore_ascii_case("ERROR Invalid token") {
+        return Err("Shared relay token check failed: invalid authentication token.".to_string());
     }
 
     Err(format!(
