@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { detectLanguage, getTranslation, saveLanguage, type ClientLanguage } from "./lang";
 import "./App.css";
@@ -63,6 +63,7 @@ function App() {
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   const [language, setLanguage] = useState<ClientLanguage>(() => detectLanguage());
+  const previousErrorRef = useRef<string | null>(null);
   const text = getTranslation(language);
 
   const changeLanguage = (nextLanguage: ClientLanguage) => {
@@ -184,6 +185,15 @@ function App() {
   ];
   const currentStatusLabel = isRunning ? text.connected : isWaiting ? text.waiting : text.stopped;
   const currentStatusDetail = isRunning ? text.statusConnected : isWaiting ? text.statusAllocating : text.statusIdle;
+
+  useEffect(() => {
+    if (displayError && displayError !== previousErrorRef.current) {
+      previousErrorRef.current = displayError;
+      setErrorModalOpen(true);
+    } else if (!displayError) {
+      previousErrorRef.current = null;
+    }
+  }, [displayError]);
 
   const copyPublicEndpoint = async () => {
     if (!copyEndpoint) return;
