@@ -333,7 +333,7 @@ export async function updateInstance(id: string, version: string, forceReinstall
 export async function updateInstanceMetadata(
   id: string,
   data: { name?: string; autoStart?: boolean; autoRestart?: boolean; managerPort?: number | null; managerToken?: string | null }
-): Promise<void> {
+): Promise<FerrumProxyInstance> {
   const res = await fetch(`${API_BASE}/instances/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -343,6 +343,8 @@ export async function updateInstanceMetadata(
     const err = await res.json().catch(() => ({ error: 'Failed to update instance' }));
     throw new Error(err.error || 'Failed to update instance');
   }
+  const body = await res.json();
+  return body.instance;
 }
 
 export async function fetchLatestRelease(): Promise<Release> {

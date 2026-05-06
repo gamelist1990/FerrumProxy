@@ -1058,15 +1058,11 @@ function App() {
                     );
                   }}
                   onUpdateManagerApi={async (settings) => {
-                    await updateInstanceMetadata(selectedInstanceData.id, settings);
-                    const nextSettings = {
-                      managerPort: settings.managerPort ?? undefined,
-                      managerToken: settings.managerToken ?? undefined,
-                    };
+                    const updatedInstance = await updateInstanceMetadata(selectedInstanceData.id, settings);
                     setInstances((prev) =>
                       prev.map((instance) =>
                         instance.id === selectedInstanceData.id
-                          ? { ...instance, ...nextSettings }
+                          ? { ...instance, ...updatedInstance }
                           : instance
                       )
                     );

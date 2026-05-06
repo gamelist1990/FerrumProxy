@@ -3,9 +3,10 @@ import cookieParser from 'cookie-parser';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
+import { createServer as createNetServer } from 'net';
 import path from 'path';
 import fs from 'fs/promises';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import chalk from 'chalk';
 import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './services.js';
 import { ProcessManager } from './processManager.js';
@@ -53,9 +54,15 @@ const serviceManager = new ServiceManager(path.join(appRoot, 'services.json'));
 const processManager = new ProcessManager();
 const configManager = new ConfigManager();
 const authManager = new AuthManager(serviceManager);
+const MANAGER_PORT_START = readPositiveIntegerEnv('FERRUMPROXYGUI_MANAGER_PORT_START', 37000);
+const MANAGER_PORT_END = readPositiveIntegerEnv('FERRUMPROXYGUI_MANAGER_PORT_END', 37999);
 
 function isRequestHttps(req: express.Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https';
+}
+
+function isManagerProxyPath(pathname: string): boolean {
+  return /^\/api\/instances\/[^/]+\/manager\//.test(pathname);
 }
 
 function getManagerApiArgs(instance: FerrumProxyInstance): string[] {
@@ -68,6 +75,64 @@ function getManagerApiArgs(instance: FerrumProxyInstance): string[] {
     '--manager-token',
     instance.managerToken,
   ];
+}
+
+function generateManagerToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+async function canBindLocalPort(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const testServer = createNetServer();
+    testServer.once('error', () => resolve(false));
+    testServer.once('listening', () => {
+      testServer.close(() => resolve(true));
+    });
+    testServer.listen(port, '127.0.0.1');
+  });
+}
+
+async function allocateManagerPort(instanceId: string): Promise<number> {
+  const usedPorts = new Set(
+    serviceManager
+      .getAll()
+      .filter((instance) => instance.id !== instanceId && typeof instance.managerPort === 'number')
+      .map((instance) => instance.managerPort as number)
+  );
+  const start = Math.min(MANAGER_PORT_START, MANAGER_PORT_END);
+  const end = Math.max(MANAGER_PORT_START, MANAGER_PORT_END);
+
+  for (let port = start; port <= end; port += 1) {
+    if (usedPorts.has(port)) {
+      continue;
+    }
+    if (await canBindLocalPort(port)) {
+      return port;
+    }
+  }
+
+  throw new Error(`No available Manager API port in range ${start}-${end}`);
+}
+
+async function ensureManagerApi(instance: FerrumProxyInstance): Promise<FerrumProxyInstance> {
+  if (instance.managerToken && instance.managerPort) {
+    return instance;
+  }
+
+  const updates: Partial<FerrumProxyInstance> = {};
+  if (!instance.managerToken) {
+    updates.managerToken = generateManagerToken();
+  }
+  if (!instance.managerPort) {
+    updates.managerPort = await allocateManagerPort(instance.id);
+  }
+
+  await serviceManager.update(instance.id, updates);
+  const updated = serviceManager.getById(instance.id);
+  const next = updated ?? { ...instance, ...updates };
+  broadcast({ type: 'instanceUpdated', instanceId: instance.id, updates });
+  broadcast({ type: 'instances', data: serviceManager.getAll() });
+  return next;
 }
 
 function createDefaultConfig(): FerrumProxyConfig {
@@ -312,7 +377,7 @@ function securityGuard(scopeOverride?: SecurityScope) {
     const userAgent = req.get('user-agent');
     const scope = scopeOverride ?? selectSecurityScope(req.path);
 
-    if (isBlockedUserAgent(userAgent)) {
+    if (!isManagerProxyPath(req.path) && isBlockedUserAgent(userAgent)) {
       console.warn(chalk.yellow(`Blocked suspicious user agent from ${clientKey}: ${userAgent || '<empty>'}`));
       rejectSuspiciousRequest(req, res, 403, 'Forbidden');
       return;
@@ -570,17 +635,18 @@ processManager.on('exit', async (instanceId: string, code: number, signal: strin
             return;
           }
 
-          const useSudo = await shouldStartWithSudo(fresh);
+          const startInstance = await ensureManagerApi(fresh);
+          const useSudo = await shouldStartWithSudo(startInstance);
 
           const pid = processManager.start(instanceId, {
-            binaryPath: fresh.binaryPath,
-            workingDirectory: fresh.dataDir,
-            args: getManagerApiArgs(fresh),
+            binaryPath: startInstance.binaryPath,
+            workingDirectory: startInstance.dataDir,
+            args: getManagerApiArgs(startInstance),
             useSudo,
           });
 
           await serviceManager.setPid(instanceId, pid);
-          configManager.watch(instanceId, fresh.configPath);
+          configManager.watch(instanceId, startInstance.configPath);
 
           
           restartAttempts.delete(instanceId);
@@ -847,6 +913,8 @@ app.post('/api/instances', async (req, res) => {
       configPath,
       autoStart: false,
       autoRestart: false,
+      managerPort: await allocateManagerPort(instanceId),
+      managerToken: generateManagerToken(),
       downloadSource: {
         url: asset.downloadUrl
       },
@@ -867,12 +935,13 @@ app.post('/api/instances', async (req, res) => {
     });
 
     try {
-      const useSudo = await shouldStartWithSudo(instance);
+      const startInstance = await ensureManagerApi(instance);
+      const useSudo = await shouldStartWithSudo(startInstance);
 
       const pid = processManager.start(instanceId, {
-        binaryPath: instance.binaryPath,
-        workingDirectory: instance.dataDir,
-        args: getManagerApiArgs(instance),
+        binaryPath: startInstance.binaryPath,
+        workingDirectory: startInstance.dataDir,
+        args: getManagerApiArgs(startInstance),
         useSudo,
       });
 
@@ -968,19 +1037,20 @@ app.post('/api/instances/:id/start', async (req, res) => {
       return res.status(400).json({ error: 'Instance is already running' });
     }
 
-    const useSudo = await shouldStartWithSudo(instance);
+    const startInstance = await ensureManagerApi(instance);
+    const useSudo = await shouldStartWithSudo(startInstance);
 
     const pid = processManager.start(instanceId, {
-      binaryPath: instance.binaryPath,
-      workingDirectory: instance.dataDir,
-      args: getManagerApiArgs(instance),
+      binaryPath: startInstance.binaryPath,
+      workingDirectory: startInstance.dataDir,
+      args: getManagerApiArgs(startInstance),
       useSudo,
     });
 
     await serviceManager.setPid(instanceId, pid);
 
     
-    configManager.watch(instanceId, instance.configPath);
+    configManager.watch(instanceId, startInstance.configPath);
 
     broadcast({
       type: 'instanceStarted',
@@ -1046,15 +1116,16 @@ app.post('/api/instances/:id/restart', async (req, res) => {
       return res.status(404).json({ error: 'Instance not found' });
     }
 
-    const useSudo = await shouldStartWithSudo(instance);
+    const startInstance = await ensureManagerApi(instance);
+    const useSudo = await shouldStartWithSudo(startInstance);
     if (processManager.isRunning(instanceId)) {
       markIntentionalStop(instanceId);
     }
 
     const pid = await processManager.restart(instanceId, {
-      binaryPath: instance.binaryPath,
-      workingDirectory: instance.dataDir,
-      args: getManagerApiArgs(instance),
+      binaryPath: startInstance.binaryPath,
+      workingDirectory: startInstance.dataDir,
+      args: getManagerApiArgs(startInstance),
       useSudo,
     });
 
@@ -1222,13 +1293,26 @@ app.put('/api/instances/:id', async (req, res) => {
       updates.managerPort = managerPort;
     }
     if (managerToken === null) {
-      updates.managerToken = undefined;
+      updates.managerToken = generateManagerToken();
     } else if (typeof managerToken === 'string') {
       const trimmed = managerToken.trim();
-      if (!trimmed) {
-        return res.status(400).json({ error: 'managerToken cannot be empty' });
+      updates.managerToken = trimmed || generateManagerToken();
+    }
+
+    const effectiveManagerToken = Object.prototype.hasOwnProperty.call(updates, 'managerToken')
+      ? updates.managerToken
+      : instance.managerToken;
+    const effectiveManagerPort = Object.prototype.hasOwnProperty.call(updates, 'managerPort')
+      ? updates.managerPort
+      : instance.managerPort;
+    if (effectiveManagerToken && !effectiveManagerPort) {
+      updates.managerPort = await allocateManagerPort(instanceId);
+    }
+    if (!effectiveManagerToken) {
+      updates.managerToken = generateManagerToken();
+      if (!effectiveManagerPort) {
+        updates.managerPort = await allocateManagerPort(instanceId);
       }
-      updates.managerToken = trimmed;
     }
 
     
@@ -1237,13 +1321,14 @@ app.put('/api/instances/:id', async (req, res) => {
     }
 
     await serviceManager.update(instanceId, updates);
+    const updatedInstance = serviceManager.getById(instanceId);
 
     broadcast({ type: 'instanceUpdated', instanceId, updates });
 
     
     broadcast({ type: 'instances', data: serviceManager.getAll() });
 
-    res.json({ success: true });
+    res.json({ success: true, instance: updatedInstance });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1600,6 +1685,9 @@ async function init() {
     
     await serviceManager.load();
     console.log(chalk.green(`✓ Loaded ${serviceManager.getAll().length} instances`));
+    for (const instance of serviceManager.getAll()) {
+      await ensureManagerApi(instance);
+    }
 
     
     const instances = serviceManager.getAll();
@@ -1630,18 +1718,19 @@ async function init() {
           }
 
           console.log(chalk.blue(`Auto-starting instance ${instance.name} (${instance.id})`));
-          const useSudo = await shouldStartWithSudo(instance);
-          const pid = processManager.start(instance.id, {
-            binaryPath: instance.binaryPath,
-            workingDirectory: instance.dataDir,
-            args: getManagerApiArgs(instance),
+          const startInstance = await ensureManagerApi(instance);
+          const useSudo = await shouldStartWithSudo(startInstance);
+          const pid = processManager.start(startInstance.id, {
+            binaryPath: startInstance.binaryPath,
+            workingDirectory: startInstance.dataDir,
+            args: getManagerApiArgs(startInstance),
             useSudo,
           });
 
-          await serviceManager.setPid(instance.id, pid);
-          configManager.watch(instance.id, instance.configPath);
+          await serviceManager.setPid(startInstance.id, pid);
+          configManager.watch(startInstance.id, startInstance.configPath);
 
-          broadcast({ type: 'instanceStarted', instanceId: instance.id, pid });
+          broadcast({ type: 'instanceStarted', instanceId: startInstance.id, pid });
           broadcast({ type: 'instances', data: serviceManager.getAll() });
         }
       } catch (err: any) {

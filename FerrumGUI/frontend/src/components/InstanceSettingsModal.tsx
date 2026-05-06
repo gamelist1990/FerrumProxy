@@ -107,8 +107,9 @@ export function InstanceSettingsModal({
         await onToggleAutoStart(autoStartChecked);
       }
 
-      const nextManagerPort = managerPortInput.trim() ? Number(managerPortInput) : undefined;
       const nextManagerToken = managerTokenInput.trim();
+      const nextManagerPort =
+        nextManagerToken && managerPortInput.trim() ? Number(managerPortInput) : undefined;
       if (
         typeof onUpdateManagerApi === "function" &&
         (nextManagerPort !== managerPort || nextManagerToken !== (managerToken ?? ""))
@@ -315,7 +316,7 @@ export function InstanceSettingsModal({
 
           <div className="setting-section manager-api-section">
             <div className="setting-title-row">
-              <label htmlFor="manager-port">Manager API</label>
+              <label>Manager API</label>
               <button
                 type="button"
                 className="small-action-button"
@@ -325,7 +326,7 @@ export function InstanceSettingsModal({
               </button>
             </div>
             <small className="setting-description">
-              FerrumProxy の --manager-port と --manager-token に合わせて設定します。
+              Manager port は保存時に空きポートへ自動割り当てされます。
             </small>
             <div className="copy-value-row">
               <code title={instanceId}>{instanceId}</code>
@@ -337,15 +338,10 @@ export function InstanceSettingsModal({
                 {instanceIdCopied ? "コピー済み" : "Instance IDをコピー"}
               </button>
             </div>
-            <input
-              id="manager-port"
-              type="number"
-              min={1}
-              max={65535}
-              value={managerPortInput}
-              onChange={(e) => setManagerPortInput(e.target.value.replace(/\D/g, ""))}
-              placeholder="7600"
-            />
+            <div className="copy-value-row">
+              <code>{managerPortInput || "保存時に自動割り当て"}</code>
+              <span className="setting-description">Manager port</span>
+            </div>
             <div className="manager-token-row">
               <input
                 type={managerTokenVisible ? "text" : "password"}
