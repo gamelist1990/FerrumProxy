@@ -17,6 +17,14 @@ const defaultLimits: SharedServiceLimits = {
   maxBytesPerSecond: 10 * 1024 * 1024,
 };
 
+const BANDWIDTH_UNITS: Record<string, number> = {
+  bps: 1,
+  kbps: 1024,
+  mbps: 1024 * 1024,
+  gbps: 1024 * 1024 * 1024,
+  tbps: 1024 * 1024 * 1024 * 1024,
+};
+
 const generateToken = () => {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
@@ -33,6 +41,58 @@ const toOptionalPort = (value: string) => {
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : undefined;
 };
 
+const parseBandwidthToBytesPerSecond = (value: string): number | null => {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  const match = normalized.match(/^(\d+(?:\.\d+)?)\s*(k|m|g|t)?bps$/i);
+  if (!match) {
+    return null;
+  }
+
+  const amount = Number.parseFloat(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+
+  const unit = `${(match[2] || '').toLowerCase()}bps`;
+  const multiplier = BANDWIDTH_UNITS[unit];
+  if (!multiplier) {
+    return null;
+  }
+
+  const bitsPerSecond = amount * multiplier;
+  const bytesPerSecond = Math.round(bitsPerSecond / 8);
+  return bytesPerSecond > 0 ? bytesPerSecond : null;
+};
+
+const formatBandwidthFromBytesPerSecond = (bytesPerSecond: number): string => {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
+    return '';
+  }
+
+  const bitsPerSecond = bytesPerSecond * 8;
+  const units = [
+    { label: 'Tbps', value: BANDWIDTH_UNITS.tbps },
+    { label: 'Gbps', value: BANDWIDTH_UNITS.gbps },
+    { label: 'Mbps', value: BANDWIDTH_UNITS.mbps },
+    { label: 'Kbps', value: BANDWIDTH_UNITS.kbps },
+    { label: 'bps', value: BANDWIDTH_UNITS.bps },
+  ];
+
+  const chosen = units.find((unit) => bitsPerSecond >= unit.value) || units[units.length - 1];
+  const amount = bitsPerSecond / chosen.value;
+  const rounded = amount >= 100 ? amount.toFixed(0) : amount >= 10 ? amount.toFixed(1) : amount.toFixed(2);
+  return `${Number.parseFloat(rounded)}${chosen.label}`;
+};
+
 export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config, onChange }) => {
   const sharedService = config.sharedService || {};
   const defaults = { ...defaultLimits, ...(sharedService.defaults || {}) };
@@ -46,6 +106,25 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
       priority: 10,
       limits: defaults,
     }));
+  const [defaultBandwidthInput, setDefaultBandwidthInput] = React.useState(() =>
+    formatBandwidthFromBytesPerSecond(defaults.maxBytesPerSecond)
+  );
+  const [tokenBandwidthInputs, setTokenBandwidthInputs] = React.useState<Record<number, string>>({});
+
+  React.useEffect(() => {
+    setDefaultBandwidthInput(formatBandwidthFromBytesPerSecond(defaults.maxBytesPerSecond));
+  }, [defaults.maxBytesPerSecond]);
+
+  React.useEffect(() => {
+    setTokenBandwidthInputs(
+      Object.fromEntries(
+        tokens.map((token, index) => [
+          index,
+          formatBandwidthFromBytesPerSecond((token.limits || {}).maxBytesPerSecond ?? defaults.maxBytesPerSecond),
+        ])
+      )
+    );
+  }, [tokens, defaults.maxBytesPerSecond]);
 
   const updateShared = (updates: FerrumProxyConfig['sharedService']) => {
     onChange({
@@ -102,6 +181,26 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
     updateShared({
       tokens: tokens.filter((_, tokenIndex) => tokenIndex !== index),
     });
+  };
+
+  const commitDefaultBandwidthInput = (raw: string) => {
+    const parsed = parseBandwidthToBytesPerSecond(raw);
+    if (!parsed) {
+      setDefaultBandwidthInput(formatBandwidthFromBytesPerSecond(defaults.maxBytesPerSecond));
+      return;
+    }
+    updateLimit('maxBytesPerSecond', parsed);
+    setDefaultBandwidthInput(formatBandwidthFromBytesPerSecond(parsed));
+  };
+
+  const commitTokenBandwidthInput = (index: number, raw: string, fallback: number) => {
+    const parsed = parseBandwidthToBytesPerSecond(raw);
+    if (!parsed) {
+      setTokenBandwidthInputs((prev) => ({ ...prev, [index]: formatBandwidthFromBytesPerSecond(fallback) }));
+      return;
+    }
+    updateTokenLimit(index, 'maxBytesPerSecond', parsed);
+    setTokenBandwidthInputs((prev) => ({ ...prev, [index]: formatBandwidthFromBytesPerSecond(parsed) }));
   };
 
   return (
@@ -161,10 +260,11 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
 
         <Input
           label={t('bandwidthBytesPerSecond')}
-          type="number"
-          value={defaults.maxBytesPerSecond}
-          onChange={(event) => updateLimit('maxBytesPerSecond', toPositiveInt(event.target.value, defaults.maxBytesPerSecond))}
-          min="1024"
+          type="text"
+          value={defaultBandwidthInput}
+          onChange={(event) => setDefaultBandwidthInput(event.target.value)}
+          onBlur={() => commitDefaultBandwidthInput(defaultBandwidthInput)}
+          placeholder="10Mbps or 10485760"
         />
 
         <Input
@@ -222,10 +322,19 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
                   />
                   <Input
                     label={t('tokenBandwidth')}
-                    type="number"
-                    value={limits.maxBytesPerSecond}
-                    onChange={(event) => updateTokenLimit(index, 'maxBytesPerSecond', toPositiveInt(event.target.value, limits.maxBytesPerSecond))}
-                    min="1024"
+                    type="text"
+                    value={tokenBandwidthInputs[index] ?? formatBandwidthFromBytesPerSecond(limits.maxBytesPerSecond)}
+                    onChange={(event) =>
+                      setTokenBandwidthInputs((prev) => ({ ...prev, [index]: event.target.value }))
+                    }
+                    onBlur={() =>
+                      commitTokenBandwidthInput(
+                        index,
+                        tokenBandwidthInputs[index] ?? '',
+                        limits.maxBytesPerSecond
+                      )
+                    }
+                    placeholder="1Kbps / 10Mbps / 10485760"
                   />
                   <Input
                     label={t('tokenMaxTcp')}

@@ -37,6 +37,7 @@ pub struct SharedRelayState {
     pub udp_cached_pongs: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     pub allocation_notify: Arc<Notify>,
     pub waiting_clients: Arc<Mutex<usize>>,
+    pub waiting_priority_clients: Arc<Mutex<usize>>,
     pub next_port: Arc<RwLock<u16>>,
 }
 
@@ -101,6 +102,7 @@ pub async fn start_shared_relay(
         udp_cached_pongs: Arc::new(RwLock::new(HashMap::new())),
         allocation_notify: Arc::new(Notify::new()),
         waiting_clients: Arc::new(Mutex::new(0)),
+        waiting_priority_clients: Arc::new(Mutex::new(0)),
         next_port: Arc::new(RwLock::new(config.port_range.start)),
     });
 
@@ -278,16 +280,23 @@ async fn handle_connect(
         }
     }
 
-    let port =
-        match allocate_or_wait_for_port(state, config, token.clone(), client_addr, fixed_port)
-            .await?
-        {
-            AllocationResult::Allocated(port) => port,
-            AllocationResult::TokenInUse => {
-                return Ok("ERROR Token already has an active relay\n".to_string())
-            }
-            AllocationResult::Full => return Ok("ERROR Waiting queue full\n".to_string()),
-        };
+    let is_priority_client = token.is_some();
+    let port = match allocate_or_wait_for_port(
+        state,
+        config,
+        token.clone(),
+        client_addr,
+        fixed_port,
+        is_priority_client,
+    )
+    .await?
+    {
+        AllocationResult::Allocated(port) => port,
+        AllocationResult::TokenInUse => {
+            return Ok("ERROR Token already has an active relay\n".to_string())
+        }
+        AllocationResult::Full => return Ok("ERROR Waiting queue full\n".to_string()),
+    };
     let _bind_addr = format!("{}:{}", config.public_bind, port);
     let public_host =
         public_host_for_response(&config.public_host, &config.control_bind, client_addr);
@@ -415,6 +424,7 @@ async fn allocate_or_wait_for_port(
     token: Option<String>,
     client_addr: SocketAddr,
     fixed_port: Option<u16>,
+    is_priority_client: bool,
 ) -> Result<AllocationResult> {
     let queue_enabled = config.queue.enabled;
     let queue_max_size = config.queue.max_size;
@@ -424,7 +434,7 @@ async fn allocate_or_wait_for_port(
         match try_allocate_port(state, config, token.clone(), client_addr, fixed_port).await {
             AllocationResult::Allocated(port) => {
                 if queued {
-                    *state.waiting_clients.lock().await -= 1;
+                    decrement_waiting_counter(state, is_priority_client).await;
                     info!(
                         "Dequeued shared relay client {}; allocated port {}",
                         client_addr, port
@@ -434,7 +444,7 @@ async fn allocate_or_wait_for_port(
             }
             AllocationResult::TokenInUse => {
                 if queued {
-                    *state.waiting_clients.lock().await -= 1;
+                    decrement_waiting_counter(state, is_priority_client).await;
                 }
                 return Ok(AllocationResult::TokenInUse);
             }
@@ -446,19 +456,42 @@ async fn allocate_or_wait_for_port(
         }
 
         if !queued {
-            let mut waiting = state.waiting_clients.lock().await;
-            if *waiting >= queue_max_size {
-                return Ok(AllocationResult::Full);
+            if !is_priority_client {
+                let mut waiting = state.waiting_clients.lock().await;
+                if *waiting >= queue_max_size {
+                    return Ok(AllocationResult::Full);
+                }
+                *waiting += 1;
+                info!(
+                    "Queued shared relay client {}; waiting={}/{}",
+                    client_addr, *waiting, queue_max_size
+                );
+            } else {
+                let mut priority_waiting = state.waiting_priority_clients.lock().await;
+                *priority_waiting += 1;
+                info!(
+                    "Queued priority shared relay client {}; priority_waiting={} (normal queue cap={})",
+                    client_addr, *priority_waiting, queue_max_size
+                );
             }
-            *waiting += 1;
             queued = true;
-            info!(
-                "Queued shared relay client {}; waiting={}/{}",
-                client_addr, *waiting, queue_max_size
-            );
         }
 
         state.allocation_notify.notified().await;
+    }
+}
+
+async fn decrement_waiting_counter(state: &Arc<SharedRelayState>, is_priority_client: bool) {
+    if is_priority_client {
+        let mut waiting = state.waiting_priority_clients.lock().await;
+        if *waiting > 0 {
+            *waiting -= 1;
+        }
+    } else {
+        let mut waiting = state.waiting_clients.lock().await;
+        if *waiting > 0 {
+            *waiting -= 1;
+        }
     }
 }
 
@@ -839,6 +872,91 @@ mod tests {
         let second = timeout(Duration::from_secs(5), queued).await???;
         let allocated_after_wait = parse_test_public_port(&second)?;
         assert_eq!(allocated_after_wait, public_port);
+
+        let released = send_control(control_port, &format!("RELEASE {public_port}\n")).await?;
+        assert_eq!(released.trim(), "OK Released");
+
+        relay.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_relay_allows_priority_token_to_wait_even_when_queue_is_full() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let relay = spawn_test_relay_with_config(
+            control_port,
+            SharedServicePortRange {
+                start: public_port,
+                end: public_port,
+            },
+            1,
+            true,
+            vec![SharedServiceToken {
+                id: String::new(),
+                name: "priority".to_string(),
+                token: "vip-token".to_string(),
+                token_hash: String::new(),
+                scopes: Vec::new(),
+                expires_at: None,
+                created_at: None,
+                last_used_at: None,
+                issuer_id: None,
+                enabled: true,
+                fixed_port: None,
+                priority: 100,
+                limits: SharedServiceLimits::default(),
+            }],
+        );
+
+        let first = send_control(control_port, "CONNECT 127.0.0.1:19132\n").await?;
+        let allocated = parse_test_public_port(&first)?;
+        assert_eq!(allocated, public_port);
+
+        let queued_normal =
+            tokio::spawn(
+                async move { send_control(control_port, "CONNECT 127.0.0.1:19133\n").await },
+            );
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let stats = send_control(control_port, "STATS\n").await?;
+                if stats.contains("waiting=1") {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await??;
+
+        let queued_priority = tokio::spawn(async move {
+            send_control(control_port, "CONNECT vip-token:127.0.0.1:19134\n").await
+        });
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let stats = send_control(control_port, "STATS\n").await?;
+                if stats.contains("waiting=1") && stats.contains("waiting_priority=1") {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await??;
+
+        let full = send_control(control_port, "CONNECT 127.0.0.1:19135\n").await?;
+        assert_eq!(full.trim(), "ERROR Waiting queue full");
+
+        let released = send_control(control_port, &format!("RELEASE {public_port}\n")).await?;
+        assert_eq!(released.trim(), "OK Released");
+
+        let _ = timeout(Duration::from_secs(5), queued_normal).await???;
+
+        let released = send_control(control_port, &format!("RELEASE {public_port}\n")).await?;
+        assert_eq!(released.trim(), "OK Released");
+
+        let priority_result = timeout(Duration::from_secs(5), queued_priority).await???;
+        assert!(priority_result.starts_with("OK"), "{priority_result}");
 
         let released = send_control(control_port, &format!("RELEASE {public_port}\n")).await?;
         assert_eq!(released.trim(), "OK Released");
@@ -1235,10 +1353,11 @@ async fn handle_stats(state: &Arc<SharedRelayState>) -> Result<String> {
         .map(VecDeque::len)
         .sum::<usize>();
     let waiting_clients = *state.waiting_clients.lock().await;
+    let waiting_priority_clients = *state.waiting_priority_clients.lock().await;
     let queue_max_size = state.config.queue.max_size;
 
     Ok(format!(
-        "STAT tcp={tcp_count} udp={udp_count} ports={port_count} tunnels={tunnel_count} waiting={waiting_clients} queue_max={queue_max_size} queue_enabled={}\n",
+        "STAT tcp={tcp_count} udp={udp_count} ports={port_count} tunnels={tunnel_count} waiting={waiting_clients} waiting_priority={waiting_priority_clients} queue_max={queue_max_size} queue_enabled={}\n",
         state.config.queue.enabled
     ))
 }
