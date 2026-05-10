@@ -21,6 +21,12 @@ export interface FerrumProxyInstance {
   autoRestart: boolean;
   managerPort?: number;
   managerToken?: string;
+  publicMetadata?: {
+    region?: string;
+    countryCode?: string;
+    latitude?: number;
+    longitude?: number;
+  };
   downloadSource: {
     url: string;
   };
@@ -52,6 +58,20 @@ export class ServiceManager {
         ...instance,
         autoStart: instance.autoStart ?? false,
         autoRestart: instance.autoRestart ?? false,
+        publicMetadata: instance.publicMetadata
+          ? {
+              region: instance.publicMetadata.region?.trim() || undefined,
+              countryCode: instance.publicMetadata.countryCode?.trim().toUpperCase() || undefined,
+              latitude:
+                typeof instance.publicMetadata.latitude === 'number'
+                  ? instance.publicMetadata.latitude
+                  : undefined,
+              longitude:
+                typeof instance.publicMetadata.longitude === 'number'
+                  ? instance.publicMetadata.longitude
+                  : undefined,
+            }
+          : undefined,
       }));
     } catch (error: any) {
       if (error.code === 'ENOENT') {

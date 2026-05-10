@@ -77,6 +77,20 @@ function getManagerApiArgs(instance: FerrumProxyInstance): string[] {
   ];
 }
 
+function parseBindPort(bind: string | undefined): number | undefined {
+  if (!bind) {
+    return undefined;
+  }
+
+  const match = bind.match(/:(\d+)$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const port = Number.parseInt(match[1], 10);
+  return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
+}
+
 function generateManagerToken(): string {
   return randomBytes(32).toString('base64url');
 }
@@ -1174,6 +1188,101 @@ app.get('/api/instances/:id/config', async (req, res) => {
 
     const config = await configManager.read(instance.configPath);
     res.json(config);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/instances/:id/public-metadata', async (req, res) => {
+  try {
+    const instanceId = req.params.id;
+    const instance = serviceManager.getById(instanceId);
+
+    if (!instance) {
+      return res.status(404).json({ error: 'Instance not found' });
+    }
+
+    const config = await configManager.read(instance.configPath);
+    const sharedService = config.sharedService;
+    const portRange = sharedService?.portRange;
+
+    res.json({
+      instance: {
+        id: instance.id,
+        name: instance.name,
+        managerPort: instance.managerPort,
+        managerTokenConfigured: !!instance.managerToken,
+      },
+      sharedService: {
+        enabled: !!sharedService?.enabled,
+        publicHost: sharedService?.publicHost || '',
+        publicBind: sharedService?.publicBind || '',
+        publicPort: parseBindPort(sharedService?.publicBind),
+        portRangeStart: typeof portRange?.start === 'number' ? portRange.start : undefined,
+        portRangeEnd: typeof portRange?.end === 'number' ? portRange.end : undefined,
+      },
+      location: {
+        region: instance.publicMetadata?.region || '',
+        countryCode: instance.publicMetadata?.countryCode || '',
+        latitude: instance.publicMetadata?.latitude,
+        longitude: instance.publicMetadata?.longitude,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/instances/:id/public-metadata', async (req, res) => {
+  try {
+    const instanceId = req.params.id;
+    const instance = serviceManager.getById(instanceId);
+
+    if (!instance) {
+      return res.status(404).json({ error: 'Instance not found' });
+    }
+
+    const {
+      region,
+      countryCode,
+      latitude,
+      longitude,
+    } = req.body as {
+      region?: string | null;
+      countryCode?: string | null;
+      latitude?: number | null;
+      longitude?: number | null;
+    };
+
+    const nextMetadata = {
+      region: typeof region === 'string' ? region.trim() || undefined : instance.publicMetadata?.region,
+      countryCode:
+        typeof countryCode === 'string'
+          ? countryCode.trim().toUpperCase() || undefined
+          : instance.publicMetadata?.countryCode,
+      latitude:
+        latitude == null
+          ? instance.publicMetadata?.latitude
+          : typeof latitude === 'number' && Number.isFinite(latitude)
+            ? latitude
+            : undefined,
+      longitude:
+        longitude == null
+          ? instance.publicMetadata?.longitude
+          : typeof longitude === 'number' && Number.isFinite(longitude)
+            ? longitude
+            : undefined,
+    };
+
+    await serviceManager.update(instanceId, {
+      publicMetadata: nextMetadata,
+    });
+
+    const updated = serviceManager.getById(instanceId);
+    return res.json({
+      success: true,
+      publicMetadata: updated?.publicMetadata || nextMetadata,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
