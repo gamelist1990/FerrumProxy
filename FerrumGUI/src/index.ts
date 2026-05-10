@@ -91,6 +91,124 @@ function parseBindPort(bind: string | undefined): number | undefined {
   return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
 }
 
+function normalizeHostCandidate(value: string | undefined): string {
+  const trimmed = (value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    return new URL(trimmed).hostname;
+  } catch {
+    return trimmed.replace(/^https?:\/\//i, '').split('/')[0] || trimmed;
+  }
+}
+
+function isLocalHost(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized === 'localhost' ||
+    normalized === '0.0.0.0' ||
+    normalized === '127.0.0.1' ||
+    normalized === '::1'
+  );
+}
+
+function getIpInfoTarget(req: express.Request, publicHost?: string): string | null {
+  const host = normalizeHostCandidate(publicHost);
+  if (host && !isLocalHost(host)) {
+    return host;
+  }
+
+  const forwarded = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const ip = (raw || req.socket.remoteAddress || '').split(',')[0]?.trim() || '';
+  const normalized = ip.startsWith('::ffff:') ? ip.slice('::ffff:'.length) : ip;
+  if (!normalized || isLocalHost(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function parseIpInfoLoc(loc?: string): { latitude?: number; longitude?: number } {
+  if (!loc) {
+    return {};
+  }
+  const [latRaw, lngRaw] = loc.split(',').map((value) => value.trim());
+  const latitude = Number(latRaw);
+  const longitude = Number(lngRaw);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return {};
+  }
+  return { latitude, longitude };
+}
+
+async function resolveLocationFromIpInfo(
+  target: string | null
+): Promise<
+  | {
+      region?: string;
+      countryCode?: string;
+      latitude?: number;
+      longitude?: number;
+    }
+  | null
+> {
+  if (!IPINFO_ENABLED) {
+    return null;
+  }
+
+  const baseUrl = IPINFO_BASE_URL.replace(/\/+$/, '');
+  const path = target ? `/${encodeURIComponent(target)}/json` : '/json';
+  const url = new URL(`${baseUrl}${path}`);
+  if (IPINFO_TOKEN) {
+    url.searchParams.set('token', IPINFO_TOKEN);
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), IPINFO_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = (await response.json().catch(() => null)) as
+      | {
+          region?: string;
+          country?: string;
+          loc?: string;
+        }
+      | null;
+    if (!data) {
+      return null;
+    }
+
+    const region = typeof data.region === 'string' ? data.region.trim() : '';
+    const countryCode = typeof data.country === 'string' ? data.country.trim().toUpperCase() : '';
+    const { latitude, longitude } = parseIpInfoLoc(typeof data.loc === 'string' ? data.loc : undefined);
+
+    if (!region && !countryCode && latitude == null && longitude == null) {
+      return null;
+    }
+
+    return {
+      region: region || undefined,
+      countryCode: countryCode || undefined,
+      latitude,
+      longitude,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function generateManagerToken(): string {
   return randomBytes(32).toString('base64url');
 }
@@ -199,6 +317,10 @@ const WEBSOCKET_RATE_LIMIT_PER_MINUTE = readPositiveIntegerEnv('FERRUMPROXYGUI_W
 const WEBSOCKET_RATE_LIMIT_BURST = readPositiveIntegerEnv('FERRUMPROXYGUI_WEBSOCKET_RATE_LIMIT_BURST', 12);
 const RATE_LIMIT_BLOCK_AFTER = readPositiveIntegerEnv('FERRUMPROXYGUI_RATE_LIMIT_BLOCK_AFTER', 6);
 const RATE_LIMIT_BLOCK_MS = readPositiveIntegerEnv('FERRUMPROXYGUI_RATE_LIMIT_BLOCK_MS', 10 * 60 * 1000);
+const IPINFO_TOKEN = process.env.FERRUMPROXYGUI_IPINFO_TOKEN || process.env.IPINFO_TOKEN || '';
+const IPINFO_BASE_URL = process.env.FERRUMPROXYGUI_IPINFO_BASE_URL || 'https://ipinfo.io';
+const IPINFO_TIMEOUT_MS = readPositiveIntegerEnv('FERRUMPROXYGUI_IPINFO_TIMEOUT_MS', 2500);
+const IPINFO_ENABLED = (process.env.FERRUMPROXYGUI_IPINFO_ENABLED || 'true').toLowerCase() !== 'false';
 
 const DEFAULT_BLOCKED_USER_AGENT_FRAGMENTS = [
   'curl/',
@@ -1220,6 +1342,52 @@ app.get('/api/instances/:id/public-metadata', async (req, res) => {
     const sharedService = config.sharedService;
     const portRange = sharedService?.portRange;
 
+    const currentMetadata = instance.publicMetadata;
+    let location = {
+      region: currentMetadata?.region || '',
+      countryCode: currentMetadata?.countryCode || '',
+      latitude: currentMetadata?.latitude,
+      longitude: currentMetadata?.longitude,
+    };
+
+    const missingLocation =
+      !location.region ||
+      !location.countryCode ||
+      location.latitude == null ||
+      location.longitude == null;
+
+    if (missingLocation) {
+      const target = getIpInfoTarget(req, sharedService?.publicHost);
+      const ipInfoLocation = await resolveLocationFromIpInfo(target);
+      if (ipInfoLocation) {
+        const nextMetadata = {
+          region: location.region || ipInfoLocation.region,
+          countryCode: location.countryCode || ipInfoLocation.countryCode,
+          latitude: location.latitude ?? ipInfoLocation.latitude,
+          longitude: location.longitude ?? ipInfoLocation.longitude,
+        };
+
+        const changed =
+          nextMetadata.region !== currentMetadata?.region ||
+          nextMetadata.countryCode !== currentMetadata?.countryCode ||
+          nextMetadata.latitude !== currentMetadata?.latitude ||
+          nextMetadata.longitude !== currentMetadata?.longitude;
+
+        if (changed) {
+          await serviceManager.update(instanceId, {
+            publicMetadata: nextMetadata,
+          });
+        }
+
+        location = {
+          region: nextMetadata.region || '',
+          countryCode: nextMetadata.countryCode || '',
+          latitude: nextMetadata.latitude,
+          longitude: nextMetadata.longitude,
+        };
+      }
+    }
+
     res.json({
       instance: {
         id: instance.id,
@@ -1235,12 +1403,7 @@ app.get('/api/instances/:id/public-metadata', async (req, res) => {
         portRangeStart: typeof portRange?.start === 'number' ? portRange.start : undefined,
         portRangeEnd: typeof portRange?.end === 'number' ? portRange.end : undefined,
       },
-      location: {
-        region: instance.publicMetadata?.region || '',
-        countryCode: instance.publicMetadata?.countryCode || '',
-        latitude: instance.publicMetadata?.latitude,
-        longitude: instance.publicMetadata?.longitude,
-      },
+      location,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
