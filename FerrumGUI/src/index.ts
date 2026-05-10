@@ -850,7 +850,21 @@ app.get('/api/system', async (req, res) => {
 app.get('/api/instances', async (req, res) => {
   try {
     const instances = serviceManager.getAll();
-    res.json(instances);
+    const allowSensitive = !serviceManager.hasAuth() || requestHasValidGuiSession(req);
+    if (allowSensitive) {
+      return res.json(instances);
+    }
+
+    if (!requestHasAnyManagerBearer(req)) {
+      return res.status(401).json({ error: 'Unauthorized', requireAuth: true });
+    }
+
+    const redacted = instances.map((instance) => ({
+      id: instance.id,
+      name: instance.name,
+      managerPort: instance.managerPort,
+    }));
+    return res.json(redacted);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1493,9 +1507,23 @@ function requestHasValidGuiSession(req: express.Request): boolean {
   return !!token && authManager.validateSession(token);
 }
 
-function requestHasManagerBearer(req: express.Request, instance: FerrumProxyInstance): boolean {
+function managerTokenFromRequest(req: express.Request): string {
   const auth = req.headers.authorization;
-  const token = auth?.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : '';
+  return typeof auth === 'string' && auth.startsWith('Bearer ')
+    ? auth.slice('Bearer '.length).trim()
+    : '';
+}
+
+function requestHasAnyManagerBearer(req: express.Request): boolean {
+  const token = managerTokenFromRequest(req);
+  if (!token) {
+    return false;
+  }
+  return serviceManager.getAll().some((instance) => instance.managerToken === token);
+}
+
+function requestHasManagerBearer(req: express.Request, instance: FerrumProxyInstance): boolean {
+  const token = managerTokenFromRequest(req);
   return !!instance.managerToken && token === instance.managerToken;
 }
 

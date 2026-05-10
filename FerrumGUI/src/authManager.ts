@@ -106,6 +106,36 @@ export class AuthManager {
     return typeof token === 'string' ? token : undefined;
   }
 
+  private bearerTokenFromRequest(req: Request): string | undefined {
+    const auth = req.headers.authorization;
+    if (typeof auth !== 'string' || !auth.startsWith('Bearer ')) {
+      return undefined;
+    }
+    const token = auth.slice('Bearer '.length).trim();
+    return token ? token : undefined;
+  }
+
+  private isManagerTokenAllowed(req: Request): boolean {
+    const token = this.bearerTokenFromRequest(req);
+    if (!token) {
+      return false;
+    }
+
+    if (req.path === '/api/instances') {
+      return this.serviceManager
+        .getAll()
+        .some((instance) => instance.managerToken === token);
+    }
+
+    const match = req.path.match(/^\/api\/instances\/([^/]+)\/public-metadata$/);
+    if (match) {
+      const instance = this.serviceManager.getById(match[1]);
+      return !!instance?.managerToken && instance.managerToken === token;
+    }
+
+    return false;
+  }
+
   strictAuthMiddleware() {
     return async (req: Request, res: Response, next: NextFunction) => {
       if (!this.serviceManager.hasAuth()) {
@@ -138,6 +168,10 @@ export class AuthManager {
 
 
       if (!this.serviceManager.hasAuth()) {
+        return next();
+      }
+
+      if (this.isManagerTokenAllowed(req)) {
         return next();
       }
 
