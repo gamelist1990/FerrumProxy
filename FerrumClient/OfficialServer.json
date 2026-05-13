@@ -6,7 +6,7 @@
       "name": "Official Osaka Server1",
       "address": "150.230.3.155:7000",
       "enabled": true,
-      "description": "公式の大阪サーバー①です。安定した通信を提供します、但し通信遅延と使用人数によりラグが発生する可能性があります。"
+      "description": "大阪サーバーです。日本の人にオススメ！"
     },
     {
       "id": "official-server-oregon-1",
