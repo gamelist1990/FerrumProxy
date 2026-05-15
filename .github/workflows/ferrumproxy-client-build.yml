@@ -65,6 +65,7 @@ jobs:
         with:
           workspaces: FerrumClient/src-tauri
           key: ferrumproxy-client-${{ matrix.platform }}
+          cache-bin: false
 
       - name: Install client dependencies
         working-directory: FerrumClient
