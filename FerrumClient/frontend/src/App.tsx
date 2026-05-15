@@ -9,6 +9,7 @@ type ClientConfig = {
   token: string;
   tcpEnabled: boolean;
   udpEnabled: boolean;
+  statusMapEnabled: boolean;
   localHost: string;
   tcpLocalPort: number;
   udpLocalPort: number;
@@ -318,6 +319,7 @@ const defaultForm: ClientConfig = {
   token: "",
   tcpEnabled: true,
   udpEnabled: false,
+  statusMapEnabled: true,
   localHost: "127.0.0.1",
   tcpLocalPort: 25565,
   udpLocalPort: 25565,
@@ -356,6 +358,7 @@ function App() {
   const leafletMapRef = useRef<LeafletMap | null>(null);
   const leafletMarkerRefs = useRef<Record<string, LeafletMarker>>({});
   const text = getTranslation(language);
+  const mapFeatureEnabled = form.statusMapEnabled;
 
   const changeLanguage = (nextLanguage: ClientLanguage) => {
     setLanguage(nextLanguage);
@@ -451,7 +454,7 @@ function App() {
   }, [text.failedProbe]);
 
   const refreshOfficialServerLocations = useCallback(() => {
-    if (!officialServers.length) {
+    if (!mapFeatureEnabled || !officialServers.length) {
       setOfficialServerLocations({});
       setMapError(null);
       setMapLoading(false);
@@ -480,7 +483,7 @@ function App() {
         setMapError(errorMessage(error, text.mapUnavailable));
       })
       .finally(() => setMapLoading(false));
-  }, [officialServers, text.mapUnavailable]);
+  }, [mapFeatureEnabled, officialServers, text.mapUnavailable]);
 
   useEffect(() => {
     if (!officialServers.length) {
@@ -493,8 +496,13 @@ function App() {
   }, [mapSelectedServerId, officialServers]);
 
   useEffect(() => {
+    if (!mapFeatureEnabled) {
+      setMapLoading(false);
+      setMapError(null);
+      return;
+    }
     refreshOfficialServerLocations();
-  }, [refreshOfficialServerLocations]);
+  }, [mapFeatureEnabled, refreshOfficialServerLocations]);
 
   useEffect(() => {
     if (!configReady || (shareSession?.status !== "waiting" && shareSession?.status !== "running")) return;
@@ -730,7 +738,7 @@ function App() {
       const stage = mapStageRef.current;
       if (!stage) return;
 
-      if (!mappableServers.length) {
+      if (!mapFeatureEnabled || !mappableServers.length) {
         leafletMapRef.current?.remove();
         leafletMapRef.current = null;
         leafletMarkerRefs.current = {};
@@ -804,7 +812,7 @@ function App() {
       leafletMapRef.current = null;
       leafletMarkerRefs.current = {};
     };
-  }, [mappableServers, text.mapLoad, text.mapPing, text.mapStatusUnavailable, text.mapUnavailable]);
+  }, [mapFeatureEnabled, mappableServers, text.mapLoad, text.mapPing, text.mapStatusUnavailable, text.mapUnavailable]);
 
   useEffect(() => {
     if (!selectedMapServer || selectedMapServer.latitude == null || selectedMapServer.longitude == null) {
@@ -1065,6 +1073,7 @@ function App() {
           </div>
         </section>
 
+        {mapFeatureEnabled && (
         <section className="relay-map-panel" aria-label={text.mapTitle}>
           <div className="relay-map-header">
             <div>
@@ -1183,6 +1192,7 @@ function App() {
             </aside>
           </div>
         </section>
+        )}
 
         <button
           type="button"
@@ -1300,6 +1310,17 @@ function App() {
                     )}
                   </article>
                 ))}
+              </div>
+              <div className="language-select">
+                <span>{text.mapFeatureToggle}</span>
+                <label className="toggle-switch" aria-label={text.mapFeatureToggle}>
+                  <input
+                    type="checkbox"
+                    checked={mapFeatureEnabled}
+                    onChange={(event) => update("statusMapEnabled", event.target.checked)}
+                  />
+                  <span className="toggle-slider" aria-hidden="true" />
+                </label>
               </div>
               <label className="language-select">
                 <span>{text.language}</span>

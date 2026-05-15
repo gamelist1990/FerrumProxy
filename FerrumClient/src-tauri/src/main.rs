@@ -20,6 +20,8 @@ struct ClientConfig {
     token: String,
     tcp_enabled: bool,
     udp_enabled: bool,
+    #[serde(default = "default_status_map_enabled")]
+    status_map_enabled: bool,
     #[serde(default = "default_local_host")]
     local_host: String,
     tcp_local_port: u16,
@@ -34,6 +36,7 @@ impl Default for ClientConfig {
             token: String::new(),
             tcp_enabled: true,
             udp_enabled: false,
+            status_map_enabled: default_status_map_enabled(),
             local_host: default_local_host(),
             tcp_local_port: 25565,
             udp_local_port: 25565,
@@ -44,6 +47,10 @@ impl Default for ClientConfig {
 
 fn default_local_host() -> String {
     "127.0.0.1".to_string()
+}
+
+fn default_status_map_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
