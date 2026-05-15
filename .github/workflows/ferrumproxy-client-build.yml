@@ -78,6 +78,8 @@ jobs:
         uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO: ${{ runner.os == 'Windows' && format('{0}\.cargo\bin\cargo.exe', env.USERPROFILE) || format('{0}/.cargo/bin/cargo', env.HOME) }}
+          RUSTC: ${{ runner.os == 'Windows' && format('{0}\.cargo\bin\rustc.exe', env.USERPROFILE) || format('{0}/.cargo/bin/rustc', env.HOME) }}
         with:
           projectPath: FerrumClient
           args: --verbose
