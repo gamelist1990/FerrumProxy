@@ -52,6 +52,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure Cargo is first on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          command -v cargo
+          cargo --version
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -70,6 +78,8 @@ jobs:
         uses: tauri-apps/tauri-action@action-v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO: ${{ runner.os == 'Windows' && format('{0}\.cargo\bin\cargo.exe', env.USERPROFILE) || format('{0}/.cargo/bin/cargo', env.HOME) }}
+          RUSTC: ${{ runner.os == 'Windows' && format('{0}\.cargo\bin\rustc.exe', env.USERPROFILE) || format('{0}/.cargo/bin/rustc', env.HOME) }}
         with:
           projectPath: FerrumClient
           args: --verbose
