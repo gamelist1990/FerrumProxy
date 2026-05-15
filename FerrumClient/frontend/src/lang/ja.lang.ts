@@ -82,7 +82,12 @@ export const ja: ClientTranslation = {
   mapLocationPending: "位置情報を確認中",
   mapPing: "Ping",
   mapLoad: "負荷率",
+  mapActiveSessions: "稼働セッション",
   mapStatusUnavailable: "状態を取得できません",
+  hostCpu: "サーバーCPU",
+  hostMemory: "サーバーメモリ",
+  hostLoadAverage: "ロード平均 (1/5/15)",
+  hostUptime: "サーバー稼働時間",
   mapProvider: "取得元",
   mapCached: "キャッシュ",
 };

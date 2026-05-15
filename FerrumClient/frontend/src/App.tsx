@@ -73,6 +73,16 @@ type OfficialServerLocation = {
   pingMs?: number | null;
   loadRate?: number | null;
   loadPercent?: number | null;
+  hostCpuPercent?: number | null;
+  hostMemoryPercent?: number | null;
+  hostCpuCores?: number | null;
+  hostLoadAverage1m?: number | null;
+  hostLoadAverage5m?: number | null;
+  hostLoadAverage15m?: number | null;
+  hostMemoryTotalBytes?: number | null;
+  hostMemoryUsedBytes?: number | null;
+  hostMemoryFreeBytes?: number | null;
+  hostUptimeSeconds?: number | null;
   activeSessions?: number | null;
   maxSessions?: number | null;
 };
@@ -136,16 +146,52 @@ function getMapPingTone(pingMs: number | null | undefined): MapPingTone {
 
 function renderMapLoadSummary(server: {
   loadPercent?: number | null;
+  hostCpuPercent?: number | null;
+  hostMemoryPercent?: number | null;
   activeSessions?: number | null;
   maxSessions?: number | null;
 }): string {
   if (typeof server.loadPercent !== "number" || !Number.isFinite(server.loadPercent)) {
     return "-";
   }
-  if (typeof server.activeSessions === "number" && typeof server.maxSessions === "number" && server.maxSessions > 0) {
-    return `${server.loadPercent.toFixed(1)}% (${server.activeSessions}/${server.maxSessions})`;
+  const cpuText =
+    typeof server.hostCpuPercent === "number" && Number.isFinite(server.hostCpuPercent)
+      ? `CPU ${server.hostCpuPercent.toFixed(1)}%`
+      : null;
+  const memoryText =
+    typeof server.hostMemoryPercent === "number" && Number.isFinite(server.hostMemoryPercent)
+      ? `MEM ${server.hostMemoryPercent.toFixed(1)}%`
+      : null;
+  const sessionText =
+    typeof server.activeSessions === "number" && Number.isFinite(server.activeSessions)
+      ? `稼働セッション ${server.activeSessions}`
+      : null;
+  const sessionLimitText =
+    typeof server.maxSessions === "number" &&
+    Number.isFinite(server.maxSessions) &&
+    server.maxSessions > 0
+      ? `接続上限 ${server.maxSessions}`
+      : null;
+
+  const details = [cpuText, memoryText, sessionText, sessionLimitText].filter(Boolean).join(" / ");
+  if (details) {
+    return `${server.loadPercent.toFixed(1)}% (${details})`;
   }
   return `${server.loadPercent.toFixed(1)}%`;
+}
+
+function clampPercent(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
+function pingToQualityPercent(pingMs: number | null | undefined): number | null {
+  if (typeof pingMs !== "number" || !Number.isFinite(pingMs)) {
+    return null;
+  }
+  return Math.max(4, 100 - Math.min(100, pingMs / 4));
 }
 
 function renderMapPopupHtml(
@@ -558,13 +604,6 @@ function App() {
   const copyEndpoint = shareSession?.endpoint
     ? `${shareSession.endpoint.host}:${shareSession.endpoint.port}`
     : null;
-  const statusMetrics = [
-    { label: text.ping, value: typeof shareSession?.relayPingMs === "number" ? `${shareSession.relayPingMs} ms` : text.notMeasured },
-    { label: text.tcpTunnels, value: String(shareSession?.tcpTunnels ?? 0) },
-    { label: text.udpTunnel, value: shareSession?.udpTunnel ? text.ready : text.down },
-    { label: text.bytesIn, value: formatBytes(shareSession?.bytesIn ?? 0) },
-    { label: text.bytesOut, value: formatBytes(shareSession?.bytesOut ?? 0) },
-  ];
   const currentStatusLabel = isRunning ? text.connected : isWaiting ? text.waiting : text.stopped;
   const currentStatusDetail = isRunning ? text.statusConnected : isWaiting ? text.statusAllocating : text.statusIdle;
   const mapServers = useMemo(
@@ -587,6 +626,16 @@ function App() {
           pingMs: location?.pingMs ?? null,
           loadRate: location?.loadRate ?? null,
           loadPercent: location?.loadPercent ?? null,
+          hostCpuPercent: location?.hostCpuPercent ?? null,
+          hostMemoryPercent: location?.hostMemoryPercent ?? null,
+          hostCpuCores: location?.hostCpuCores ?? null,
+          hostLoadAverage1m: location?.hostLoadAverage1m ?? null,
+          hostLoadAverage5m: location?.hostLoadAverage5m ?? null,
+          hostLoadAverage15m: location?.hostLoadAverage15m ?? null,
+          hostMemoryTotalBytes: location?.hostMemoryTotalBytes ?? null,
+          hostMemoryUsedBytes: location?.hostMemoryUsedBytes ?? null,
+          hostMemoryFreeBytes: location?.hostMemoryFreeBytes ?? null,
+          hostUptimeSeconds: location?.hostUptimeSeconds ?? null,
           activeSessions: location?.activeSessions ?? null,
           maxSessions: location?.maxSessions ?? null,
         };
@@ -594,6 +643,59 @@ function App() {
     [officialServerLocations, officialServers]
   );
   const selectedMapServer = mapServers.find((server) => server.id === mapSelectedServerId) || mapServers[0] || null;
+  const statusRelayServer =
+    mapServers.find((server) => server.address === summaryRelayAddress) ||
+    (selectedOfficialServer ? mapServers.find((server) => server.id === selectedOfficialServer.id) : undefined) ||
+    null;
+  const selectedMapPingTone = selectedMapServer ? getMapPingTone(selectedMapServer.pingMs) : "unknown";
+  const selectedMapLocation =
+    selectedMapServer && (selectedMapServer.region || selectedMapServer.countryCode)
+      ? `${selectedMapServer.region || "-"} / ${selectedMapServer.countryCode || "-"}`
+      : text.mapLocationPending;
+  const selectedMapPingLabel =
+    selectedMapServer && typeof selectedMapServer.pingMs === "number"
+      ? `${selectedMapServer.pingMs} ms`
+      : text.mapStatusUnavailable;
+  const selectedMapPingGauge = pingToQualityPercent(selectedMapServer?.pingMs);
+  const selectedMapLoadGauge = clampPercent(selectedMapServer?.loadPercent);
+  const selectedMapCpuGauge = clampPercent(selectedMapServer?.hostCpuPercent);
+  const selectedMapMemoryGauge = clampPercent(selectedMapServer?.hostMemoryPercent);
+  const selectedMapSessionLabel =
+    selectedMapServer && typeof selectedMapServer.activeSessions === "number"
+      ? typeof selectedMapServer.maxSessions === "number" && selectedMapServer.maxSessions > 0
+        ? `${selectedMapServer.activeSessions} / ${selectedMapServer.maxSessions}`
+        : `${selectedMapServer.activeSessions}`
+      : "-";
+  const statusCpuValue =
+    typeof statusRelayServer?.hostCpuPercent === "number"
+      ? `${statusRelayServer.hostCpuPercent.toFixed(1)}%`
+      : "-";
+  const statusMemoryValue =
+    typeof statusRelayServer?.hostMemoryPercent === "number"
+      ? `${statusRelayServer.hostMemoryPercent.toFixed(1)}%`
+      : "-";
+  const statusLoadAverageValue =
+    typeof statusRelayServer?.hostLoadAverage1m === "number" &&
+    typeof statusRelayServer?.hostLoadAverage5m === "number" &&
+    typeof statusRelayServer?.hostLoadAverage15m === "number"
+      ? `${statusRelayServer.hostLoadAverage1m.toFixed(2)} / ${statusRelayServer.hostLoadAverage5m.toFixed(2)} / ${statusRelayServer.hostLoadAverage15m.toFixed(2)}`
+      : "-";
+  const statusUptimeValue =
+    typeof statusRelayServer?.hostUptimeSeconds === "number"
+      ? formatDuration(statusRelayServer.hostUptimeSeconds)
+      : "-";
+  const statusMetrics = [
+    { label: text.ping, value: typeof shareSession?.relayPingMs === "number" ? `${shareSession.relayPingMs} ms` : text.notMeasured },
+    { label: text.mapLoad, value: statusRelayServer ? renderMapLoadSummary(statusRelayServer) : "-" },
+    { label: text.hostCpu, value: statusCpuValue },
+    { label: text.hostMemory, value: statusMemoryValue },
+    { label: text.hostLoadAverage, value: statusLoadAverageValue },
+    { label: text.hostUptime, value: statusUptimeValue },
+    { label: text.tcpTunnels, value: String(shareSession?.tcpTunnels ?? 0) },
+    { label: text.udpTunnel, value: shareSession?.udpTunnel ? text.ready : text.down },
+    { label: text.bytesIn, value: formatBytes(shareSession?.bytesIn ?? 0) },
+    { label: text.bytesOut, value: formatBytes(shareSession?.bytesOut ?? 0) },
+  ];
   const mappableServers = useMemo(
     () => mapServers.filter((server) => server.latitude != null && server.longitude != null),
     [mapServers]
@@ -958,28 +1060,87 @@ function App() {
             <aside className="relay-map-side">
               {selectedMapServer ? (
                 <>
-                  <h3>{selectedMapServer.name}</h3>
-                  <p>{selectedMapServer.description || selectedMapServer.address}</p>
-                  <dl>
-                    <div>
-                      <dt>{text.mapLocation}</dt>
-                      <dd>
-                        {selectedMapServer.region || selectedMapServer.countryCode
-                          ? `${selectedMapServer.region || "-"} / ${selectedMapServer.countryCode || "-"}`
-                          : text.mapLocationPending}
-                      </dd>
+                  <article className="relay-server-card">
+                    <header className="relay-server-card-head">
+                      <div>
+                        <h3>{selectedMapServer.name}</h3>
+                        <p>{selectedMapServer.description || selectedMapServer.address}</p>
+                      </div>
+                      <span className={`map-ping-pill ${selectedMapPingTone}`}>{selectedMapPingLabel}</span>
+                    </header>
+
+                    <div className="relay-server-location-row">
+                      <span>{text.mapLocation}</span>
+                      <strong>{selectedMapLocation}</strong>
                     </div>
-                    <div>
-                      <dt>{text.mapPing}</dt>
-                      <dd className={`map-ping-value ${getMapPingTone(selectedMapServer.pingMs)}`}>
-                        {typeof selectedMapServer.pingMs === "number" ? `${selectedMapServer.pingMs} ms` : text.mapStatusUnavailable}
-                      </dd>
+
+                    <div className="relay-server-stats-grid">
+                      <div className="relay-server-stat-card">
+                        <div className="relay-server-stat-head">
+                          <span>{text.mapPing}</span>
+                          <strong className={`map-ping-value ${selectedMapPingTone}`}>{selectedMapPingLabel}</strong>
+                        </div>
+                        <div className="relay-meter">
+                          <span
+                            className={`relay-meter-fill ping ${selectedMapPingTone}`}
+                            style={{ width: `${selectedMapPingGauge ?? 0}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="relay-server-stat-card">
+                        <div className="relay-server-stat-head">
+                          <span>{text.mapLoad}</span>
+                          <strong>{renderMapLoadSummary(selectedMapServer)}</strong>
+                        </div>
+                        <div className="relay-meter">
+                          <span
+                            className="relay-meter-fill load"
+                            style={{ width: `${selectedMapLoadGauge ?? 0}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="relay-server-stat-card">
+                        <div className="relay-server-stat-head">
+                          <span>{text.hostCpu}</span>
+                          <strong>
+                            {typeof selectedMapServer.hostCpuPercent === "number"
+                              ? `${selectedMapServer.hostCpuPercent.toFixed(1)}%`
+                              : "-"}
+                          </strong>
+                        </div>
+                        <div className="relay-meter">
+                          <span
+                            className="relay-meter-fill cpu"
+                            style={{ width: `${selectedMapCpuGauge ?? 0}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="relay-server-stat-card">
+                        <div className="relay-server-stat-head">
+                          <span>{text.hostMemory}</span>
+                          <strong>
+                            {typeof selectedMapServer.hostMemoryPercent === "number"
+                              ? `${selectedMapServer.hostMemoryPercent.toFixed(1)}%`
+                              : "-"}
+                          </strong>
+                        </div>
+                        <div className="relay-meter">
+                          <span
+                            className="relay-meter-fill memory"
+                            style={{ width: `${selectedMapMemoryGauge ?? 0}%` }}
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <dt>{text.mapLoad}</dt>
-                      <dd>{renderMapLoadSummary(selectedMapServer)}</dd>
+
+                    <div className="relay-server-session-row">
+                      <span>{text.mapActiveSessions}</span>
+                      <strong>{selectedMapSessionLabel}</strong>
                     </div>
-                  </dl>
+                  </article>
                   {selectedMapServer.error && <small className="map-error-inline">{selectedMapServer.error}</small>}
                 </>
               ) : (
@@ -1297,6 +1458,16 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatDuration(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(safe / 86400);
+  const hours = Math.floor((safe % 86400) / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 function errorMessage(error: unknown, fallback: string): string {

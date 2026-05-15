@@ -625,50 +625,222 @@ select:focus {
 .relay-map-side {
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 10px;
   padding: 10px;
-  border: 1px solid #d6d6d6;
-  background: #ffffff;
+  border: 1px solid #d2d8e1;
+  background: linear-gradient(160deg, #f6f8fb, #f0f4fa);
 }
 
-.relay-map-side h3,
-.relay-map-side p {
+.relay-server-card {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #cfd8e5;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(55, 77, 108, 0.08);
+}
+
+.relay-server-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.relay-server-card-head h3,
+.relay-server-card-head p {
   margin: 0;
 }
 
-.relay-map-side h3 {
-  font-size: 0.92rem;
+.relay-server-card-head h3 {
+  font-size: 0.9rem;
 }
 
-.relay-map-side p {
-  color: #555555;
-  font-size: 0.76rem;
+.relay-server-card-head p {
+  margin-top: 3px;
+  color: #5a6676;
+  font-size: 0.74rem;
   line-height: 1.4;
 }
 
-.relay-map-side dl {
-  margin: 0;
-  display: grid;
-  gap: 6px;
+.map-ping-pill {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid #d7dee9;
+  background: #f8fbff;
+  color: #30415a;
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
-.relay-map-side dl div {
-  display: grid;
-  gap: 3px;
+.map-ping-pill.blue {
+  color: #1f4fcc;
+  border-color: #cfdcff;
+  background: #eef4ff;
 }
 
-.relay-map-side dt {
-  color: #666666;
+.map-ping-pill.green {
+  color: #137947;
+  border-color: #bde5d0;
+  background: #ebfaf1;
+}
+
+.map-ping-pill.lime {
+  color: #5d8e1f;
+  border-color: #d9eab7;
+  background: #f5fbe9;
+}
+
+.map-ping-pill.orange {
+  color: #a86005;
+  border-color: #f0d2ab;
+  background: #fff5e8;
+}
+
+.map-ping-pill.red {
+  color: #9b1c1c;
+  border-color: #f4b8b8;
+  background: #fff1f1;
+}
+
+.map-ping-pill.black {
+  color: #151515;
+  border-color: #c8cad0;
+  background: #f0f2f6;
+}
+
+.relay-server-location-row {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid #dbe1ec;
+  background: #f7faff;
+}
+
+.relay-server-location-row span {
+  color: #667489;
   font-size: 0.66rem;
   font-weight: 700;
 }
 
-.relay-map-side dd {
-  margin: 0;
-  color: #1d1d1d;
-  font-size: 0.76rem;
+.relay-server-location-row strong {
+  color: #1d2f48;
+  font-size: 0.82rem;
   font-weight: 700;
   overflow-wrap: anywhere;
+}
+
+.relay-server-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.relay-server-stat-card {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid #e0e4eb;
+  background: #fdfefe;
+}
+
+.relay-server-stat-head {
+  display: grid;
+  gap: 2px;
+}
+
+.relay-server-stat-head span {
+  color: #667489;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.relay-server-stat-head strong {
+  color: #1d1d1d;
+  font-size: 0.78rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.relay-meter {
+  height: 6px;
+  border-radius: 999px;
+  background: #e7edf6;
+  overflow: hidden;
+}
+
+.relay-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 180ms ease;
+}
+
+.relay-meter-fill.ping.blue {
+  background: #2f74ff;
+}
+
+.relay-meter-fill.ping.green {
+  background: #1f9a5a;
+}
+
+.relay-meter-fill.ping.lime {
+  background: #8bcf2e;
+}
+
+.relay-meter-fill.ping.orange {
+  background: #d27d13;
+}
+
+.relay-meter-fill.ping.red {
+  background: #cc3f3f;
+}
+
+.relay-meter-fill.ping.black {
+  background: #151515;
+}
+
+.relay-meter-fill.ping.unknown {
+  background: #95a2b6;
+}
+
+.relay-meter-fill.load {
+  background: linear-gradient(90deg, #4f8fd8, #6ea9e2);
+}
+
+.relay-meter-fill.cpu {
+  background: linear-gradient(90deg, #2f9d63, #74c091);
+}
+
+.relay-meter-fill.memory {
+  background: linear-gradient(90deg, #a472dc, #c198f0);
+}
+
+.relay-server-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #dbe1ec;
+  background: #f7faff;
+}
+
+.relay-server-session-row span {
+  color: #667489;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.relay-server-session-row strong {
+  color: #1d2f48;
+  font-size: 0.82rem;
+  font-weight: 800;
 }
 
 .map-ping-value.blue {
@@ -1223,6 +1395,10 @@ select:focus {
   }
 
   .relay-map-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .relay-server-stats-grid {
     grid-template-columns: 1fr;
   }
 }

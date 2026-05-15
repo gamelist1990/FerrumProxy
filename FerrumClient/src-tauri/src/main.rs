@@ -157,6 +157,16 @@ struct OfficialServerLocationResponse {
     ping_ms: Option<u64>,
     load_rate: Option<f64>,
     load_percent: Option<f64>,
+    host_cpu_percent: Option<f64>,
+    host_memory_percent: Option<f64>,
+    host_cpu_cores: Option<u64>,
+    host_load_average1m: Option<f64>,
+    host_load_average5m: Option<f64>,
+    host_load_average15m: Option<f64>,
+    host_memory_total_bytes: Option<u64>,
+    host_memory_used_bytes: Option<u64>,
+    host_memory_free_bytes: Option<u64>,
+    host_uptime_seconds: Option<u64>,
     active_sessions: Option<u64>,
     max_sessions: Option<u64>,
 }
@@ -176,6 +186,16 @@ struct RelayStatusSample {
     ping_ms: Option<u64>,
     load_rate: Option<f64>,
     load_percent: Option<f64>,
+    host_cpu_percent: Option<f64>,
+    host_memory_percent: Option<f64>,
+    host_cpu_cores: Option<u64>,
+    host_load_average1m: Option<f64>,
+    host_load_average5m: Option<f64>,
+    host_load_average15m: Option<f64>,
+    host_memory_total_bytes: Option<u64>,
+    host_memory_used_bytes: Option<u64>,
+    host_memory_free_bytes: Option<u64>,
+    host_uptime_seconds: Option<u64>,
     active_sessions: Option<u64>,
     max_sessions: Option<u64>,
     region: Option<String>,
@@ -190,9 +210,39 @@ struct GuiRelayStatusResponse {
     ping_ms: Option<u64>,
     load_rate: Option<f64>,
     load_percent: Option<f64>,
+    host_cpu_percent: Option<f64>,
+    host_memory_percent: Option<f64>,
+    host_metrics: Option<GuiHostMetrics>,
     active_sessions: Option<u64>,
     max_sessions: Option<u64>,
     location: Option<GuiRelayLocation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GuiHostMetrics {
+    cpu: Option<GuiHostCpuMetrics>,
+    memory: Option<GuiHostMemoryMetrics>,
+    uptime_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GuiHostCpuMetrics {
+    usage_percent: Option<f64>,
+    cores: Option<u64>,
+    load_average1m: Option<f64>,
+    load_average5m: Option<f64>,
+    load_average15m: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GuiHostMemoryMetrics {
+    usage_percent: Option<f64>,
+    total_bytes: Option<u64>,
+    used_bytes: Option<u64>,
+    free_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,6 +483,16 @@ fn resolve_official_server_locations_blocking(
         };
         let mut load_rate = None;
         let mut load_percent = None;
+        let mut host_cpu_percent = None;
+        let mut host_memory_percent = None;
+        let mut host_cpu_cores = None;
+        let mut host_load_average1m = None;
+        let mut host_load_average5m = None;
+        let mut host_load_average15m = None;
+        let mut host_memory_total_bytes = None;
+        let mut host_memory_used_bytes = None;
+        let mut host_memory_free_bytes = None;
+        let mut host_uptime_seconds = None;
         let mut active_sessions = None;
         let mut max_sessions = None;
         if let Some(status) = manager_status {
@@ -441,6 +501,16 @@ fn resolve_official_server_locations_blocking(
             }
             load_rate = status.load_rate;
             load_percent = status.load_percent;
+            host_cpu_percent = status.host_cpu_percent;
+            host_memory_percent = status.host_memory_percent;
+            host_cpu_cores = status.host_cpu_cores;
+            host_load_average1m = status.host_load_average1m;
+            host_load_average5m = status.host_load_average5m;
+            host_load_average15m = status.host_load_average15m;
+            host_memory_total_bytes = status.host_memory_total_bytes;
+            host_memory_used_bytes = status.host_memory_used_bytes;
+            host_memory_free_bytes = status.host_memory_free_bytes;
+            host_uptime_seconds = status.host_uptime_seconds;
             active_sessions = status.active_sessions;
             max_sessions = status.max_sessions;
         }
@@ -460,6 +530,16 @@ fn resolve_official_server_locations_blocking(
             ping_ms,
             load_rate,
             load_percent,
+            host_cpu_percent,
+            host_memory_percent,
+            host_cpu_cores,
+            host_load_average1m,
+            host_load_average5m,
+            host_load_average15m,
+            host_memory_total_bytes,
+            host_memory_used_bytes,
+            host_memory_free_bytes,
+            host_uptime_seconds,
             active_sessions,
             max_sessions,
         });
@@ -577,6 +657,58 @@ fn fetch_manager_status(
         ping_ms: payload.ping_ms.or(Some(elapsed_ms)),
         load_rate: payload.load_rate,
         load_percent: payload.load_percent,
+        host_cpu_percent: payload.host_cpu_percent.or(payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.cpu.as_ref().and_then(|cpu| cpu.usage_percent))),
+        host_memory_percent: payload.host_memory_percent.or(payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| {
+                metrics
+                    .memory
+                    .as_ref()
+                    .and_then(|memory| memory.usage_percent)
+            })),
+        host_cpu_cores: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.cpu.as_ref())
+            .and_then(|cpu| cpu.cores),
+        host_load_average1m: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.cpu.as_ref())
+            .and_then(|cpu| cpu.load_average1m),
+        host_load_average5m: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.cpu.as_ref())
+            .and_then(|cpu| cpu.load_average5m),
+        host_load_average15m: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.cpu.as_ref())
+            .and_then(|cpu| cpu.load_average15m),
+        host_memory_total_bytes: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.memory.as_ref())
+            .and_then(|memory| memory.total_bytes),
+        host_memory_used_bytes: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.memory.as_ref())
+            .and_then(|memory| memory.used_bytes),
+        host_memory_free_bytes: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.memory.as_ref())
+            .and_then(|memory| memory.free_bytes),
+        host_uptime_seconds: payload
+            .host_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.uptime_seconds),
         active_sessions: payload.active_sessions,
         max_sessions: payload.max_sessions,
         region: payload

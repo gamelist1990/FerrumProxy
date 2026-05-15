@@ -80,7 +80,12 @@ export const en = {
   mapLocationPending: "Location lookup pending",
   mapPing: "Ping",
   mapLoad: "Load",
+  mapActiveSessions: "Active sessions",
   mapStatusUnavailable: "Status unavailable",
+  hostCpu: "Host CPU",
+  hostMemory: "Host Memory",
+  hostLoadAverage: "Load Avg (1/5/15)",
+  hostUptime: "Host Uptime",
   mapProvider: "Location source",
   mapCached: "cache",
 };

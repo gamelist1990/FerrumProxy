@@ -130,6 +130,14 @@ type HostLoadSnapshot = {
   loadPercent: number;
   cpuPercent: number;
   memoryPercent: number;
+  cpuCores: number;
+  loadAverage1m: number;
+  loadAverage5m: number;
+  loadAverage15m: number;
+  memoryTotalBytes: number;
+  memoryUsedBytes: number;
+  memoryFreeBytes: number;
+  uptimeSeconds: number;
 };
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -159,8 +167,11 @@ async function collectHostLoad(): Promise<HostLoadSnapshot> {
 
   const memoryTotal = os.totalmem();
   const memoryFree = os.freemem();
+  const memoryUsed = Math.max(0, memoryTotal - memoryFree);
   const memoryPercent =
-    memoryTotal > 0 ? Math.max(0, Math.min(100, ((memoryTotal - memoryFree) / memoryTotal) * 100)) : 0;
+    memoryTotal > 0 ? Math.max(0, Math.min(100, (memoryUsed / memoryTotal) * 100)) : 0;
+  const [load1, load5, load15] = os.loadavg();
+  const cpuCores = os.cpus().length;
 
   const blendedPercent = Math.max(0, Math.min(100, cpuPercent * 0.75 + memoryPercent * 0.25));
   return {
@@ -168,6 +179,14 @@ async function collectHostLoad(): Promise<HostLoadSnapshot> {
     loadPercent: Math.round(blendedPercent * 10) / 10,
     cpuPercent: Math.round(cpuPercent * 10) / 10,
     memoryPercent: Math.round(memoryPercent * 10) / 10,
+    cpuCores,
+    loadAverage1m: Math.round(load1 * 100) / 100,
+    loadAverage5m: Math.round(load5 * 100) / 100,
+    loadAverage15m: Math.round(load15 * 100) / 100,
+    memoryTotalBytes: memoryTotal,
+    memoryUsedBytes: memoryUsed,
+    memoryFreeBytes: memoryFree,
+    uptimeSeconds: Math.max(0, Math.floor(os.uptime())),
   };
 }
 
@@ -1721,6 +1740,23 @@ app.get('/public/shared-relay/status', async (req, res) => {
       loadSource: 'host_system',
       hostCpuPercent: hostLoad.cpuPercent,
       hostMemoryPercent: hostLoad.memoryPercent,
+      hostMetrics: {
+        cpu: {
+          usagePercent: hostLoad.cpuPercent,
+          cores: hostLoad.cpuCores,
+          loadAverage1m: hostLoad.loadAverage1m,
+          loadAverage5m: hostLoad.loadAverage5m,
+          loadAverage15m: hostLoad.loadAverage15m,
+        },
+        memory: {
+          usagePercent: hostLoad.memoryPercent,
+          totalBytes: hostLoad.memoryTotalBytes,
+          usedBytes: hostLoad.memoryUsedBytes,
+          freeBytes: hostLoad.memoryFreeBytes,
+        },
+        uptimeSeconds: hostLoad.uptimeSeconds,
+        platform: process.platform,
+      },
       activeSessions,
       maxSessions: null,
       restApiEnabled,
