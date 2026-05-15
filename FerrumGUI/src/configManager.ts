@@ -220,7 +220,7 @@ export class ConfigManager extends EventEmitter {
     };
 
     const validatePort = (value: unknown, path: string) => {
-      if (value !== undefined) {
+      if (value !== undefined && value !== null) {
         if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
           errors.push(`${path} must be a valid port number (1-65535)`);
         }
