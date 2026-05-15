@@ -486,7 +486,6 @@ function App() {
                     }}
                   >
                     <strong>{text.customRelay}</strong>
-                    <span>{form.relayAddress || "ip:port"}</span>
                     <small>{text.customRelayDescription}</small>
                   </button>
                 </div>
