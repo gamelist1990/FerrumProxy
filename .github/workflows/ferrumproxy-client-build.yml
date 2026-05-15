@@ -75,12 +75,8 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build Tauri client
-        uses: tauri-apps/tauri-action@action-v0.6.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: FerrumClient
-          args: --verbose
+        working-directory: FerrumClient
+        run: bun run tauri:build -- --verbose
 
       - name: Collect bundles
         shell: bash
