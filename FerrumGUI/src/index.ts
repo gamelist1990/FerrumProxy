@@ -91,6 +91,93 @@ function parseBindPort(bind: string | undefined): number | undefined {
   return Number.isFinite(port) && port >= 1 && port <= 65535 ? port : undefined;
 }
 
+function parseHostPort(value: string): { host: string; port: number } | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const withoutScheme = trimmed.replace(/^https?:\/\//i, '');
+  const hostPort = withoutScheme.split('/')[0] || withoutScheme;
+  const index = hostPort.lastIndexOf(':');
+  if (index <= 0 || index === hostPort.length - 1) {
+    return null;
+  }
+  const host = hostPort.slice(0, index).trim().replace(/^\[|\]$/g, '');
+  const port = Number.parseInt(hostPort.slice(index + 1), 10);
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return null;
+  }
+  return { host: host.toLowerCase(), port };
+}
+
+function toPositiveIntegerOrNull(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+  const normalized = Math.trunc(value);
+  return normalized >= 0 ? normalized : null;
+}
+
+type ManagerPerformanceSnapshot = {
+  total_active_sessions?: number;
+  tcp?: { active_sessions?: number };
+  udp?: { active_sessions?: number };
+};
+
+function estimateLoadRate(
+  performance: ManagerPerformanceSnapshot,
+  config: FerrumProxyConfig
+): { loadRate: number | null; activeSessions: number; maxSessions: number | null } {
+  const shared = config.sharedService;
+  const activeTcp = toPositiveIntegerOrNull(performance.tcp?.active_sessions);
+  const activeUdp = toPositiveIntegerOrNull(performance.udp?.active_sessions);
+  const activeTotal = toPositiveIntegerOrNull(performance.total_active_sessions);
+  const activeSessions =
+    activeTotal ??
+    Math.max(0, (activeTcp ?? 0) + (activeUdp ?? 0));
+
+  const maxTcp =
+    toPositiveIntegerOrNull(shared?.maximums?.maxTcpConnections) ??
+    toPositiveIntegerOrNull(shared?.defaults?.maxTcpConnections);
+  const maxUdp =
+    toPositiveIntegerOrNull(shared?.maximums?.maxUdpPeers) ??
+    toPositiveIntegerOrNull(shared?.defaults?.maxUdpPeers);
+  const maxSessions =
+    maxTcp == null && maxUdp == null ? null : Math.max(1, (maxTcp ?? 0) + (maxUdp ?? 0));
+
+  if (maxSessions == null) {
+    return { loadRate: null, activeSessions, maxSessions: null };
+  }
+
+  const raw = activeSessions / maxSessions;
+  const loadRate = Math.max(0, Math.min(raw, 1.5));
+  return { loadRate, activeSessions, maxSessions };
+}
+
+function relayMatchesConfig(relayAddress: string, config: FerrumProxyConfig): boolean {
+  const relay = parseHostPort(relayAddress);
+  if (!relay) {
+    return false;
+  }
+
+  const shared = config.sharedService;
+  if (!shared?.enabled) {
+    return false;
+  }
+
+  const publicPort = parseBindPort(shared.publicBind);
+  if (publicPort && relay.port !== publicPort) {
+    return false;
+  }
+
+  const configuredHost = normalizeHostCandidate(shared.publicHost).toLowerCase();
+  if (!configuredHost || isLocalHost(configuredHost)) {
+    return true;
+  }
+
+  return configuredHost === relay.host;
+}
+
 function normalizeHostCandidate(value: string | undefined): string {
   const trimmed = (value || '').trim();
   if (!trimmed) {
@@ -1545,6 +1632,89 @@ app.get('/api/instances/:id/performance', async (req, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/public/shared-relay/status', async (req, res) => {
+  try {
+    const instanceIdRaw = req.query.instanceId;
+    const relayRaw = req.query.relay;
+    const instanceId = typeof instanceIdRaw === 'string' ? instanceIdRaw.trim() : '';
+    const relayAddress = typeof relayRaw === 'string' ? relayRaw.trim() : '';
+
+    const candidates = instanceId
+      ? serviceManager.getAll().filter((instance) => instance.id === instanceId)
+      : serviceManager.getAll();
+
+    if (candidates.length === 0) {
+      return res.status(404).json({ error: 'Shared relay instance not found' });
+    }
+
+    let matchedInstance: FerrumProxyInstance | null = null;
+    let matchedConfig: FerrumProxyConfig | null = null;
+
+    for (const candidate of candidates) {
+      const config = await configManager.read(candidate.configPath);
+      if (!config.sharedService?.enabled) {
+        continue;
+      }
+      if (relayAddress && !relayMatchesConfig(relayAddress, config)) {
+        continue;
+      }
+      matchedInstance = candidate;
+      matchedConfig = config;
+      break;
+    }
+
+    if (!matchedInstance || !matchedConfig) {
+      return res.status(404).json({ error: 'No shared relay matched the requested criteria' });
+    }
+
+    if (!matchedConfig.useRestApi) {
+      return res.status(409).json({
+        error: 'FerrumProxy REST API is disabled for this shared relay.',
+        restApiEnabled: false,
+      });
+    }
+
+    const endpoint = matchedConfig.endpoint || 6000;
+    const startedAt = Date.now();
+    const response = await fetch(`http://127.0.0.1:${endpoint}/api/performance`, {
+      signal: AbortSignal.timeout(2200),
+    });
+    const pingMs = Math.max(0, Date.now() - startedAt);
+
+    if (!response.ok) {
+      return res.status(502).json({
+        error: `FerrumProxy performance endpoint returned ${response.status}`,
+        restApiEnabled: true,
+      });
+    }
+
+    const performance = (await response.json()) as ManagerPerformanceSnapshot;
+    const { loadRate, activeSessions, maxSessions } = estimateLoadRate(performance, matchedConfig);
+    const sharedService = matchedConfig.sharedService;
+
+    return res.json({
+      ok: true,
+      instanceId: matchedInstance.id,
+      instanceName: matchedInstance.name,
+      relayAddress: relayAddress || null,
+      pingMs,
+      loadRate,
+      loadPercent: loadRate == null ? null : Math.round(loadRate * 1000) / 10,
+      activeSessions,
+      maxSessions,
+      sharedService: {
+        enabled: !!sharedService?.enabled,
+        publicHost: sharedService?.publicHost || '',
+        publicBind: sharedService?.publicBind || '',
+        publicPort: parseBindPort(sharedService?.publicBind) ?? null,
+      },
+      sampledAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 });
 

@@ -115,6 +115,81 @@ struct SessionStats {
     relay_ping_ms: AtomicU64,
 }
 
+#[derive(Default)]
+struct GeoState {
+    cache: Mutex<HashMap<String, CachedGeoLocation>>,
+    last_request_at: Mutex<Option<Instant>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGeoLocation {
+    region: String,
+    country_code: String,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    provider: String,
+    cached_at: Instant,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OfficialServerLocationRequest {
+    id: String,
+    manager_address: String,
+    #[serde(default)]
+    relay_address: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfficialServerLocationResponse {
+    id: String,
+    manager_address: String,
+    host: String,
+    region: String,
+    country_code: String,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    provider: String,
+    cached: bool,
+    error: Option<String>,
+    manager_error: Option<String>,
+    ping_ms: Option<u64>,
+    load_rate: Option<f64>,
+    load_percent: Option<f64>,
+    active_sessions: Option<u64>,
+    max_sessions: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpWhoIsResponse {
+    success: bool,
+    message: Option<String>,
+    region: Option<String>,
+    country_code: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct RelayStatusSample {
+    ping_ms: Option<u64>,
+    load_rate: Option<f64>,
+    load_percent: Option<f64>,
+    active_sessions: Option<u64>,
+    max_sessions: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GuiRelayStatusResponse {
+    ping_ms: Option<u64>,
+    load_rate: Option<f64>,
+    load_percent: Option<f64>,
+    active_sessions: Option<u64>,
+    max_sessions: Option<u64>,
+}
+
 fn legacy_config_path() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|err| err.to_string())?;
     let dir = exe
@@ -258,6 +333,265 @@ fn load_official_servers(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn probe_client_connection(config: ClientConfig) -> Result<(), String> {
     validate_shared_relay_api(&config)
+}
+
+#[tauri::command]
+fn resolve_official_server_locations(
+    servers: Vec<OfficialServerLocationRequest>,
+    state: State<GeoState>,
+) -> Result<Vec<OfficialServerLocationResponse>, String> {
+    let mut resolved = Vec::with_capacity(servers.len());
+    for server in servers {
+        let manager_address = normalize_manager_address(&server.manager_address);
+        let relay_address = server.relay_address.trim().to_string();
+        let host = manager_address
+            .rsplit_once(':')
+            .map(|(value, _)| value.to_string())
+            .unwrap_or_else(|| manager_address.clone());
+
+        let mut region = String::new();
+        let mut country_code = String::new();
+        let mut latitude = None;
+        let mut longitude = None;
+        let mut provider = "ipwho.is".to_string();
+        let mut cached = false;
+        let mut geo_error: Option<String> = None;
+
+        match resolve_location_for_host(&host, &state) {
+            Ok((geo, from_cache)) => {
+                region = geo.region;
+                country_code = geo.country_code;
+                latitude = geo.latitude;
+                longitude = geo.longitude;
+                provider = geo.provider;
+                cached = from_cache;
+            }
+            Err(error) => {
+                geo_error = Some(error);
+            }
+        }
+
+        let mut manager_error: Option<String> = None;
+        let mut ping_ms = None;
+        let mut load_rate = None;
+        let mut load_percent = None;
+        let mut active_sessions = None;
+        let mut max_sessions = None;
+        match fetch_manager_status(&manager_address, &relay_address) {
+            Ok(status) => {
+                ping_ms = status.ping_ms;
+                load_rate = status.load_rate;
+                load_percent = status.load_percent;
+                active_sessions = status.active_sessions;
+                max_sessions = status.max_sessions;
+            }
+            Err(error) => {
+                manager_error = Some(error);
+            }
+        }
+
+        resolved.push(OfficialServerLocationResponse {
+            id: server.id,
+            manager_address,
+            host,
+            region,
+            country_code,
+            latitude,
+            longitude,
+            provider,
+            cached,
+            error: geo_error,
+            manager_error,
+            ping_ms,
+            load_rate,
+            load_percent,
+            active_sessions,
+            max_sessions,
+        });
+    }
+
+    Ok(resolved)
+}
+
+fn normalize_manager_address(address: &str) -> String {
+    let trimmed = address.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let host = trimmed
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or(trimmed);
+
+    match host.rsplit_once(':') {
+        Some((value, _)) if !value.is_empty() => format!("{value}:3000"),
+        _ => format!("{host}:3000"),
+    }
+}
+
+fn resolve_location_for_host(
+    host: &str,
+    state: &GeoState,
+) -> Result<(CachedGeoLocation, bool), String> {
+    let normalized_host = host.trim().trim_matches('[').trim_matches(']').to_string();
+    if normalized_host.is_empty() {
+        return Err("server host is empty".to_string());
+    }
+
+    const CACHE_TTL: Duration = Duration::from_secs(60 * 30);
+    if let Some(cached) = state
+        .cache
+        .lock()
+        .map_err(|_| "failed to lock geolocation cache".to_string())?
+        .get(&normalized_host)
+        .cloned()
+    {
+        if cached.cached_at.elapsed() <= CACHE_TTL {
+            return Ok((cached, true));
+        }
+    }
+
+    {
+        let mut guard = state
+            .last_request_at
+            .lock()
+            .map_err(|_| "failed to lock geolocation throttle".to_string())?;
+        if let Some(last) = *guard {
+            let elapsed = last.elapsed();
+            let min_wait = Duration::from_millis(1100);
+            if elapsed < min_wait {
+                thread::sleep(min_wait - elapsed);
+            }
+        }
+        *guard = Some(Instant::now());
+    }
+
+    let body = http_get_text("ipwho.is:80", &format!("/{}", normalized_host), "ipwho.is")?;
+    let payload: IpWhoIsResponse = serde_json::from_str(&body)
+        .map_err(|err| format!("failed to parse geolocation response: {err}"))?;
+
+    if !payload.success {
+        return Err(payload
+            .message
+            .unwrap_or_else(|| "geolocation provider returned success=false".to_string()));
+    }
+
+    let result = CachedGeoLocation {
+        region: payload.region.unwrap_or_default(),
+        country_code: payload.country_code.unwrap_or_default().to_uppercase(),
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+        provider: "ipwho.is".to_string(),
+        cached_at: Instant::now(),
+    };
+
+    state
+        .cache
+        .lock()
+        .map_err(|_| "failed to lock geolocation cache".to_string())?
+        .insert(normalized_host, result.clone());
+
+    Ok((result, false))
+}
+
+fn fetch_manager_status(manager_address: &str, relay_address: &str) -> Result<RelayStatusSample, String> {
+    let endpoint = normalize_manager_address(manager_address);
+    if endpoint.is_empty() {
+        return Err("manager endpoint is empty".to_string());
+    }
+
+    let mut request_path = "/public/shared-relay/status".to_string();
+    if !relay_address.trim().is_empty() {
+        request_path.push_str("?relay=");
+        request_path.push_str(&url_encode(relay_address.trim()));
+    }
+
+    let started = Instant::now();
+    let body = http_get_text(&endpoint, &request_path, &extract_host_header(&endpoint))?;
+    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let payload: GuiRelayStatusResponse = serde_json::from_str(&body)
+        .map_err(|err| format!("failed to parse manager status response: {err}"))?;
+
+    Ok(RelayStatusSample {
+        ping_ms: payload.ping_ms.or(Some(elapsed_ms)),
+        load_rate: payload.load_rate,
+        load_percent: payload.load_percent,
+        active_sessions: payload.active_sessions,
+        max_sessions: payload.max_sessions,
+    })
+}
+
+fn extract_host_header(endpoint: &str) -> String {
+    endpoint
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or(endpoint)
+        .to_string()
+}
+
+fn url_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let is_unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if is_unreserved {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn http_get_text(endpoint: &str, path: &str, host_header: &str) -> Result<String, String> {
+    let request_path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let request = format!(
+        "GET {request_path} HTTP/1.1\r\nHost: {host_header}\r\nUser-Agent: FerrumProxyClient/0.1\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+
+    let mut stream = connect_tcp_endpoint(endpoint, Duration::from_secs(6))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(6)))
+        .map_err(|err| err.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(6)))
+        .map_err(|err| err.to_string())?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("failed to request geolocation endpoint: {err}"))?;
+    stream
+        .flush()
+        .map_err(|err| format!("failed to flush geolocation request: {err}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|err| format!("failed to read geolocation response: {err}"))?;
+    let text = String::from_utf8(response).map_err(|err| err.to_string())?;
+    let (header, body) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "invalid geolocation response".to_string())?;
+    let status_line = header.lines().next().unwrap_or_default();
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or_default();
+
+    if status_code != 200 {
+        return Err(format!("geolocation HTTP {status_code}"));
+    }
+
+    Ok(body.to_string())
 }
 
 #[tauri::command]
@@ -1131,6 +1465,7 @@ fn apply_tcp_nodelay(stream: &TcpStream) {
 fn main() {
     tauri::Builder::default()
         .manage(ClientState::default())
+        .manage(GeoState::default())
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
                 let state = window.state::<ClientState>();
@@ -1144,6 +1479,7 @@ fn main() {
             save_client_config,
             load_official_servers,
             probe_client_connection,
+            resolve_official_server_locations,
             start_sharing,
             stop_sharing,
             get_share_session

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+/* eslint-disable react-hooks/set-state-in-effect */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { detectLanguage, getTranslation, saveLanguage, type ClientLanguage } from "./lang";
 import "./App.css";
@@ -51,6 +52,31 @@ type OfficialServerFile = {
   servers?: OfficialServer[];
 };
 
+type OfficialServerLocationRequest = {
+  id: string;
+  managerAddress: string;
+  relayAddress: string;
+};
+
+type OfficialServerLocation = {
+  id: string;
+  managerAddress: string;
+  host: string;
+  region: string;
+  countryCode: string;
+  latitude: number | null;
+  longitude: number | null;
+  provider: string;
+  cached: boolean;
+  error: string | null;
+  managerError?: string | null;
+  pingMs?: number | null;
+  loadRate?: number | null;
+  loadPercent?: number | null;
+  activeSessions?: number | null;
+  maxSessions?: number | null;
+};
+
 type ClientErrorInfo = {
   code: string;
   title: string;
@@ -63,6 +89,100 @@ type ClientErrorInfo = {
 const customRelayValue = "__custom__";
 const officialServerUrl =
   "https://raw.githubusercontent.com/gamelist1990/FerrumProxy/main/FerrumClient/OfficialServer.json";
+const LEAFLET_CSS_ID = "leaflet-cdn-css";
+const LEAFLET_SCRIPT_ID = "leaflet-cdn-script";
+const leafletCssHref = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+const leafletScriptSrc = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+
+declare global {
+  interface Window {
+    L?: {
+      map: (element: HTMLElement, options?: Record<string, unknown>) => LeafletMap;
+      tileLayer: (url: string, options?: Record<string, unknown>) => { addTo: (map: LeafletMap) => void };
+      marker: (latLng: [number, number], options?: Record<string, unknown>) => LeafletMarker;
+      divIcon: (options: Record<string, unknown>) => unknown;
+    };
+  }
+}
+
+type LeafletMap = {
+  setView: (center: [number, number], zoom: number) => LeafletMap;
+  flyTo: (center: [number, number], zoom?: number, options?: Record<string, unknown>) => LeafletMap;
+  remove: () => void;
+};
+
+type LeafletMarker = {
+  addTo: (map: LeafletMap) => LeafletMarker;
+  bindPopup: (content: string) => LeafletMarker;
+  on: (eventName: string, handler: () => void) => LeafletMarker;
+  openPopup: () => LeafletMarker;
+  closePopup: () => LeafletMarker;
+  setPopupContent: (content: string) => LeafletMarker;
+};
+
+type MapPingTone = "blue" | "lime" | "green" | "orange" | "red" | "black" | "unknown";
+
+function getMapPingTone(pingMs: number | null | undefined): MapPingTone {
+  if (typeof pingMs !== "number" || !Number.isFinite(pingMs)) {
+    return "unknown";
+  }
+  if (pingMs <= 40) return "blue";
+  if (pingMs <= 90) return "lime";
+  if (pingMs <= 180) return "green";
+  if (pingMs <= 350) return "orange";
+  if (pingMs >= 10000) return "black";
+  return "red";
+}
+
+function renderMapLoadSummary(server: {
+  loadPercent?: number | null;
+  activeSessions?: number | null;
+  maxSessions?: number | null;
+}): string {
+  if (typeof server.loadPercent !== "number" || !Number.isFinite(server.loadPercent)) {
+    return "-";
+  }
+  if (typeof server.activeSessions === "number" && typeof server.maxSessions === "number" && server.maxSessions > 0) {
+    return `${server.loadPercent.toFixed(1)}% (${server.activeSessions}/${server.maxSessions})`;
+  }
+  return `${server.loadPercent.toFixed(1)}%`;
+}
+
+function renderMapPopupHtml(
+  server: {
+    name: string;
+    region?: string;
+    countryCode?: string;
+    pingMs?: number | null;
+    managerError?: string | null;
+    loadPercent?: number | null;
+    activeSessions?: number | null;
+    maxSessions?: number | null;
+  },
+  labels: { mapPing: string; mapLoad: string; mapStatusUnavailable: string }
+): string {
+  const pingTone = getMapPingTone(server.pingMs);
+  const pingLabel =
+    typeof server.pingMs === "number" && Number.isFinite(server.pingMs)
+      ? `${server.pingMs} ms`
+      : labels.mapStatusUnavailable;
+  const loadLabel = renderMapLoadSummary(server);
+  return `
+    <div class="client-map-popup">
+      <strong>${server.name}</strong>
+      <p>${server.region || "-"} / ${server.countryCode || "-"}</p>
+      <div class="client-map-popup-stat ${pingTone}">
+        <span>${labels.mapPing}</span>
+        <b>${pingLabel}</b>
+      </div>
+      <div class="client-map-popup-stat">
+        <span>${labels.mapLoad}</span>
+        <b>${loadLabel}</b>
+      </div>
+      ${server.managerError ? `<small>${server.managerError}</small>` : ""}
+    </div>
+  `;
+}
 
 const clientErrorCodes: ClientErrorInfo[] = [
   {
@@ -178,10 +298,17 @@ function App() {
   const [relaySelection, setRelaySelection] = useState(customRelayValue);
   const [customRelayAddress, setCustomRelayAddress] = useState(defaultForm.relayAddress);
   const [relayTokens, setRelayTokens] = useState<Record<string, string>>({ [customRelayValue]: defaultForm.token });
+  const [officialServerLocations, setOfficialServerLocations] = useState<Record<string, OfficialServerLocation>>({});
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapSelectedServerId, setMapSelectedServerId] = useState("");
   const [language, setLanguage] = useState<ClientLanguage>(() => detectLanguage());
   const previousErrorRef = useRef<string | null>(null);
   const relayAddressRef = useRef(defaultForm.relayAddress);
   const officialServersRef = useRef<OfficialServer[]>([]);
+  const mapStageRef = useRef<HTMLDivElement | null>(null);
+  const leafletMapRef = useRef<LeafletMap | null>(null);
+  const leafletMarkerRefs = useRef<Record<string, LeafletMarker>>({});
   const text = getTranslation(language);
 
   const changeLanguage = (nextLanguage: ClientLanguage) => {
@@ -271,6 +398,52 @@ function App() {
       }
     })();
   }, [text.failedProbe]);
+
+  const refreshOfficialServerLocations = useCallback(() => {
+    if (!officialServers.length) {
+      setOfficialServerLocations({});
+      setMapError(null);
+      setMapLoading(false);
+      return;
+    }
+
+    const requests: OfficialServerLocationRequest[] = officialServers.map((server) => ({
+      id: server.id,
+      managerAddress: toManagerAddress(server.address),
+      relayAddress: server.address,
+    }));
+
+    setMapLoading(true);
+    setMapError(null);
+
+    void invoke<OfficialServerLocation[]>("resolve_official_server_locations", { servers: requests })
+      .then((rows) => {
+        const next: Record<string, OfficialServerLocation> = {};
+        for (const row of rows) {
+          next[row.id] = row;
+        }
+        setOfficialServerLocations(next);
+      })
+      .catch((error) => {
+        console.error("failed to resolve official server locations", error);
+        setMapError(errorMessage(error, text.mapUnavailable));
+      })
+      .finally(() => setMapLoading(false));
+  }, [officialServers, text.mapUnavailable]);
+
+  useEffect(() => {
+    if (!officialServers.length) {
+      setMapSelectedServerId("");
+      return;
+    }
+    if (!officialServers.some((server) => server.id === mapSelectedServerId)) {
+      setMapSelectedServerId(officialServers[0].id);
+    }
+  }, [mapSelectedServerId, officialServers]);
+
+  useEffect(() => {
+    refreshOfficialServerLocations();
+  }, [refreshOfficialServerLocations]);
 
   useEffect(() => {
     if (!configReady || (shareSession?.status !== "waiting" && shareSession?.status !== "running")) return;
@@ -390,6 +563,117 @@ function App() {
   ];
   const currentStatusLabel = isRunning ? text.connected : isWaiting ? text.waiting : text.stopped;
   const currentStatusDetail = isRunning ? text.statusConnected : isWaiting ? text.statusAllocating : text.statusIdle;
+  const mapServers = useMemo(
+    () =>
+      officialServers.map((server) => {
+        const location = officialServerLocations[server.id];
+        const managerAddress = toManagerAddress(server.address);
+        return {
+          ...server,
+          managerAddress,
+          host: location?.host || managerAddress.split(":")[0],
+          region: location?.region || "",
+          countryCode: location?.countryCode || "",
+          latitude: location?.latitude ?? null,
+          longitude: location?.longitude ?? null,
+          provider: location?.provider || "ipwho.is",
+          cached: location?.cached ?? false,
+          error: location?.error || null,
+          managerError: location?.managerError || null,
+          pingMs: location?.pingMs ?? null,
+          loadRate: location?.loadRate ?? null,
+          loadPercent: location?.loadPercent ?? null,
+          activeSessions: location?.activeSessions ?? null,
+          maxSessions: location?.maxSessions ?? null,
+        };
+      }),
+    [officialServerLocations, officialServers]
+  );
+  const selectedMapServer = mapServers.find((server) => server.id === mapSelectedServerId) || mapServers[0] || null;
+  const mappableServers = useMemo(
+    () => mapServers.filter((server) => server.latitude != null && server.longitude != null),
+    [mapServers]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const stage = mapStageRef.current;
+      if (!stage) return;
+
+      if (!mappableServers.length) {
+        leafletMapRef.current?.remove();
+        leafletMapRef.current = null;
+        leafletMarkerRefs.current = {};
+        return;
+      }
+
+      try {
+        const L = await ensureLeafletAssets();
+        if (cancelled) return;
+
+        leafletMapRef.current?.remove();
+        leafletMapRef.current = null;
+
+        const map = L.map(stage, { worldCopyJump: true, zoomControl: true }).setView([20, 8], 2);
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "&copy; OpenStreetMap contributors",
+          maxZoom: 18,
+        }).addTo(map);
+
+        leafletMapRef.current = map;
+        leafletMarkerRefs.current = {};
+
+        for (const server of mappableServers) {
+          const tone = getMapPingTone(server.pingMs);
+          const marker = L.marker([server.latitude as number, server.longitude as number], {
+            icon: L.divIcon({
+              className: "",
+              html: `<span class="client-map-pin ${tone}"></span>`,
+              iconSize: [18, 18],
+              iconAnchor: [9, 9],
+              popupAnchor: [0, -8],
+            }),
+          })
+            .addTo(map)
+            .bindPopup(
+              renderMapPopupHtml(server, {
+                mapPing: text.mapPing,
+                mapLoad: text.mapLoad,
+                mapStatusUnavailable: text.mapStatusUnavailable,
+              })
+            );
+          marker.on("click", () => setMapSelectedServerId(server.id));
+          marker.on("mouseover", () => {
+            setMapSelectedServerId(server.id);
+            marker.openPopup();
+          });
+          marker.on("mouseout", () => marker.closePopup());
+          leafletMarkerRefs.current[server.id] = marker;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMapError(errorMessage(error, text.mapUnavailable));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mappableServers, text.mapLoad, text.mapPing, text.mapStatusUnavailable, text.mapUnavailable]);
+
+  useEffect(() => {
+    if (!selectedMapServer || selectedMapServer.latitude == null || selectedMapServer.longitude == null) {
+      return;
+    }
+
+    leafletMapRef.current?.flyTo([selectedMapServer.latitude, selectedMapServer.longitude], 4, {
+      duration: 0.6,
+    });
+    leafletMarkerRefs.current[selectedMapServer.id]?.openPopup();
+  }, [selectedMapServer]);
 
   useEffect(() => {
     if (displayError && displayError !== previousErrorRef.current) {
@@ -639,6 +923,67 @@ function App() {
           </div>
         </section>
 
+        <section className="relay-map-panel" aria-label={text.mapTitle}>
+          <div className="relay-map-header">
+            <div>
+              <span>{text.mapTitle}</span>
+              <strong>{text.mapSubtitle}</strong>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                refreshOfficialServerLocations();
+              }}
+            >
+              {text.mapRefresh}
+            </button>
+          </div>
+
+          <div className="relay-map-grid">
+            <div className="relay-map-canvas-wrap">
+              <div ref={mapStageRef} className="relay-map-canvas leaflet-map-canvas" role="img" aria-label={text.mapTitle} />
+              {mapLoading && <span className="relay-map-state">{text.mapLoading}</span>}
+              {!mapLoading && !mapServers.some((server) => server.latitude != null && server.longitude != null) && (
+                <span className="relay-map-state">{text.mapNoData}</span>
+              )}
+            </div>
+
+            <aside className="relay-map-side">
+              {selectedMapServer ? (
+                <>
+                  <h3>{selectedMapServer.name}</h3>
+                  <p>{selectedMapServer.description || selectedMapServer.address}</p>
+                  <dl>
+                    <div>
+                      <dt>{text.mapLocation}</dt>
+                      <dd>
+                        {selectedMapServer.region || selectedMapServer.countryCode
+                          ? `${selectedMapServer.region || "-"} / ${selectedMapServer.countryCode || "-"}`
+                          : text.mapLocationPending}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>{text.mapPing}</dt>
+                      <dd className={`map-ping-value ${getMapPingTone(selectedMapServer.pingMs)}`}>
+                        {typeof selectedMapServer.pingMs === "number" ? `${selectedMapServer.pingMs} ms` : text.mapStatusUnavailable}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>{text.mapLoad}</dt>
+                      <dd>{renderMapLoadSummary(selectedMapServer)}</dd>
+                    </div>
+                  </dl>
+                  {selectedMapServer.error && <small className="map-error-inline">{selectedMapServer.error}</small>}
+                  {selectedMapServer.managerError && <small className="map-error-inline">{selectedMapServer.managerError}</small>}
+                </>
+              ) : (
+                <p>{text.mapNoData}</p>
+              )}
+              {mapError && <small className="map-error-inline">{mapError}</small>}
+            </aside>
+          </div>
+        </section>
+
         <button
           type="button"
           className={`start-button ${isWaiting ? "waiting" : isRunning ? "stop" : ""}`}
@@ -858,6 +1203,49 @@ function App() {
   );
 }
 
+async function ensureLeafletAssets() {
+  if (!document.getElementById(LEAFLET_CSS_ID)) {
+    const link = document.createElement("link");
+    link.id = LEAFLET_CSS_ID;
+    link.rel = "stylesheet";
+    link.href = leafletCssHref;
+    document.head.appendChild(link);
+  }
+
+  if (window.L) {
+    return window.L;
+  }
+
+  const existingScript = document.getElementById(LEAFLET_SCRIPT_ID) as HTMLScriptElement | null;
+  if (existingScript) {
+    await new Promise<void>((resolve, reject) => {
+      existingScript.addEventListener("load", () => resolve(), { once: true });
+      existingScript.addEventListener("error", () => reject(new Error("Leaflet load failed")), {
+        once: true,
+      });
+    });
+    if (!window.L) {
+      throw new Error("Leaflet did not initialize");
+    }
+    return window.L;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.id = LEAFLET_SCRIPT_ID;
+    script.src = leafletScriptSrc;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Leaflet load failed"));
+    document.head.appendChild(script);
+  });
+
+  if (!window.L) {
+    throw new Error("Leaflet did not initialize");
+  }
+  return window.L;
+}
+
 function parseOfficialServers(text: string): OfficialServer[] {
   const parsed = JSON.parse(text) as OfficialServerFile;
   if (!Array.isArray(parsed.servers)) return [];
@@ -875,6 +1263,15 @@ function parseOfficialServers(text: string): OfficialServer[] {
 
 function selectRelayForAddress(servers: OfficialServer[], address: string): string {
   return servers.find((server) => server.address === address)?.id ?? customRelayValue;
+}
+
+function toManagerAddress(relayAddress: string): string {
+  const trimmed = relayAddress.trim();
+  if (!trimmed) return "";
+  const withoutScheme = trimmed.replace(/^https?:\/\//, "");
+  const host = withoutScheme.split("/")[0] || withoutScheme;
+  const hostOnly = host.includes(":") ? host.slice(0, host.lastIndexOf(":")) : host;
+  return `${hostOnly}:3000`;
 }
 
 function getClientErrorInfo(message: string): ClientErrorInfo {

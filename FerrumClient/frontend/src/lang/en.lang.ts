@@ -68,6 +68,21 @@ export const en = {
   failedConnect: "failed to connect to relay",
   hideAuthToken: "Hide auth token",
   showAuthToken: "Show auth token",
+  mapTitle: "OfficialServer List",
+  mapSubtitle: "World map (zoom enabled)",
+  mapRefresh: "Refresh map",
+  mapLoading: "Resolving server location...",
+  mapUnavailable: "Failed to load map location data",
+  mapNoData: "No location data yet",
+  mapRelayAddress: "Relay endpoint",
+  mapManagerAddress: "Manager endpoint",
+  mapLocation: "Location",
+  mapLocationPending: "Location lookup pending",
+  mapPing: "Ping",
+  mapLoad: "Load",
+  mapStatusUnavailable: "Status unavailable",
+  mapProvider: "Location source",
+  mapCached: "cache",
 };
 
 export type ClientTranslation = typeof en;
