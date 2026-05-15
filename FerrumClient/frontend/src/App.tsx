@@ -176,6 +176,8 @@ function App() {
   const [officialServerStatus, setOfficialServerStatus] = useState("");
   const [relayDropdownOpen, setRelayDropdownOpen] = useState(false);
   const [relaySelection, setRelaySelection] = useState(customRelayValue);
+  const [customRelayAddress, setCustomRelayAddress] = useState(defaultForm.relayAddress);
+  const [relayTokens, setRelayTokens] = useState<Record<string, string>>({ [customRelayValue]: defaultForm.token });
   const [language, setLanguage] = useState<ClientLanguage>(() => detectLanguage());
   const previousErrorRef = useRef<string | null>(null);
   const relayAddressRef = useRef(defaultForm.relayAddress);
@@ -247,8 +249,14 @@ function App() {
         const response = await invoke<ClientConfigResponse>("load_client_config");
         const nextForm = { ...defaultForm, ...response.config };
         relayAddressRef.current = nextForm.relayAddress;
+        const nextSelection = selectRelayForAddress(officialServersRef.current, nextForm.relayAddress);
         setForm(nextForm);
-        setRelaySelection(selectRelayForAddress(officialServersRef.current, nextForm.relayAddress));
+        setRelaySelection(nextSelection);
+        if (nextSelection === customRelayValue) {
+          setCustomRelayAddress(nextForm.relayAddress);
+        }
+        const tokenKey = nextSelection === customRelayValue ? customRelayValue : nextSelection;
+        setRelayTokens((prev) => ({ ...prev, [tokenKey]: nextForm.token }));
         setTcpPortInput(String(nextForm.tcpLocalPort));
         setUdpPortInput(String(nextForm.udpLocalPort));
         setConfigPath(response.path);
@@ -321,6 +329,30 @@ function App() {
     }
   };
 
+  const selectedOfficialServer =
+    relaySelection === customRelayValue ? null : officialServers.find((server) => server.id === relaySelection) ?? null;
+  const activeRelayTokenKey = selectedOfficialServer?.id ?? customRelayValue;
+
+  useEffect(() => {
+    if (relaySelection === customRelayValue) {
+      if (form.relayAddress !== customRelayAddress) {
+        update("relayAddress", customRelayAddress);
+      }
+      return;
+    }
+
+    if (selectedOfficialServer && form.relayAddress !== selectedOfficialServer.address) {
+      update("relayAddress", selectedOfficialServer.address);
+    }
+  }, [customRelayAddress, form.relayAddress, relaySelection, selectedOfficialServer]);
+
+  useEffect(() => {
+    const nextToken = relayTokens[activeRelayTokenKey] ?? "";
+    if (form.token !== nextToken) {
+      update("token", nextToken);
+    }
+  }, [activeRelayTokenKey, form.token, relayTokens]);
+
   const protocols = [
     form.tcpEnabled ? `TCP ${form.localHost || "127.0.0.1"}:${tcpPortInput || form.tcpLocalPort}` : null,
     form.udpEnabled ? `UDP ${form.localHost || "127.0.0.1"}:${udpPortInput || form.udpLocalPort}` : null,
@@ -337,8 +369,6 @@ function App() {
   const highlightedError = highlightedErrorCode
     ? clientErrorCodes.find((item) => item.code === highlightedErrorCode) ?? null
     : null;
-  const selectedOfficialServer =
-    relaySelection === customRelayValue ? null : officialServers.find((server) => server.id === relaySelection) ?? null;
   const relayButtonLabel = selectedOfficialServer?.name ?? text.customRelay;
   const summaryRelayAddress = shareSession?.relayAddress || form.relayAddress || "not set";
   const summaryOfficialServer = officialServers.find((server) => server.address === summaryRelayAddress);
@@ -438,7 +468,6 @@ function App() {
                       aria-selected={selectedOfficialServer?.id === server.id}
                       onClick={() => {
                         setRelaySelection(server.id);
-                        update("relayAddress", server.address);
                         setRelayDropdownOpen(false);
                       }}
                     >
@@ -470,8 +499,10 @@ function App() {
                 <input
                   value={form.relayAddress}
                   onChange={(event) => {
+                    const nextAddress = event.target.value;
                     setRelaySelection(customRelayValue);
-                    update("relayAddress", event.target.value);
+                    setCustomRelayAddress(nextAddress);
+                    update("relayAddress", nextAddress);
                   }}
                   placeholder="203.0.113.10:7000"
                 />
@@ -482,8 +513,12 @@ function App() {
               <div className="secret-input">
                 <input
                   type={tokenVisible ? "text" : "password"}
-                  value={form.token}
-                  onChange={(event) => update("token", event.target.value)}
+                  value={relayTokens[activeRelayTokenKey] ?? ""}
+                  onChange={(event) => {
+                    const nextToken = event.target.value;
+                    setRelayTokens((prev) => ({ ...prev, [activeRelayTokenKey]: nextToken }));
+                    update("token", nextToken);
+                  }}
                   placeholder={text.optional}
                   autoComplete="off"
                   spellCheck={false}
