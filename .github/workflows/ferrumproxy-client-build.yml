@@ -52,6 +52,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure Cargo is first on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          command -v cargo
+          cargo --version
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
