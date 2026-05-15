@@ -127,8 +127,8 @@ function getMapPingTone(pingMs: number | null | undefined): MapPingTone {
     return "unknown";
   }
   if (pingMs <= 40) return "blue";
-  if (pingMs <= 90) return "lime";
-  if (pingMs <= 180) return "green";
+  if (pingMs <= 90) return "green";
+  if (pingMs <= 180) return "lime";
   if (pingMs <= 350) return "orange";
   if (pingMs >= 10000) return "black";
   return "red";
@@ -661,6 +661,9 @@ function App() {
 
     return () => {
       cancelled = true;
+      leafletMapRef.current?.remove();
+      leafletMapRef.current = null;
+      leafletMarkerRefs.current = {};
     };
   }, [mappableServers, text.mapLoad, text.mapPing, text.mapStatusUnavailable, text.mapUnavailable]);
 

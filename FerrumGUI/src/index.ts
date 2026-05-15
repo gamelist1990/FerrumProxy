@@ -1711,6 +1711,18 @@ app.get('/public/shared-relay/status', async (req, res) => {
         publicBind: sharedService?.publicBind || '',
         publicPort: parseBindPort(sharedService?.publicBind) ?? null,
       },
+      location: {
+        region: matchedInstance.publicMetadata?.region || '',
+        countryCode: matchedInstance.publicMetadata?.countryCode || '',
+        latitude:
+          typeof matchedInstance.publicMetadata?.latitude === 'number'
+            ? matchedInstance.publicMetadata.latitude
+            : null,
+        longitude:
+          typeof matchedInstance.publicMetadata?.longitude === 'number'
+            ? matchedInstance.publicMetadata.longitude
+            : null,
+      },
       sampledAt: new Date().toISOString(),
     });
   } catch (error: any) {

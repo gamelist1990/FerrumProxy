@@ -178,6 +178,10 @@ struct RelayStatusSample {
     load_percent: Option<f64>,
     active_sessions: Option<u64>,
     max_sessions: Option<u64>,
+    region: Option<String>,
+    country_code: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +192,16 @@ struct GuiRelayStatusResponse {
     load_percent: Option<f64>,
     active_sessions: Option<u64>,
     max_sessions: Option<u64>,
+    location: Option<GuiRelayLocation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GuiRelayLocation {
+    region: Option<String>,
+    country_code: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
 }
 
 fn legacy_config_path() -> Result<PathBuf, String> {
@@ -349,6 +363,7 @@ fn resolve_official_server_locations(
             .map(|(value, _)| value.to_string())
             .unwrap_or_else(|| manager_address.clone());
 
+        let manager_status = fetch_manager_status(&manager_address, &relay_address).ok();
         let mut region = String::new();
         let mut country_code = String::new();
         let mut latitude = None;
@@ -357,17 +372,39 @@ fn resolve_official_server_locations(
         let mut cached = false;
         let mut geo_error: Option<String> = None;
 
-        match resolve_location_for_host(&host, &state) {
-            Ok((geo, from_cache)) => {
-                region = geo.region;
-                country_code = geo.country_code;
-                latitude = geo.latitude;
-                longitude = geo.longitude;
-                provider = geo.provider;
-                cached = from_cache;
+        if let Some(status) = manager_status.as_ref() {
+            if let Some(value) = status.region.as_ref() {
+                region = value.clone();
             }
-            Err(error) => {
-                geo_error = Some(error);
+            if let Some(value) = status.country_code.as_ref() {
+                country_code = value.clone();
+            }
+            if status.latitude.is_some() {
+                latitude = status.latitude;
+            }
+            if status.longitude.is_some() {
+                longitude = status.longitude;
+            }
+            if !region.is_empty() || !country_code.is_empty() || latitude.is_some() || longitude.is_some() {
+                provider = "manager".to_string();
+                cached = true;
+            }
+        }
+
+        if region.is_empty() && country_code.is_empty() && latitude.is_none() && longitude.is_none() {
+            match resolve_location_for_host(&host, &state) {
+                Ok((geo, from_cache)) => {
+                    region = geo.region;
+                    country_code = geo.country_code;
+                    latitude = geo.latitude;
+                    longitude = geo.longitude;
+                    provider = geo.provider;
+                    cached = from_cache;
+                }
+                Err(_error) => {
+                    // Keep UI clean in restricted networks (e.g. timeout/10060).
+                    geo_error = None;
+                }
             }
         }
 
@@ -377,17 +414,14 @@ fn resolve_official_server_locations(
         let mut load_percent = None;
         let mut active_sessions = None;
         let mut max_sessions = None;
-        match fetch_manager_status(&manager_address, &relay_address) {
-            Ok(status) => {
+        if let Some(status) = manager_status {
                 ping_ms = status.ping_ms;
                 load_rate = status.load_rate;
                 load_percent = status.load_percent;
                 active_sessions = status.active_sessions;
                 max_sessions = status.max_sessions;
-            }
-            Err(error) => {
-                manager_error = Some(error);
-            }
+        } else {
+            manager_error = Some("manager status unavailable".to_string());
         }
 
         resolved.push(OfficialServerLocationResponse {
@@ -521,6 +555,20 @@ fn fetch_manager_status(manager_address: &str, relay_address: &str) -> Result<Re
         load_percent: payload.load_percent,
         active_sessions: payload.active_sessions,
         max_sessions: payload.max_sessions,
+        region: payload
+            .location
+            .as_ref()
+            .and_then(|location| location.region.as_ref())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        country_code: payload
+            .location
+            .as_ref()
+            .and_then(|location| location.country_code.as_ref())
+            .map(|value| value.trim().to_uppercase())
+            .filter(|value| !value.is_empty()),
+        latitude: payload.location.as_ref().and_then(|location| location.latitude),
+        longitude: payload.location.as_ref().and_then(|location| location.longitude),
     })
 }
 
