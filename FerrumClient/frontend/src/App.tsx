@@ -118,6 +118,7 @@ declare global {
 type LeafletMap = {
   setView: (center: [number, number], zoom: number) => LeafletMap;
   flyTo: (center: [number, number], zoom?: number, options?: Record<string, unknown>) => LeafletMap;
+  invalidateSize: (options?: Record<string, unknown>) => LeafletMap;
   remove: () => void;
 };
 
@@ -684,17 +685,38 @@ function App() {
     typeof statusRelayServer?.hostUptimeSeconds === "number"
       ? formatDuration(statusRelayServer.hostUptimeSeconds)
       : "-";
-  const statusMetrics = [
-    { label: text.ping, value: typeof shareSession?.relayPingMs === "number" ? `${shareSession.relayPingMs} ms` : text.notMeasured },
-    { label: text.mapLoad, value: statusRelayServer ? renderMapLoadSummary(statusRelayServer) : "-" },
-    { label: text.hostCpu, value: statusCpuValue },
-    { label: text.hostMemory, value: statusMemoryValue },
-    { label: text.hostLoadAverage, value: statusLoadAverageValue },
-    { label: text.hostUptime, value: statusUptimeValue },
-    { label: text.tcpTunnels, value: String(shareSession?.tcpTunnels ?? 0) },
-    { label: text.udpTunnel, value: shareSession?.udpTunnel ? text.ready : text.down },
-    { label: text.bytesIn, value: formatBytes(shareSession?.bytesIn ?? 0) },
-    { label: text.bytesOut, value: formatBytes(shareSession?.bytesOut ?? 0) },
+  const statusPingMs =
+    typeof shareSession?.relayPingMs === "number"
+      ? shareSession.relayPingMs
+      : typeof statusRelayServer?.pingMs === "number"
+        ? statusRelayServer.pingMs
+        : null;
+  const statusPingLabel = statusPingMs != null ? `${statusPingMs} ms` : text.notMeasured;
+  const statusPingTone = getMapPingTone(statusPingMs);
+  const statusPingGauge = pingToQualityPercent(statusPingMs);
+
+  const statusLoadPercent =
+    typeof statusRelayServer?.loadPercent === "number" ? statusRelayServer.loadPercent : null;
+  const statusLoadValue = statusLoadPercent != null ? `${statusLoadPercent.toFixed(1)}%` : "-";
+  const statusLoadGauge = clampPercent(statusLoadPercent);
+  const statusLoadSubValue =
+    statusRelayServer && typeof statusRelayServer.activeSessions === "number"
+      ? typeof statusRelayServer.maxSessions === "number" && statusRelayServer.maxSessions > 0
+        ? `稼働${statusRelayServer.activeSessions} / 上限${statusRelayServer.maxSessions}`
+        : `稼働${statusRelayServer.activeSessions}`
+      : null;
+
+  const statusMetricCards = [
+    { key: "ping", label: text.ping, value: statusPingLabel, subValue: null, meterPercent: statusPingGauge, meterTone: `ping-${statusPingTone}` },
+    { key: "load", label: text.mapLoad, value: statusLoadValue, subValue: statusLoadSubValue, meterPercent: statusLoadGauge, meterTone: "load" },
+    { key: "cpu", label: text.hostCpu, value: statusCpuValue, subValue: null, meterPercent: clampPercent(statusRelayServer?.hostCpuPercent), meterTone: "cpu" },
+    { key: "memory", label: text.hostMemory, value: statusMemoryValue, subValue: null, meterPercent: clampPercent(statusRelayServer?.hostMemoryPercent), meterTone: "memory" },
+    { key: "loadavg", label: text.hostLoadAverage, value: statusLoadAverageValue, subValue: null, meterPercent: null, meterTone: "neutral" },
+    { key: "uptime", label: text.hostUptime, value: statusUptimeValue, subValue: null, meterPercent: null, meterTone: "neutral" },
+    { key: "tcp", label: text.tcpTunnels, value: String(shareSession?.tcpTunnels ?? 0), subValue: null, meterPercent: null, meterTone: "neutral" },
+    { key: "udp", label: text.udpTunnel, value: shareSession?.udpTunnel ? text.ready : text.down, subValue: null, meterPercent: null, meterTone: "neutral" },
+    { key: "bytes-in", label: text.bytesIn, value: formatBytes(shareSession?.bytesIn ?? 0), subValue: null, meterPercent: null, meterTone: "neutral" },
+    { key: "bytes-out", label: text.bytesOut, value: formatBytes(shareSession?.bytesOut ?? 0), subValue: null, meterPercent: null, meterTone: "neutral" },
   ];
   const mappableServers = useMemo(
     () => mapServers.filter((server) => server.latitude != null && server.longitude != null),
@@ -722,11 +744,22 @@ function App() {
         leafletMapRef.current?.remove();
         leafletMapRef.current = null;
 
-        const map = L.map(stage, { worldCopyJump: true, zoomControl: true }).setView([20, 8], 2);
+        const map = L.map(stage, {
+          worldCopyJump: false,
+          zoomControl: true,
+          maxBounds: [
+            [-85, -180],
+            [85, 180],
+          ],
+          maxBoundsViscosity: 1,
+          minZoom: 2,
+        }).setView([20, 8], 2);
         L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
           attribution: "&copy; OpenStreetMap contributors",
           maxZoom: 18,
+          noWrap: true,
         }).addTo(map);
+        map.invalidateSize({ pan: false, debounceMoveend: true });
 
         leafletMapRef.current = map;
         leafletMarkerRefs.current = {};
@@ -1252,11 +1285,20 @@ function App() {
                 <span className={`status-dot ${isRunning ? "running" : isWaiting ? "waiting" : ""}`} />
               </div>
               <div className="status-metrics">
-                {statusMetrics.map((metric) => (
-                  <div key={metric.label}>
+                {statusMetricCards.map((metric) => (
+                  <article key={metric.key} className="status-metric-card">
                     <span>{metric.label}</span>
                     <strong>{metric.value}</strong>
-                  </div>
+                    {metric.subValue && <small>{metric.subValue}</small>}
+                    {metric.meterPercent != null && (
+                      <div className="status-meter">
+                        <span
+                          className={`status-meter-fill ${metric.meterTone}`}
+                          style={{ width: `${metric.meterPercent}%` }}
+                        />
+                      </div>
+                    )}
+                  </article>
                 ))}
               </div>
               <label className="language-select">

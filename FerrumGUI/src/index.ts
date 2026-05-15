@@ -159,7 +159,7 @@ function readCpuTimes() {
 
 async function collectHostLoad(): Promise<HostLoadSnapshot> {
   const first = readCpuTimes();
-  await delay(160);
+  await delay(800);
   const second = readCpuTimes();
   const idleDelta = Math.max(0, second.idle - first.idle);
   const totalDelta = Math.max(1, second.total - first.total);
