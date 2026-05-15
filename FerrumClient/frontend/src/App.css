@@ -459,6 +459,10 @@ select:focus {
   gap: 10px;
 }
 
+.relay-map-canvas-wrap {
+  position: relative;
+}
+
 .relay-map-canvas {
   position: relative;
   min-height: 220px;
@@ -493,16 +497,28 @@ select:focus {
   box-shadow: 0 0 0 2px rgba(65, 65, 65, 0.22);
 }
 
-.client-map-pin.good {
+.client-map-pin.blue {
+  background: #2f74ff;
+}
+
+.client-map-pin.lime {
+  background: #8bcf2e;
+}
+
+.client-map-pin.green {
   background: #1f9a5a;
 }
 
-.client-map-pin.warn {
+.client-map-pin.orange {
   background: #d27d13;
 }
 
-.client-map-pin.bad {
+.client-map-pin.red {
   background: #cc3f3f;
+}
+
+.client-map-pin.black {
+  background: #151515;
 }
 
 .client-map-pin.unknown {
@@ -537,16 +553,28 @@ select:focus {
   font-size: 0.78rem;
 }
 
-.client-map-popup-stat.good b {
+.client-map-popup-stat.blue b {
+  color: #1f4fcc;
+}
+
+.client-map-popup-stat.lime b {
+  color: #5d8e1f;
+}
+
+.client-map-popup-stat.green b {
   color: #137947;
 }
 
-.client-map-popup-stat.warn b {
+.client-map-popup-stat.orange b {
   color: #a86005;
 }
 
-.client-map-popup-stat.bad b {
+.client-map-popup-stat.red b {
   color: #9b1c1c;
+}
+
+.client-map-popup-stat.black b {
+  color: #151515;
 }
 
 .client-map-popup small {
@@ -643,16 +671,28 @@ select:focus {
   overflow-wrap: anywhere;
 }
 
-.map-ping-value.good {
+.map-ping-value.blue {
+  color: #1f4fcc;
+}
+
+.map-ping-value.lime {
+  color: #5d8e1f;
+}
+
+.map-ping-value.green {
   color: #137947;
 }
 
-.map-ping-value.warn {
+.map-ping-value.orange {
   color: #a86005;
 }
 
-.map-ping-value.bad {
+.map-ping-value.red {
   color: #9b1c1c;
+}
+
+.map-ping-value.black {
+  color: #151515;
 }
 
 .map-ping-value.unknown {
