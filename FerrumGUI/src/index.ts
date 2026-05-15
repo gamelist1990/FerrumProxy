@@ -6,6 +6,7 @@ import { createServer as createHttpsServer } from 'https';
 import { createServer as createNetServer } from 'net';
 import path from 'path';
 import fs from 'fs/promises';
+import os from 'node:os';
 import { randomBytes, randomUUID } from 'crypto';
 import chalk from 'chalk';
 import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './services.js';
@@ -124,34 +125,50 @@ type ManagerPerformanceSnapshot = {
   udp?: { active_sessions?: number };
 };
 
-function estimateLoadRate(
-  performance: ManagerPerformanceSnapshot,
-  config: FerrumProxyConfig
-): { loadRate: number | null; activeSessions: number; maxSessions: number | null } {
-  const shared = config.sharedService;
-  const activeTcp = toPositiveIntegerOrNull(performance.tcp?.active_sessions);
-  const activeUdp = toPositiveIntegerOrNull(performance.udp?.active_sessions);
-  const activeTotal = toPositiveIntegerOrNull(performance.total_active_sessions);
-  const activeSessions =
-    activeTotal ??
-    Math.max(0, (activeTcp ?? 0) + (activeUdp ?? 0));
+type HostLoadSnapshot = {
+  loadRate: number;
+  loadPercent: number;
+  cpuPercent: number;
+  memoryPercent: number;
+};
 
-  const maxTcp =
-    toPositiveIntegerOrNull(shared?.maximums?.maxTcpConnections) ??
-    toPositiveIntegerOrNull(shared?.defaults?.maxTcpConnections);
-  const maxUdp =
-    toPositiveIntegerOrNull(shared?.maximums?.maxUdpPeers) ??
-    toPositiveIntegerOrNull(shared?.defaults?.maxUdpPeers);
-  const maxSessions =
-    maxTcp == null && maxUdp == null ? null : Math.max(1, (maxTcp ?? 0) + (maxUdp ?? 0));
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-  if (maxSessions == null) {
-    return { loadRate: null, activeSessions, maxSessions: null };
+function readCpuTimes() {
+  let idle = 0;
+  let total = 0;
+  for (const cpu of os.cpus()) {
+    idle += cpu.times.idle;
+    total +=
+      cpu.times.user +
+      cpu.times.nice +
+      cpu.times.sys +
+      cpu.times.idle +
+      cpu.times.irq;
   }
+  return { idle, total };
+}
 
-  const raw = activeSessions / maxSessions;
-  const loadRate = Math.max(0, Math.min(raw, 1.5));
-  return { loadRate, activeSessions, maxSessions };
+async function collectHostLoad(): Promise<HostLoadSnapshot> {
+  const first = readCpuTimes();
+  await delay(160);
+  const second = readCpuTimes();
+  const idleDelta = Math.max(0, second.idle - first.idle);
+  const totalDelta = Math.max(1, second.total - first.total);
+  const cpuPercent = Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100));
+
+  const memoryTotal = os.totalmem();
+  const memoryFree = os.freemem();
+  const memoryPercent =
+    memoryTotal > 0 ? Math.max(0, Math.min(100, ((memoryTotal - memoryFree) / memoryTotal) * 100)) : 0;
+
+  const blendedPercent = Math.max(0, Math.min(100, cpuPercent * 0.75 + memoryPercent * 0.25));
+  return {
+    loadRate: blendedPercent / 100,
+    loadPercent: Math.round(blendedPercent * 10) / 10,
+    cpuPercent: Math.round(cpuPercent * 10) / 10,
+    memoryPercent: Math.round(memoryPercent * 10) / 10,
+  };
 }
 
 function relayMatchesConfig(relayAddress: string, config: FerrumProxyConfig): boolean {
@@ -1670,29 +1687,27 @@ app.get('/public/shared-relay/status', async (req, res) => {
       return res.status(404).json({ error: 'No shared relay matched the requested criteria' });
     }
 
-    if (!matchedConfig.useRestApi) {
-      return res.status(409).json({
-        error: 'FerrumProxy REST API is disabled for this shared relay.',
-        restApiEnabled: false,
-      });
+    const hostLoad = await collectHostLoad();
+    const restApiEnabled = !!matchedConfig.useRestApi;
+    let pingMs: number | null = null;
+    let performance: ManagerPerformanceSnapshot | null = null;
+    if (restApiEnabled) {
+      try {
+        const endpoint = matchedConfig.endpoint || 6000;
+        const startedAt = Date.now();
+        const response = await fetch(`http://127.0.0.1:${endpoint}/api/performance`, {
+          signal: AbortSignal.timeout(2200),
+        });
+        pingMs = Math.max(0, Date.now() - startedAt);
+        if (response.ok) {
+          performance = (await response.json()) as ManagerPerformanceSnapshot;
+        }
+      } catch {
+        // Keep host load available even if local performance API is temporarily unavailable.
+      }
     }
 
-    const endpoint = matchedConfig.endpoint || 6000;
-    const startedAt = Date.now();
-    const response = await fetch(`http://127.0.0.1:${endpoint}/api/performance`, {
-      signal: AbortSignal.timeout(2200),
-    });
-    const pingMs = Math.max(0, Date.now() - startedAt);
-
-    if (!response.ok) {
-      return res.status(502).json({
-        error: `FerrumProxy performance endpoint returned ${response.status}`,
-        restApiEnabled: true,
-      });
-    }
-
-    const performance = (await response.json()) as ManagerPerformanceSnapshot;
-    const { loadRate, activeSessions, maxSessions } = estimateLoadRate(performance, matchedConfig);
+    const activeSessions = toPositiveIntegerOrNull(performance?.total_active_sessions);
     const sharedService = matchedConfig.sharedService;
 
     return res.json({
@@ -1701,10 +1716,14 @@ app.get('/public/shared-relay/status', async (req, res) => {
       instanceName: matchedInstance.name,
       relayAddress: relayAddress || null,
       pingMs,
-      loadRate,
-      loadPercent: loadRate == null ? null : Math.round(loadRate * 1000) / 10,
+      loadRate: hostLoad.loadRate,
+      loadPercent: hostLoad.loadPercent,
+      loadSource: 'host_system',
+      hostCpuPercent: hostLoad.cpuPercent,
+      hostMemoryPercent: hostLoad.memoryPercent,
       activeSessions,
-      maxSessions,
+      maxSessions: null,
+      restApiEnabled,
       sharedService: {
         enabled: !!sharedService?.enabled,
         publicHost: sharedService?.publicHost || '',

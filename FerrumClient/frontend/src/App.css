@@ -904,7 +904,7 @@ select:focus {
   place-items: center;
   padding: 18px;
   background: rgba(17, 24, 39, 0.32);
-  z-index: 20;
+  z-index: 5000;
 }
 
 .error-modal,

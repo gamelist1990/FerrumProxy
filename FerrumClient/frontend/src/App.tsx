@@ -179,7 +179,6 @@ function renderMapPopupHtml(
         <span>${labels.mapLoad}</span>
         <b>${loadLabel}</b>
       </div>
-      ${server.managerError ? `<small>${server.managerError}</small>` : ""}
     </div>
   `;
 }
@@ -322,9 +321,14 @@ function App() {
   };
 
   useEffect(() => {
-    const preventContextMenu = (event: MouseEvent) => event.preventDefault();
-    window.addEventListener("contextmenu", preventContextMenu);
-    return () => window.removeEventListener("contextmenu", preventContextMenu);
+    const onContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      if (import.meta.env.DEV) {
+        void invoke("open_devtools").catch(() => {});
+      }
+    };
+    window.addEventListener("contextmenu", onContextMenu);
+    return () => window.removeEventListener("contextmenu", onContextMenu);
   }, []);
 
   useEffect(() => {
@@ -977,7 +981,6 @@ function App() {
                     </div>
                   </dl>
                   {selectedMapServer.error && <small className="map-error-inline">{selectedMapServer.error}</small>}
-                  {selectedMapServer.managerError && <small className="map-error-inline">{selectedMapServer.managerError}</small>}
                 </>
               ) : (
                 <p>{text.mapNoData}</p>

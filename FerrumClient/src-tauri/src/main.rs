@@ -115,10 +115,10 @@ struct SessionStats {
     relay_ping_ms: AtomicU64,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct GeoState {
-    cache: Mutex<HashMap<String, CachedGeoLocation>>,
-    last_request_at: Mutex<Option<Instant>>,
+    cache: Arc<Mutex<HashMap<String, CachedGeoLocation>>>,
+    last_request_at: Arc<Mutex<Option<Instant>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -350,9 +350,21 @@ fn probe_client_connection(config: ClientConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn resolve_official_server_locations(
+async fn resolve_official_server_locations(
     servers: Vec<OfficialServerLocationRequest>,
-    state: State<GeoState>,
+    state: State<'_, GeoState>,
+) -> Result<Vec<OfficialServerLocationResponse>, String> {
+    let shared_state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        resolve_official_server_locations_blocking(servers, &shared_state)
+    })
+    .await
+    .map_err(|err| format!("failed to join geolocation worker: {err}"))?
+}
+
+fn resolve_official_server_locations_blocking(
+    servers: Vec<OfficialServerLocationRequest>,
+    state: &GeoState,
 ) -> Result<Vec<OfficialServerLocationResponse>, String> {
     let mut resolved = Vec::with_capacity(servers.len());
     for server in servers {
@@ -385,13 +397,18 @@ fn resolve_official_server_locations(
             if status.longitude.is_some() {
                 longitude = status.longitude;
             }
-            if !region.is_empty() || !country_code.is_empty() || latitude.is_some() || longitude.is_some() {
+            if !region.is_empty()
+                || !country_code.is_empty()
+                || latitude.is_some()
+                || longitude.is_some()
+            {
                 provider = "manager".to_string();
                 cached = true;
             }
         }
 
-        if region.is_empty() && country_code.is_empty() && latitude.is_none() && longitude.is_none() {
+        if region.is_empty() && country_code.is_empty() && latitude.is_none() && longitude.is_none()
+        {
             match resolve_location_for_host(&host, &state) {
                 Ok((geo, from_cache)) => {
                     region = geo.region;
@@ -408,20 +425,24 @@ fn resolve_official_server_locations(
             }
         }
 
-        let mut manager_error: Option<String> = None;
-        let mut ping_ms = None;
+        let manager_error: Option<String> = None;
+        let mut ping_ms = if !relay_address.is_empty() {
+            measure_tcp_ping_ms(&relay_address, Duration::from_secs(3))
+        } else {
+            measure_tcp_ping_ms(&manager_address, Duration::from_secs(3))
+        };
         let mut load_rate = None;
         let mut load_percent = None;
         let mut active_sessions = None;
         let mut max_sessions = None;
         if let Some(status) = manager_status {
+            if ping_ms.is_none() {
                 ping_ms = status.ping_ms;
-                load_rate = status.load_rate;
-                load_percent = status.load_percent;
-                active_sessions = status.active_sessions;
-                max_sessions = status.max_sessions;
-        } else {
-            manager_error = Some("manager status unavailable".to_string());
+            }
+            load_rate = status.load_rate;
+            load_percent = status.load_percent;
+            active_sessions = status.active_sessions;
+            max_sessions = status.max_sessions;
         }
 
         resolved.push(OfficialServerLocationResponse {
@@ -531,7 +552,10 @@ fn resolve_location_for_host(
     Ok((result, false))
 }
 
-fn fetch_manager_status(manager_address: &str, relay_address: &str) -> Result<RelayStatusSample, String> {
+fn fetch_manager_status(
+    manager_address: &str,
+    relay_address: &str,
+) -> Result<RelayStatusSample, String> {
     let endpoint = normalize_manager_address(manager_address);
     if endpoint.is_empty() {
         return Err("manager endpoint is empty".to_string());
@@ -567,8 +591,14 @@ fn fetch_manager_status(manager_address: &str, relay_address: &str) -> Result<Re
             .and_then(|location| location.country_code.as_ref())
             .map(|value| value.trim().to_uppercase())
             .filter(|value| !value.is_empty()),
-        latitude: payload.location.as_ref().and_then(|location| location.latitude),
-        longitude: payload.location.as_ref().and_then(|location| location.longitude),
+        latitude: payload
+            .location
+            .as_ref()
+            .and_then(|location| location.latitude),
+        longitude: payload
+            .location
+            .as_ref()
+            .and_then(|location| location.longitude),
     })
 }
 
@@ -585,7 +615,8 @@ fn extract_host_header(endpoint: &str) -> String {
 fn url_encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
-        let is_unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        let is_unreserved =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
         if is_unreserved {
             encoded.push(byte as char);
         } else {
@@ -620,26 +651,91 @@ fn http_get_text(endpoint: &str, path: &str, host_header: &str) -> Result<String
         .flush()
         .map_err(|err| format!("failed to flush geolocation request: {err}"))?;
 
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
+    let (status_code, body) = read_http_response(&mut stream)
         .map_err(|err| format!("failed to read geolocation response: {err}"))?;
-    let text = String::from_utf8(response).map_err(|err| err.to_string())?;
-    let (header, body) = text
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "invalid geolocation response".to_string())?;
-    let status_line = header.lines().next().unwrap_or_default();
+
+    if status_code != 200 {
+        return Err(format!("geolocation HTTP {status_code}"));
+    }
+
+    Ok(body)
+}
+
+fn read_http_response(stream: &mut TcpStream) -> Result<(u16, String), String> {
+    let mut buffer = Vec::<u8>::with_capacity(8192);
+    let mut header_end: Option<usize> = None;
+    let mut temp = [0u8; 4096];
+
+    while header_end.is_none() {
+        let read = stream.read(&mut temp).map_err(|err| err.to_string())?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..read]);
+        header_end = find_header_end(&buffer);
+        if buffer.len() > 2 * 1024 * 1024 {
+            return Err("HTTP response header too large".to_string());
+        }
+    }
+
+    let header_end =
+        header_end.ok_or_else(|| "invalid HTTP response: no header terminator".to_string())?;
+    let header_bytes = &buffer[..header_end];
+    let mut body_bytes = buffer[header_end..].to_vec();
+    let header_text = String::from_utf8(header_bytes.to_vec()).map_err(|err| err.to_string())?;
+    let mut lines = header_text.lines();
+    let status_line = lines.next().unwrap_or_default();
     let status_code = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or_default();
 
-    if status_code != 200 {
-        return Err(format!("geolocation HTTP {status_code}"));
+    let mut content_length: Option<usize> = None;
+    for line in lines {
+        let (key, value) = match line.split_once(':') {
+            Some(parts) => parts,
+            None => continue,
+        };
+        if key.trim().eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse::<usize>().ok();
+            break;
+        }
     }
 
-    Ok(body.to_string())
+    if let Some(target) = content_length {
+        while body_bytes.len() < target {
+            let read = stream.read(&mut temp).map_err(|err| err.to_string())?;
+            if read == 0 {
+                break;
+            }
+            body_bytes.extend_from_slice(&temp[..read]);
+        }
+        body_bytes.truncate(target);
+    } else {
+        loop {
+            let read = stream.read(&mut temp).map_err(|err| err.to_string())?;
+            if read == 0 {
+                break;
+            }
+            body_bytes.extend_from_slice(&temp[..read]);
+        }
+    }
+
+    let body = String::from_utf8(body_bytes).map_err(|err| err.to_string())?;
+    Ok((status_code, body))
+}
+
+fn find_header_end(data: &[u8]) -> Option<usize> {
+    for index in 0..data.len() {
+        if data[index..].starts_with(b"\r\n\r\n") {
+            return Some(index + 4);
+        }
+        if data[index..].starts_with(b"\n\n") {
+            return Some(index + 2);
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -1444,6 +1540,27 @@ fn send_relay_command(address: &str, command: &str) -> Result<String, String> {
     }
 }
 
+fn measure_tcp_ping_ms(address: &str, timeout: Duration) -> Option<u64> {
+    let endpoint = address.trim();
+    if endpoint.is_empty() {
+        return None;
+    }
+
+    let resolved = endpoint.to_socket_addrs().ok()?;
+    for socket_address in resolved {
+        let started = Instant::now();
+        match TcpStream::connect_timeout(&socket_address, timeout) {
+            Ok(stream) => {
+                apply_tcp_nodelay(&stream);
+                let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                return Some(elapsed);
+            }
+            Err(_) => continue,
+        }
+    }
+    None
+}
+
 fn resolve_single_addr(address: &str) -> Result<SocketAddr, String> {
     let endpoint = address.trim();
     if endpoint.is_empty() {
@@ -1510,6 +1627,21 @@ fn apply_tcp_nodelay(stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
 }
 
+#[tauri::command]
+fn open_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        window.open_devtools();
+        Ok(())
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = window;
+        Err("DevTools are disabled in production builds".to_string())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(ClientState::default())
@@ -1528,6 +1660,7 @@ fn main() {
             load_official_servers,
             probe_client_connection,
             resolve_official_server_locations,
+            open_devtools,
             start_sharing,
             stop_sharing,
             get_share_session
