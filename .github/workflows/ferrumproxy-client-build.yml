@@ -76,8 +76,6 @@ jobs:
 
       - name: Build Tauri client
         working-directory: FerrumClient
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun run tauri:build -- --verbose
 
       - name: Collect bundles
