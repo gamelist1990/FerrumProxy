@@ -160,6 +160,8 @@ async fn handle_control_connection(
         handle_udp_associate(request, &state, &config).await
     } else if request == "TOKEN" || request.starts_with("TOKEN ") {
         handle_token_validation(request, &state, &config).await
+    } else if request == "PING" {
+        Ok("PONG\n".to_string())
     } else if request == "STATS" {
         handle_stats(&state).await
     } else if request == "LIST" {

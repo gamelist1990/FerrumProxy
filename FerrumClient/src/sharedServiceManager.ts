@@ -239,6 +239,7 @@ export class SharedServiceManager extends EventEmitter {
       return;
     }
     remote.setNoDelay(true);
+    remote.setKeepAlive(true, 15000);
 
     const remoteAddress = `${remote.remoteAddress || 'unknown'}:${remote.remotePort || 0}`;
     if (this.tcpConnections.size >= this.status.limits.maxTcpConnections) {
@@ -249,6 +250,7 @@ export class SharedServiceManager extends EventEmitter {
 
     const local = net.createConnection({ host: localHost, port: localPort });
     local.setNoDelay(true);
+  local.setKeepAlive(true, 15000);
     if (this.status.haproxy) {
       local.write(
         buildProxyV2Header(
@@ -307,6 +309,8 @@ export class SharedServiceManager extends EventEmitter {
     local.on('timeout', () => close('idle timeout'));
     remote.on('error', () => close('remote error'));
     local.on('error', () => close('local error'));
+    remote.on('end', () => close('remote end'));
+    local.on('end', () => close('local end'));
     remote.on('close', () => close('remote close'));
     local.on('close', () => close('local close'));
   }

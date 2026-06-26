@@ -37,11 +37,17 @@ interface UdpPeer {
 const TCP_TUNNEL_POOL_SIZE = 8;
 const TCP_RECONNECT_DELAY_MS = 250;
 const UDP_RECONNECT_DELAY_MS = 500;
+const TCP_KEEPALIVE_INITIAL_DELAY_MS = 15000;
+const RELAY_HEARTBEAT_INTERVAL_MS = 15000;
+const RELAY_HEARTBEAT_TIMEOUT_MS = 5000;
 
 export class RelayShareClient extends EventEmitter {
   private stopped = false;
   private sockets = new Set<Socket>();
   private udpSockets = new Set<UdpSocket>();
+  private heartbeatTimer?: NodeJS.Timeout;
+  private reconnecting?: Promise<void>;
+  private generation = 0;
   private status: RelayShareStatus;
 
   constructor(private readonly options: RelayShareClientOptions) {
@@ -62,43 +68,19 @@ export class RelayShareClient extends EventEmitter {
 
   async start(): Promise<RelayPublicEndpoint> {
     this.validate();
-    const portForAllocation =
-      this.options.protocol === 'udp' ? this.options.udpLocalPort : this.options.tcpLocalPort;
-    if (!portForAllocation) {
-      throw new Error('local port is required');
-    }
-
-    const target = this.options.token?.trim()
-      ? `${this.options.token.trim()}:${this.options.localHost}:${portForAllocation}`
-      : `${this.options.localHost}:${portForAllocation}`;
-    const response = await this.sendRelayCommand(`CONNECT ${target}\n`, 0);
-    const { host, port } = parseConnectResponse(response);
-    const protocol = this.options.protocol === 'both' ? 'tcp/udp' : this.options.protocol;
-    const endpoint = {
-      protocol,
-      host,
-      port,
-      display: `${protocol}: ${host}:${port}`,
-    };
-
-    this.status.endpoint = endpoint;
-    this.emitStatus();
-
-    if (this.options.protocol === 'tcp' || this.options.protocol === 'both') {
-      for (let index = 0; index < TCP_TUNNEL_POOL_SIZE; index += 1) {
-        void this.runTcpTunnelLoop(port);
-      }
-    }
-
-    if (this.options.protocol === 'udp' || this.options.protocol === 'both') {
-      void this.runUdpTunnelLoop(port);
-    }
-
+    const endpoint = await this.allocateRelayEndpoint();
+    this.startTunnelLoops(endpoint.port);
+    this.startHeartbeat();
     return endpoint;
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.generation += 1;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
     const endpoint = this.status.endpoint;
     if (endpoint) {
       try {
@@ -123,6 +105,104 @@ export class RelayShareClient extends EventEmitter {
     this.emitStatus();
   }
 
+  private async allocateRelayEndpoint(): Promise<RelayPublicEndpoint> {
+    const target = this.buildRelayTarget();
+    const response = await this.sendRelayCommand(`CONNECT ${target}\n`, 0);
+    const { host, port } = parseConnectResponse(response);
+    const protocol = this.options.protocol === 'both' ? 'tcp/udp' : this.options.protocol;
+    const endpoint = {
+      protocol,
+      host,
+      port,
+      display: `${protocol}: ${host}:${port}`,
+    };
+
+    this.status.endpoint = endpoint;
+    this.emitStatus();
+    return endpoint;
+  }
+
+  private buildRelayTarget(): string {
+    const portForAllocation =
+      this.options.protocol === 'udp' ? this.options.udpLocalPort : this.options.tcpLocalPort;
+    if (!portForAllocation) {
+      throw new Error('local port is required');
+    }
+
+    return this.options.token?.trim()
+      ? `${this.options.token.trim()}:${this.options.localHost}:${portForAllocation}`
+      : `${this.options.localHost}:${portForAllocation}`;
+  }
+
+  private startTunnelLoops(publicPort: number): void {
+    const generation = ++this.generation;
+
+    if (this.options.protocol === 'tcp' || this.options.protocol === 'both') {
+      for (let index = 0; index < TCP_TUNNEL_POOL_SIZE; index += 1) {
+        void this.runTcpTunnelLoop(publicPort, generation);
+      }
+    }
+
+    if (this.options.protocol === 'udp' || this.options.protocol === 'both') {
+      void this.runUdpTunnelLoop(publicPort, generation);
+    }
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+    }
+    this.heartbeatTimer = setInterval(() => {
+      void this.checkRelayHeartbeat();
+    }, RELAY_HEARTBEAT_INTERVAL_MS);
+  }
+
+  private async checkRelayHeartbeat(): Promise<void> {
+    if (this.stopped || this.reconnecting) {
+      return;
+    }
+
+    try {
+      const response = await this.sendRelayCommand('PING\n', RELAY_HEARTBEAT_TIMEOUT_MS);
+      if (response.trim() !== 'PONG') {
+        throw new Error(`unexpected heartbeat response: ${response.trim() || 'empty'}`);
+      }
+    } catch (error) {
+      this.emit('log', `Relay heartbeat failed; refreshing allocation: ${(error as Error).message}`);
+      this.reconnecting = this.refreshRelayAllocation();
+      try {
+        await this.reconnecting;
+      } finally {
+        this.reconnecting = undefined;
+      }
+    }
+  }
+
+  private async refreshRelayAllocation(): Promise<void> {
+    const previousEndpoint = this.status.endpoint;
+    this.generation += 1;
+
+    for (const socket of this.sockets) {
+      socket.destroy();
+    }
+    this.sockets.clear();
+
+    this.status.tcpTunnels = 0;
+    this.status.udpTunnel = false;
+    this.emitStatus();
+
+    if (previousEndpoint) {
+      try {
+        await this.sendRelayCommand(`RELEASE ${previousEndpoint.port}\n`, 3000);
+      } catch {
+        // The relay may already be gone; CONNECT below recreates the allocation.
+      }
+    }
+
+    const endpoint = await this.allocateRelayEndpoint();
+    this.startTunnelLoops(endpoint.port);
+  }
+
   private validate(): void {
     if (!this.options.relayAddress.trim()) {
       throw new Error('relay address is required');
@@ -138,12 +218,12 @@ export class RelayShareClient extends EventEmitter {
     }
   }
 
-  private async runTcpTunnelLoop(publicPort: number): Promise<void> {
-    while (!this.stopped) {
+  private async runTcpTunnelLoop(publicPort: number, generation: number): Promise<void> {
+    while (!this.stopped && generation === this.generation) {
       try {
         await this.openTcpTunnel(publicPort);
       } catch (error) {
-        if (!this.stopped) {
+        if (!this.stopped && generation === this.generation) {
           this.emit('log', `TCP tunnel reconnecting: ${(error as Error).message}`);
           await sleep(TCP_RECONNECT_DELAY_MS);
         }
@@ -185,12 +265,12 @@ export class RelayShareClient extends EventEmitter {
     this.emitStatus();
   }
 
-  private async runUdpTunnelLoop(publicPort: number): Promise<void> {
-    while (!this.stopped) {
+  private async runUdpTunnelLoop(publicPort: number, generation: number): Promise<void> {
+    while (!this.stopped && generation === this.generation) {
       try {
         await this.openUdpTunnel(publicPort);
       } catch (error) {
-        if (!this.stopped) {
+        if (!this.stopped && generation === this.generation) {
           this.emit('log', `UDP tunnel reconnecting: ${(error as Error).message}`);
           await sleep(UDP_RECONNECT_DELAY_MS);
         }
@@ -276,6 +356,7 @@ export class RelayShareClient extends EventEmitter {
 
   private trackSocket(socket: Socket): void {
     socket.setNoDelay(true);
+    socket.setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS);
     this.sockets.add(socket);
     socket.once('close', () => this.sockets.delete(socket));
   }
@@ -339,6 +420,7 @@ function connectTcp(address: string, timeoutMs: number): Promise<Socket> {
       reject(new Error(`${address} did not respond`));
     }, timeoutMs);
     socket.setNoDelay(true);
+    socket.setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS);
     socket.once('connect', () => {
       clearTimeout(timer);
       resolve(socket);
