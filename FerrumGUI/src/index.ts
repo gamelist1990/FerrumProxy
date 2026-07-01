@@ -26,6 +26,14 @@ import {
 
 
 const PORT = process.env.PORT || 3000;
+const cliArgs = new Set(Bun.argv.slice(2));
+const PRIVATE_MODE =
+  cliArgs.has('--private') ||
+  cliArgs.has('--localhost') ||
+  (process.env.FERRUMPROXYGUI_PRIVATE || '').toLowerCase() === 'true';
+const BIND_HOST = PRIVATE_MODE
+  ? '127.0.0.1'
+  : process.env.HOST || process.env.FERRUMPROXYGUI_HOST || '0.0.0.0';
 const embeddedFiles = Array.isArray(Bun.embeddedFiles) ? Bun.embeddedFiles : [];
 const isCompiled = embeddedFiles.length > 0;
 const mainDir = path.dirname(Bun.main);
@@ -39,6 +47,24 @@ const appRoot = isCompiled
 const app = express();
 app.set('trust proxy', true);
 app.disable('x-powered-by');
+
+app.use((req, res, next) => {
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
+
+app.get('/robots.txt', (_req, res) => {
+  res
+    .type('text/plain')
+    .send([
+      'User-agent: *',
+      'Disallow: /',
+      '',
+    ].join('\n'));
+});
 
 const tlsCertPath = process.env.FERRUMPROXYGUI_TLS_CERT || process.env.HTTPS_CERT_PATH;
 const tlsKeyPath = process.env.FERRUMPROXYGUI_TLS_KEY || process.env.HTTPS_KEY_PATH;
@@ -729,7 +755,12 @@ if (isCompiled) {
 } else {
   
   console.log(chalk.blue('Using regular public directory'));
-  app.use(express.static(path.join(appRoot, 'public')));
+  app.use(express.static(path.join(appRoot, 'public'), {
+    index: 'index.html',
+    setHeaders: (res) => {
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
+    },
+  }));
 }
 
 
@@ -2275,11 +2306,17 @@ async function init() {
       }
     }
 
-    server.listen(PORT, () => {
+    server.listen(Number(PORT), BIND_HOST, () => {
       const scheme = useHttps ? 'https' : 'http';
-      console.log(chalk.green(`✓ Server running on port ${PORT}`));
-      console.log(chalk.green(`✓ WebSocket server running on port ${PORT}`));
+      const displayHost = PRIVATE_MODE ? 'localhost' : BIND_HOST;
+      console.log(chalk.green(`✓ Server running on ${displayHost}:${PORT}`));
+      console.log(chalk.green(`✓ WebSocket server running on ${displayHost}:${PORT}`));
       console.log(chalk.blue(`\n  Local: ${scheme}://localhost:${PORT}/\n`));
+      if (PRIVATE_MODE) {
+        console.log(chalk.yellow('✓ Private mode enabled: GUI is bound to localhost only.'));
+      } else {
+        console.log(chalk.yellow('✓ Public mode enabled: noindex/nofollow headers and robots.txt are active.'));
+      }
     });
 
     process.on('SIGINT', async () => {

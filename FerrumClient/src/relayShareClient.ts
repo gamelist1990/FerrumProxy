@@ -38,6 +38,8 @@ const TCP_TUNNEL_POOL_SIZE = 8;
 const TCP_RECONNECT_DELAY_MS = 250;
 const UDP_RECONNECT_DELAY_MS = 500;
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 15000;
+const TCP_TUNNEL_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+const TCP_ACTIVE_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const RELAY_HEARTBEAT_INTERVAL_MS = 15000;
 const RELAY_HEARTBEAT_TIMEOUT_MS = 5000;
 
@@ -235,7 +237,7 @@ export class RelayShareClient extends EventEmitter {
     const tunnel = await connectTcp(this.options.relayAddress, 5000);
     this.trackSocket(tunnel);
     await writeAll(tunnel, `TUNNEL ${publicPort}\n`);
-    const start = await readExact(tunnel, 6);
+    const start = await readExact(tunnel, 6, TCP_TUNNEL_WAIT_TIMEOUT_MS);
     if (start.toString() !== 'START\n') {
       tunnel.destroy();
       throw new Error('relay rejected TCP tunnel');
@@ -256,7 +258,8 @@ export class RelayShareClient extends EventEmitter {
       (bytes) => {
         this.status.bytesOut += bytes;
         this.emitStatus();
-      }
+      },
+      TCP_ACTIVE_IDLE_TIMEOUT_MS
     );
 
     this.untrackSocket(tunnel);
@@ -438,10 +441,19 @@ function writeAll(socket: Socket, data: string | Buffer): Promise<void> {
   });
 }
 
-function readExact(socket: Socket, length: number): Promise<Buffer> {
+function readExact(socket: Socket, length: number, timeoutMs = 0): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let buffer = Buffer.alloc(0);
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            cleanup();
+            socket.destroy();
+            reject(new Error('socket read timed out'));
+          }, timeoutMs)
+        : undefined;
     const cleanup = () => {
+      if (timer) clearTimeout(timer);
       socket.off('data', onData);
       socket.off('error', onError);
       socket.off('close', onClose);
@@ -514,19 +526,35 @@ function pipeBidirectional(
   left: Socket,
   right: Socket,
   leftToRightBytes: (bytes: number) => void,
-  rightToLeftBytes: (bytes: number) => void
+  rightToLeftBytes: (bytes: number) => void,
+  idleTimeoutMs = 0
 ): Promise<void> {
   return new Promise((resolve) => {
     let closed = false;
+    let idleTimer: NodeJS.Timeout | undefined;
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleTimeoutMs > 0) {
+        idleTimer = setTimeout(close, idleTimeoutMs);
+      }
+    };
     const close = () => {
       if (closed) return;
       closed = true;
+      if (idleTimer) clearTimeout(idleTimer);
       left.destroy();
       right.destroy();
       resolve();
     };
-    left.on('data', (chunk) => leftToRightBytes(chunk.length));
-    right.on('data', (chunk) => rightToLeftBytes(chunk.length));
+    left.on('data', (chunk) => {
+      resetIdleTimer();
+      leftToRightBytes(chunk.length);
+    });
+    right.on('data', (chunk) => {
+      resetIdleTimer();
+      rightToLeftBytes(chunk.length);
+    });
+    resetIdleTimer();
     left.pipe(right);
     right.pipe(left);
     left.once('close', close);
