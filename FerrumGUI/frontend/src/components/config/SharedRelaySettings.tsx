@@ -243,22 +243,6 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
         />
 
         <Input
-          label={t('maxTcpConnections')}
-          type="number"
-          value={defaults.maxTcpConnections}
-          onChange={(event) => updateLimit('maxTcpConnections', toPositiveInt(event.target.value, defaults.maxTcpConnections))}
-          min="1"
-        />
-
-        <Input
-          label={t('maxUdpPeers')}
-          type="number"
-          value={defaults.maxUdpPeers}
-          onChange={(event) => updateLimit('maxUdpPeers', toPositiveInt(event.target.value, defaults.maxUdpPeers))}
-          min="1"
-        />
-
-        <Input
           label={t('bandwidthBytesPerSecond')}
           type="text"
           value={defaultBandwidthInput}
@@ -335,20 +319,6 @@ export const SharedRelaySettings: React.FC<SharedRelaySettingsProps> = ({ config
                       )
                     }
                     placeholder="1Kbps / 10Mbps / 10485760"
-                  />
-                  <Input
-                    label={t('tokenMaxTcp')}
-                    type="number"
-                    value={limits.maxTcpConnections}
-                    onChange={(event) => updateTokenLimit(index, 'maxTcpConnections', toPositiveInt(event.target.value, limits.maxTcpConnections))}
-                    min="1"
-                  />
-                  <Input
-                    label={t('tokenMaxUdp')}
-                    type="number"
-                    value={limits.maxUdpPeers}
-                    onChange={(event) => updateTokenLimit(index, 'maxUdpPeers', toPositiveInt(event.target.value, limits.maxUdpPeers))}
-                    min="1"
                   />
                 </div>
               </div>

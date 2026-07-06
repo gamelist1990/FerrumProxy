@@ -22,6 +22,14 @@ import {
   setExecutablePermissions,
   getPlatformAssetName,
 } from './downloader.js';
+import {
+  cleanupOldBinary,
+  fetchLatestGuiRelease,
+  getCurrentGuiVersion,
+  isSelfUpdateSupported,
+  performGuiSelfUpdate,
+  compareVersions,
+} from './selfUpdate.js';
 
 
 
@@ -1116,7 +1124,77 @@ app.get('/api/system', async (req, res) => {
       platform = process.arch === 'arm64' ? 'linux-arm64' : 'linux';
     }
 
-    res.json({ platform, nodePlatform: process.platform, arch: process.arch });
+    res.json({
+      platform,
+      nodePlatform: process.platform,
+      arch: process.arch,
+      guiVersion: getCurrentGuiVersion(),
+      selfUpdateSupported: isSelfUpdateSupported(isCompiled),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 現在の GUI バージョンと GitHub 上の最新版を返す
+app.get('/api/self/version', async (_req, res) => {
+  try {
+    const current = getCurrentGuiVersion();
+    const selfUpdateSupported = isSelfUpdateSupported(isCompiled);
+    let latest: Awaited<ReturnType<typeof fetchLatestGuiRelease>> = null;
+    try {
+      latest = await fetchLatestGuiRelease();
+    } catch (err: any) {
+      // 取得失敗しても current だけは返す
+      return res.json({
+        current,
+        latest: null,
+        hasUpdate: false,
+        selfUpdateSupported,
+        error: err.message,
+      });
+    }
+    const hasUpdate =
+      selfUpdateSupported &&
+      !!latest &&
+      compareVersions(latest.version, current) > 0;
+    res.json({ current, latest, hasUpdate, selfUpdateSupported });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GUI 本体を最新版に差し替えて再起動する
+app.post('/api/self/update', async (_req, res) => {
+  if (!isSelfUpdateSupported(isCompiled)) {
+    return res.status(400).json({
+      error:
+        'Self-update is only available on compiled binaries (dev mode is unsupported)',
+    });
+  }
+  try {
+    const result = await performGuiSelfUpdate(isCompiled, (downloaded, total) => {
+      broadcast({
+        type: 'guiUpdateProgress',
+        downloaded,
+        total,
+        percentage: total > 0 ? Math.round((downloaded / total) * 100) : 0,
+      });
+    });
+    if (!result.success) {
+      return res.status(500).json({ error: result.error });
+    }
+    broadcast({
+      type: 'guiUpdateReady',
+      version: result.version,
+      restartInMs: result.restartInMs,
+    });
+    res.json({
+      success: true,
+      version: result.version,
+      restartInMs: result.restartInMs,
+      message: `Updated to v${result.version}. Restarting in ${result.restartInMs} ms.`,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -2249,6 +2327,10 @@ app.get('*', async (req, res, next) => {
 async function init() {
   try {
     console.log(chalk.blue('Initializing FerrumProxy GUI...'));
+    console.log(chalk.blue(`GUI version: v${getCurrentGuiVersion()}`));
+
+    // 前回のセルフ更新で残った .old バイナリを掃除
+    await cleanupOldBinary();
 
     
     await serviceManager.load();

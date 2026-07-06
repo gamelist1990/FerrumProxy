@@ -456,3 +456,40 @@ export async function checkUpdates(): Promise<UpdateCheckResult> {
   if (!res.ok) throw new Error('Failed to check updates');
   return res.json();
 }
+
+// -------- GUI self-update --------
+
+export interface GuiSelfVersion {
+  current: string;
+  latest: {
+    version: string;
+    tag: string;
+    assetName: string | null;
+    assetUrl: string | null;
+    assetSize: number | null;
+    publishedAt: string;
+  } | null;
+  hasUpdate: boolean;
+  selfUpdateSupported: boolean;
+  error?: string;
+}
+
+export async function fetchGuiSelfVersion(): Promise<GuiSelfVersion> {
+  const res = await fetch(`${API_BASE}/self/version`);
+  if (!res.ok) throw new Error('Failed to fetch GUI version');
+  return res.json();
+}
+
+export async function performGuiSelfUpdate(): Promise<{
+  success: boolean;
+  version: string;
+  restartInMs: number;
+  message: string;
+}> {
+  const res = await fetch(`${API_BASE}/self/update`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Self-update failed' }));
+    throw new Error(err.error || 'Self-update failed');
+  }
+  return res.json();
+}

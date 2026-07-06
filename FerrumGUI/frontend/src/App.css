@@ -177,6 +177,23 @@
   border-color: color-mix(in srgb, var(--danger-color) 42%, var(--border-color));
 }
 
+.btn.warning {
+  background: color-mix(in srgb, #ff9800 18%, var(--surface-soft));
+  border-color: color-mix(in srgb, #ff9800 55%, var(--border-color));
+  color: color-mix(in srgb, #ff9800 30%, var(--ink));
+  font-weight: 600;
+  animation: gui-update-pulse 2s ease-in-out infinite;
+}
+
+@keyframes gui-update-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, #ff9800 40%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, #ff9800 0%, transparent);
+  }
+}
+
 .btn.small {
   min-height: 32px;
   padding: 0 10px;

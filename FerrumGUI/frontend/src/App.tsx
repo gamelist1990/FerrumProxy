@@ -31,6 +31,9 @@ import {
   updateInstance,
   updateInstanceMetadata,
   fetchSystemInfo,
+  checkUpdates,
+  fetchGuiSelfVersion,
+  performGuiSelfUpdate,
 } from "./api";
 import { t, setLanguage, getLanguage, type Language } from "./lang";
 import { Login } from "./components/Login";
@@ -68,6 +71,12 @@ function App() {
   const [language, setLang] = useState<Language>(getLanguage());
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [guiVersion, setGuiVersion] = useState<string | null>(null);
+  const [guiLatestVersion, setGuiLatestVersion] = useState<string | null>(null);
+  const [guiHasUpdate, setGuiHasUpdate] = useState(false);
+  const [guiSelfUpdateSupported, setGuiSelfUpdateSupported] = useState(false);
+  const [isGuiUpdating, setIsGuiUpdating] = useState(false);
   const selectedInstanceRef = useRef<string | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
 
@@ -151,6 +160,7 @@ function App() {
   useEffect(() => {
     if (authStatus?.isAuthenticated) {
       loadInstances();
+      void loadGuiVersion();
     }
   }, [authStatus]);
 
@@ -491,6 +501,119 @@ function App() {
     }
   }
 
+  async function loadGuiVersion() {
+    try {
+      const info = await fetchGuiSelfVersion();
+      setGuiVersion(info.current);
+      setGuiSelfUpdateSupported(info.selfUpdateSupported);
+      setGuiLatestVersion(info.latest?.version ?? null);
+      setGuiHasUpdate(info.hasUpdate);
+    } catch (error) {
+      console.error("Failed to fetch GUI version", error);
+    }
+  }
+
+  async function handleGuiSelfUpdate() {
+    if (!guiSelfUpdateSupported) {
+      alert(t("guiSelfUpdateUnsupported"));
+      return;
+    }
+    if (!guiHasUpdate) {
+      alert(t("guiAlreadyUpToDate"));
+      return;
+    }
+    const proceed = confirm(
+      `${t("guiUpdateConfirm")}\n\nv${guiVersion} → v${guiLatestVersion}\n\n${t("guiUpdateWillRestart")}`
+    );
+    if (!proceed) return;
+    try {
+      setIsGuiUpdating(true);
+      const result = await performGuiSelfUpdate();
+      alert(
+        `${t("guiUpdateSuccess")}\n\nv${result.version}\n\n${t("guiUpdateRestarting")}`
+      );
+      // 再起動後に自動再接続されるようにリロード
+      setTimeout(() => {
+        window.location.reload();
+      }, result.restartInMs + 3000);
+    } catch (error) {
+      const err = error as Error;
+      alert(`${t("errorGuiUpdate")} ${err.message}`);
+      setIsGuiUpdating(false);
+    }
+  }
+
+  async function handleCheckAndUpdateAll() {
+    if (isCheckingUpdates) return;
+    setIsCheckingUpdates(true);
+    try {
+      const result = await checkUpdates();
+      if (result.latestRelease?.version) {
+        setLatestVersion(result.latestRelease.version);
+      }
+
+      const targets = result.updates.filter(
+        (u) => u.hasUpdate && !updatingInstances.has(u.instanceId)
+      );
+
+      if (targets.length === 0) {
+        alert(t("allUpToDate"));
+        return;
+      }
+
+      const targetVersion = result.latestRelease?.version ?? "latest";
+      const proceed = confirm(
+        `${t("updatesAvailable")} v${targetVersion}\n\n${targets.length} instance(s) will be updated:\n` +
+          targets
+            .map((u) => {
+              const inst = instances.find((i) => i.id === u.instanceId);
+              return `  - ${inst?.name ?? u.instanceId} (v${u.currentVersion} → v${u.latestVersion})`;
+            })
+            .join("\n")
+      );
+      if (!proceed) return;
+
+      // ロック用に先にまとめて状態を入れておく
+      setUpdatingInstances((prev) => {
+        const next = new Map(prev);
+        for (const u of targets) {
+          next.set(u.instanceId, { progress: 0, targetVersion });
+        }
+        return next;
+      });
+
+      // 順次実行（GitHub API のレート制限と同時 IO を避ける）
+      for (const u of targets) {
+        try {
+          await updateInstance(u.instanceId, "latest", false);
+        } catch (error) {
+          const err = error as Error;
+          setUpdatingInstances((prev) => {
+            const next = new Map(prev);
+            next.delete(u.instanceId);
+            return next;
+          });
+          if (
+            err.message &&
+            (err.message.includes("rate limit") ||
+              err.message.includes("レート制限"))
+          ) {
+            alert(
+              `⚠️ GitHub APIのレート制限に達しました。\n\n残りのインスタンスの更新を中止します。しばらく待ってから再度試してください。`
+            );
+            return;
+          }
+          console.error(`Update failed for ${u.instanceId}:`, err);
+        }
+      }
+    } catch (error) {
+      const err = error as Error;
+      alert(`${t("errorCheckUpdates")} ${err.message}`);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  }
+
   async function handleUpdateInstance(
     instanceId: string,
     version: string = "latest",
@@ -697,6 +820,34 @@ function App() {
             >
               {theme === "light" ? "Night" : "Light"}
             </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void handleCheckAndUpdateAll()}
+              disabled={isCheckingUpdates || instances.length === 0}
+              title={t("checkUpdates")}
+            >
+              {isCheckingUpdates ? t("checking") : t("checkUpdates")}
+            </button>
+            {guiSelfUpdateSupported && (
+              <button
+                type="button"
+                className={`btn ${guiHasUpdate ? "warning" : "tertiary"}`}
+                onClick={() => void handleGuiSelfUpdate()}
+                disabled={isGuiUpdating || !guiHasUpdate}
+                title={
+                  guiHasUpdate
+                    ? `${t("guiUpdateAvailable")}: v${guiLatestVersion}`
+                    : t("guiAlreadyUpToDate")
+                }
+              >
+                {isGuiUpdating
+                  ? t("guiUpdating")
+                  : guiHasUpdate
+                    ? `${t("guiUpdate")} → v${guiLatestVersion}`
+                    : `GUI v${guiVersion ?? "?"}`}
+              </button>
+            )}
             {authStatus?.hasAuth && (
               <button
                 type="button"
