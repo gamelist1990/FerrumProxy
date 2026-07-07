@@ -20,7 +20,7 @@ use crate::bedrock::{
 use crate::config::{ProxyConfig, SharedServiceConfig};
 use crate::proxy_protocol::build_proxy_v2_header;
 use crate::runtime::AppRuntime;
-use crate::tcp_tuning::apply_tcp_nodelay;
+use crate::tcp_tuning::{apply_tcp_keepalive, apply_tcp_nodelay};
 use crate::token_security::hash_token;
 
 const BUFFER_SIZE: usize = 16 * 1024;
@@ -110,6 +110,7 @@ pub async fn start_shared_relay(
         match listener.accept().await {
             Ok((stream, client_addr)) => {
                 apply_tcp_nodelay(&stream, "shared relay control");
+                apply_tcp_keepalive(&stream, "shared relay control");
                 let state = Arc::clone(&state);
                 let config = config.clone();
                 let runtime = Arc::clone(&runtime);
@@ -1397,6 +1398,7 @@ async fn handle_tcp_tunnel(
         .get(2)
         .is_some_and(|part| part.eq_ignore_ascii_case("HAPROXY"));
     apply_tcp_nodelay(&stream, "shared relay tcp tunnel");
+    apply_tcp_keepalive(&stream, "shared relay tcp tunnel");
     state
         .tcp_tunnels
         .lock()
@@ -1434,6 +1436,7 @@ async fn handle_udp_tunnel(
         .get(2)
         .is_some_and(|part| part.eq_ignore_ascii_case("HAPROXY"));
     apply_tcp_nodelay(&stream, "shared relay udp tunnel");
+    apply_tcp_keepalive(&stream, "shared relay udp tunnel");
     let Some(socket) = state.udp_sockets.lock().await.get(&port).cloned() else {
         return Ok(());
     };
@@ -1656,6 +1659,7 @@ pub async fn start_relay_port(
         match listener.accept().await {
             Ok((client_stream, client_addr)) => {
                 apply_tcp_nodelay(&client_stream, "shared relay public client");
+                apply_tcp_keepalive(&client_stream, "shared relay public client");
                 if !state.port_allocations.read().await.contains_key(&port) {
                     info!("Relay port {} released, stopping listener", port);
                     return Ok(());

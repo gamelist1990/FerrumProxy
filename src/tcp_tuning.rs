@@ -35,6 +35,44 @@ pub fn apply_tcp_nodelay(stream: &TcpStream, context: &str) {
     }
 }
 
+/// Enables OS-level TCP keepalive with tight intervals so that:
+///
+/// 1. NAT / stateful firewalls in the middle don't silently drop the flow
+///    as "idle" (they typically expire after 60-300s of true silence).
+/// 2. A truly dead upstream is detected within ~30s and the connection is
+///    torn down cleanly, instead of Minecraft's 30s KeepAlive timer kicking
+///    the player because our forwarded packets stalled behind a dead socket.
+///
+/// Uses socket2 because tokio's TcpStream only exposes SO_KEEPALIVE on/off,
+/// not the per-connection intervals we need (idle / interval / retry count).
+pub fn apply_tcp_keepalive(stream: &TcpStream, context: &str) {
+    use socket2::{SockRef, TcpKeepalive};
+    use std::time::Duration;
+
+    let sock = SockRef::from(stream);
+
+    // 15s idle → send probes every 5s → give up after 3 misses.
+    // → dead-path detection window ≈ 15 + 3*5 = 30 s, matching Minecraft's
+    //   own KeepAlive timeout, so we tear the socket down at the same time
+    //   the server would kick the player anyway.
+    // Windows/macOS では `.with_retries()` を呼ばないので mut は不要になる。
+    #[allow(unused_mut)]
+    let mut ka = TcpKeepalive::new()
+        .with_time(Duration::from_secs(15))
+        .with_interval(Duration::from_secs(5));
+
+    // retries は Linux/*BSD/Windows で意味が違うが、socket2 が対応 OS で
+    // TCP_KEEPCNT / TCP_KEEPINTVL 相当を正しく設定してくれる。
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))]
+    {
+        ka = ka.with_retries(3);
+    }
+
+    if let Err(err) = sock.set_tcp_keepalive(&ka) {
+        warn!("Failed to configure TCP keepalive for {context}: {err}");
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn tune_linux_bbr() {
     let mut available = match read_available_congestion_controls() {

@@ -20,7 +20,7 @@ use crate::http_rewrite::{
 };
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
 use crate::runtime::{AppRuntime, PerformanceMetrics};
-use crate::tcp_tuning::apply_tcp_nodelay;
+use crate::tcp_tuning::{apply_tcp_keepalive, apply_tcp_nodelay};
 use crate::tls_config::resolve_tls_acceptor;
 
 // 既定は 10 秒。`highLatency.enabled = true` のときは runtime.timeouts 経由で
@@ -63,6 +63,7 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
             }
         };
         apply_tcp_nodelay(&client, "tcp listener client");
+        apply_tcp_keepalive(&client, "tcp listener client");
         let rule = Arc::clone(&rule);
         let runtime = Arc::clone(&runtime);
         let tls_acceptor = tls_acceptor.clone();
@@ -508,6 +509,7 @@ async fn connect_target(
 ) -> Result<BoxedStream> {
     let tcp = timeout(connect_timeout, TcpStream::connect(target_addr)).await??;
     apply_tcp_nodelay(&tcp, "tcp target");
+    apply_tcp_keepalive(&tcp, "tcp target");
 
     if target.url_protocol.as_deref() == Some("https") {
         let mut roots = RootCertStore::empty();

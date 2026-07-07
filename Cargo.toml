@@ -20,6 +20,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 sha2 = "0.10"
+# TCP socket knobs (SO_KEEPALIVE, buffer sizes) that tokio doesn't expose directly.
+socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1.38", features = ["full"] }
 tokio-rustls = "0.26"
 tower-http = { version = "0.6", features = ["cors"] }
