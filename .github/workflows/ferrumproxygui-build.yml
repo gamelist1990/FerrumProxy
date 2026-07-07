@@ -71,11 +71,19 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: FerrumProxyGUI
           path: release-assets
+
+      - name: Generate version.json
+        run: node repo/scripts/gen-version-json.mjs gui FerrumProxyGUI release-assets
 
       - name: Publish fixed FerrumProxyGUI release
         uses: softprops/action-gh-release@v2
@@ -88,6 +96,8 @@ jobs:
             Action: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
             Message: ${{ github.event.head_commit.message }}
-          files: release-assets/FerrumProxyGUI-*
+          files: |
+            release-assets/FerrumProxyGUI-*
+            release-assets/version.json
           fail_on_unmatched_files: true
           overwrite_files: true

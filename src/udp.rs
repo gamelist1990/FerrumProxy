@@ -16,6 +16,7 @@ use crate::bedrock::{
     contains_disconnect, describe_offline_ping, describe_raknet_packet, describe_unconnected_pong,
     is_offline_ping, is_open_connection_request_1, is_unconnected_pong,
     rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
+    strip_unconnected_pong_name_quotes,
 };
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
@@ -311,6 +312,13 @@ fn spawn_backend_recv(
                         } else if let Some(description) = before_rewrite {
                             debug!("Bedrock pong did not need port rewrite for {peer}: {description}");
                         }
+                    }
+
+                    // Strip quotes the backend wraps around the server name so
+                    // clients see a clean MOTD. Done before caching so the
+                    // immediate-pong path serves the cleaned value too.
+                    if let Some(cleaned) = strip_unconnected_pong_name_quotes(&response) {
+                        response = cleaned;
                     }
 
                     if is_unconnected_pong(&response) {

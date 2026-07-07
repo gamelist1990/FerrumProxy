@@ -406,6 +406,39 @@ pub fn rewrite_unconnected_pong_ports(payload: &[u8], listener_port: u16) -> Opt
     Some(out)
 }
 
+/// Removes a single balanced pair of surrounding double quotes from the server
+/// name (MOTD field index 1). Some vanilla setups configure `server-name` in
+/// server.properties with quotes (e.g. `server-name="My Server"`), and the
+/// Bedrock server broadcasts those quotes verbatim, so clients see `"My Server"`
+/// in the server list. Returns `None` when there is nothing to strip.
+pub fn strip_unconnected_pong_name_quotes(payload: &[u8]) -> Option<Vec<u8>> {
+    let parsed = parse_unconnected_pong(payload)?;
+    let mut parts = parsed
+        .motd
+        .split(';')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let name = parts.get_mut(1)?;
+
+    let stripped = name
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))?;
+    *name = stripped.to_string();
+
+    let rewritten_motd = parts.join(";");
+    let motd_bytes = rewritten_motd.as_bytes();
+    if motd_bytes.len() > u16::MAX as usize {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(payload.len());
+    out.extend_from_slice(&payload[..33]);
+    out.extend_from_slice(&(motd_bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(motd_bytes);
+    out.extend_from_slice(&payload[parsed.string_end..]);
+    Some(out)
+}
+
 struct ParsedPong {
     motd: String,
     string_end: usize,
@@ -508,6 +541,23 @@ mod tests {
             parsed.motd,
             "MCPE;Dedicated Server;390;1.20.0;0;10;123;World;Survival;1;43211"
         );
+    }
+
+    #[test]
+    fn strips_surrounding_quotes_from_pong_name() {
+        let pong = bedrock_pong(
+            "MCPE;\"PEX Survival Server\";1001;26.30;0;20;123;World;Survival;1;19132;19132;",
+        );
+        let stripped = strip_unconnected_pong_name_quotes(&pong).expect("name stripped");
+        let parsed = parse_unconnected_pong(&stripped).expect("pong parsed");
+        let parts = parsed.motd.split(';').collect::<Vec<_>>();
+        assert_eq!(parts[1], "PEX Survival Server");
+    }
+
+    #[test]
+    fn leaves_unquoted_pong_name_untouched() {
+        let pong = bedrock_pong("MCPE;PEX Survival Server;1001;26.30;0;20;123;W;S;1;19132;19132;");
+        assert!(strip_unconnected_pong_name_quotes(&pong).is_none());
     }
 
     #[test]

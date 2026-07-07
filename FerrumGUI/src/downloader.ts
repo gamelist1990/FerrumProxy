@@ -78,6 +78,30 @@ export interface Release {
   tag: string;
   publishedAt: string;
   assets: ReleaseAsset[];
+  commit?: string;
+}
+
+/**
+ * Fixed-tag releases carry no semantic version, so the real version lives in a
+ * `version.json` asset published alongside the binaries (see
+ * scripts/gen-version-json.mjs). Reads it and returns a Release with the real
+ * commit/date-based version. Falls back to the input release untouched when the
+ * manifest is missing or unreadable, so older releases keep working.
+ */
+async function applyVersionManifest(release: Release): Promise<Release> {
+  const manifestAsset = release.assets.find((a) => a.name === 'version.json');
+  if (!manifestAsset) return release;
+  try {
+    const res = await fetch(manifestAsset.downloadUrl);
+    if (!res.ok) return release;
+    const manifest: any = await res.json();
+    if (manifest && typeof manifest.version === 'string' && manifest.version.length > 0) {
+      return { ...release, version: manifest.version, commit: manifest.commit };
+    }
+  } catch (err: any) {
+    console.log(chalk.yellow(`Failed to read version.json manifest: ${err?.message ?? err}`));
+  }
+  return release;
 }
 
 export async function getLatestRelease(): Promise<Release> {
@@ -107,7 +131,7 @@ export async function getLatestRelease(): Promise<Release> {
   }
 
   const data: any = await response.json();
-  const release: Release = {
+  const release: Release = await applyVersionManifest({
     version: DEFAULT_VERSION,
     tag: data.tag_name,
     publishedAt: data.published_at,
@@ -117,7 +141,7 @@ export async function getLatestRelease(): Promise<Release> {
       downloadUrl: asset.browser_download_url,
       size: asset.size,
     })),
-  };
+  });
 
   releaseCache.set('latest', release);
   return release;
@@ -150,7 +174,7 @@ export async function getAllReleases(): Promise<Release[]> {
   }
 
   const data: any = await response.json();
-  const releases: Release[] = [{
+  const releases: Release[] = [await applyVersionManifest({
     version: DEFAULT_VERSION,
     tag: data.tag_name,
     publishedAt: data.published_at,
@@ -160,7 +184,7 @@ export async function getAllReleases(): Promise<Release[]> {
       downloadUrl: asset.browser_download_url,
       size: asset.size,
     })),
-  }];
+  })];
 
   releaseCache.set('all', releases);
   return releases;
@@ -180,7 +204,7 @@ export async function getReleaseByVersion(version: string): Promise<Release> {
 
   const data: any = await response.json();
 
-  return {
+  return applyVersionManifest({
     version: DEFAULT_VERSION,
     tag: data.tag_name,
     publishedAt: data.published_at,
@@ -190,7 +214,7 @@ export async function getReleaseByVersion(version: string): Promise<Release> {
       downloadUrl: asset.browser_download_url,
       size: asset.size,
     })),
-  };
+  });
 }
 
 export async function downloadBinary(

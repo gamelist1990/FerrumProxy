@@ -101,12 +101,20 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: FerrumProxyClient-*
           path: release-assets
           merge-multiple: true
+
+      - name: Generate version.json
+        run: node repo/scripts/gen-version-json.mjs client FerrumProxyClient release-assets
 
       - name: Publish fixed FerrumProxyClient release
         uses: softprops/action-gh-release@v2
