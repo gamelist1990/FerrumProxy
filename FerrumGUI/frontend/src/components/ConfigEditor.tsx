@@ -6,6 +6,7 @@ import { SharedRelaySettings } from './config/SharedRelaySettings';
 import { ListenerList } from './config/ListenerList';
 import { DdosGuardSettingsPanel } from './config/DdosGuardSettings';
 import { HighLatencySettingsPanel } from './config/HighLatencySettings';
+import { UdpSessionSettingsPanel } from './config/UdpSessionSettings';
 import { Button } from './ui/Button';
 import './ConfigEditor.css';
 
@@ -38,6 +39,10 @@ export function ConfigEditor({ instanceId, config, onChange, onSave }: ConfigEdi
           <DdosGuardSettingsPanel
             config={localConfig.ddosGuard}
             onChange={(ddosGuard) => handleChange('ddosGuard', ddosGuard)}
+          />
+          <UdpSessionSettingsPanel
+            config={localConfig.highLatency}
+            onChange={(highLatency) => handleChange('highLatency', highLatency)}
           />
           <HighLatencySettingsPanel
             config={localConfig.highLatency}

@@ -194,6 +194,14 @@ export const ja_JP: Translation = {
   udpMaxDatagramBytes: 'UDP 最大データグラム（バイト）',
   activePreset: '現在のプリセット',
   presetCustom: 'カスタム',
+  udpSessionSettings: 'UDP セッション',
+  udpSessionHint:
+    'UDP セッションが無通信のまま何秒でゾンビ判定するかを決めます。Bedrock は接続中に 1 秒に何度もパケットが飛ぶので、10 秒で十分検出できます。モバイル/衛星の一時的な瞬断を許容したいときは長めに設定してください。',
+  udpIdlePresetFast: '即切り（3s）',
+  udpIdlePresetDefault: '既定（10s）',
+  udpIdlePresetBalanced: 'バランス（30s）',
+  udpIdlePresetPersistent: '瞬断許容（5分）',
+  udpIdlePresetExtreme: '極端（30分）',
   highLatencySettings: '高遅延モード',
   highLatencyEnabled: '極端に重いユーザーを許容',
   highLatencyHint:

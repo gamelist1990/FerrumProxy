@@ -192,6 +192,14 @@ export const en_US = {
   udpMaxDatagramBytes: 'UDP max datagram size (bytes)',
   activePreset: 'Active',
   presetCustom: 'Custom',
+  udpSessionSettings: 'UDP session',
+  udpSessionHint:
+    'How long a UDP session may stay idle before FerrumProxy tears it down. Bedrock keeps traffic flowing every second while a player is connected, so 10s is plenty. Increase it if you want to tolerate mobile / satellite brief drops.',
+  udpIdlePresetFast: 'Fast (3s)',
+  udpIdlePresetDefault: 'Default (10s)',
+  udpIdlePresetBalanced: 'Balanced (30s)',
+  udpIdlePresetPersistent: 'Persistent (5min)',
+  udpIdlePresetExtreme: 'Extreme (30min)',
   highLatencySettings: 'High-latency mode',
   highLatencyEnabled: 'Allow extremely slow clients',
   highLatencyHint:
