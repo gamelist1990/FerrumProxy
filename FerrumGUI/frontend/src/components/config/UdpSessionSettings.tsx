@@ -3,11 +3,10 @@ import { Card } from '../ui/Card';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
 import type { HighLatencyConfig } from '../../api';
-import { t as tRaw, en_US } from '../../lang';
+import { t } from '../../lang';
+import type { en_US } from '../../lang';
 
-// 動的キー (preset の labelKey) を渡すために型アサートしたラッパー。
-// キーは en_US に存在することを保証している。
-const t = (key: string): string => tRaw(key as keyof typeof en_US);
+type TKey = keyof typeof en_US;
 
 interface UdpSessionSettingsProps {
   /**
@@ -26,7 +25,7 @@ type UdpPresetId = 'fast' | 'default' | 'balanced' | 'persistent' | 'extreme' | 
 interface UdpPreset {
   id: UdpPresetId;
   ms: number;
-  labelKey: string;
+  labelKey: TKey;
   fallbackLabel: string;
 }
 
