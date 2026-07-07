@@ -644,7 +644,10 @@ fn default_connect_timeout_ms() -> u64 {
 }
 
 fn default_udp_session_idle_timeout_ms() -> u64 {
-    60_000
+    // Bedrock RakNet は接続中は 1 秒に何度もパケットを飛ばすので、
+    // 10 秒無通信ならほぼ確実に切れている。ゾンビセッションの回収を早めて
+    // 明示的な切断シグナルが取れない場合でも遅延なく後片付けする。
+    10_000
 }
 
 fn default_true() -> bool {

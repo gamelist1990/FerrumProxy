@@ -198,7 +198,7 @@ export const ja_JP: Translation = {
   highLatencyEnabled: '極端に重いユーザーを許容',
   highLatencyHint:
     '初期ハンドシェイク・バックエンド接続・UDP アイドルのタイムアウトを大きく取り、1000ms〜5000ms のクライアントでも切断されずに接続できるようにします。厳しめの既定に戻したい場合は無効化してください。',
-  highLatencyPresetOff: '無効（10s / 10s / 60s）',
+  highLatencyPresetOff: '無効（10s / 10s / 10s）',
   highLatencyPresetHigh: '重いユーザー用（30s / 30s / 10分）',
   highLatencyPresetExtreme: '極端（60s / 60s / 30分）',
   highLatencyShowAdvanced: '詳細タイムアウトを表示',

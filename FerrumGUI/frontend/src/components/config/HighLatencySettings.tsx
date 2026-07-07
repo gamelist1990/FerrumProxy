@@ -13,13 +13,13 @@ interface HighLatencySettingsProps {
 
 /**
  * FerrumProxy 側の `HighLatencyConfig` デフォルトと一致。無効化されているときは
- * TCP/UDP タイムアウトは 10s / 10s / 60s の従来値に戻る。
+ * TCP/UDP タイムアウトは 10s / 10s / 10s の baseline に戻る。
  */
 const PRESET_DEFAULT: HighLatencyConfig = {
   enabled: false,
-  initialClientDataTimeoutMs: 30_000,
-  connectTimeoutMs: 30_000,
-  udpSessionIdleTimeoutMs: 600_000,
+  initialClientDataTimeoutMs: 10_000,
+  connectTimeoutMs: 10_000,
+  udpSessionIdleTimeoutMs: 10_000,
 };
 
 /** 1000ms〜3000ms 帯の重ユーザー向け。 */
@@ -81,7 +81,7 @@ export const HighLatencySettingsPanel: React.FC<HighLatencySettingsProps> = ({ c
 
   const activeLabel =
     activePreset === 'off'
-      ? t('highLatencyPresetOff') || 'Off (10s / 10s / 60s)'
+      ? t('highLatencyPresetOff') || 'Off (10s / 10s / 10s)'
       : activePreset === 'high'
         ? t('highLatencyPresetHigh') || 'High ping (30s / 30s / 10min)'
         : activePreset === 'extreme'

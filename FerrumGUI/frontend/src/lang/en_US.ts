@@ -196,7 +196,7 @@ export const en_US = {
   highLatencyEnabled: 'Allow extremely slow clients',
   highLatencyHint:
     'Stretches the initial handshake, backend connect, and UDP idle timeouts so 1000ms–5000ms clients can stay connected. Turn off if you want the tight defaults.',
-  highLatencyPresetOff: 'Off (10s / 10s / 60s)',
+  highLatencyPresetOff: 'Off (10s / 10s / 10s)',
   highLatencyPresetHigh: 'High ping (30s / 30s / 10min)',
   highLatencyPresetExtreme: 'Extreme (60s / 60s / 30min)',
   highLatencyShowAdvanced: 'Show advanced timeouts',

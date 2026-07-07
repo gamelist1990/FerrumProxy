@@ -27,13 +27,16 @@ pub struct TimeoutSettings {
 }
 
 impl TimeoutSettings {
-    /// Legacy fixed defaults — 10s / 10s / 60s, matching the original
-    /// hard-coded constants in `tcp.rs` and `udp.rs`.
+    /// Baseline defaults — 10s TCP / 10s connect / 10s UDP idle.
+    ///
+    /// UDP idle は元々 60 秒だったが、Bedrock RakNet は接続中に 1 秒間隔以下で
+    /// パケットが飛ぶプロトコルなので、10 秒無通信ならほぼ確実に切れている。
+    /// 短くすることで client 側切断のゾンビセッション回収が早くなる。
     pub fn defaults() -> Self {
         Self {
             initial_client_data: Duration::from_secs(10),
             connect: Duration::from_secs(10),
-            udp_session_idle: Duration::from_secs(60),
+            udp_session_idle: Duration::from_secs(10),
         }
     }
 }
