@@ -38,7 +38,6 @@ def bench_udp(host: str, port: int, count: int, size: int, timeout_ms: int):
     sock.bind(("", 0))
     payload = os.urandom(size)
 
-    # Warm-up: 3 packets to prime the kernel routing / socket table.
     for _ in range(3):
         try:
             sock.sendto(payload, (host, port))
@@ -77,7 +76,6 @@ def bench_tcp(host: str, port: int, count: int, size: int, timeout_ms: int):
                 raise ConnectionError("peer closed")
             remaining -= len(chunk)
 
-    # Warm-up: 3 messages.
     for _ in range(3):
         sock.sendall(payload)
         recv_exact(len(payload))
@@ -93,7 +91,7 @@ def bench_tcp(host: str, port: int, count: int, size: int, timeout_ms: int):
             latencies_us.append((ns() - t0) / 1000.0)
         except (socket.timeout, ConnectionError, OSError):
             lost += 1
-            break  # TCP failure is terminal; don't try more
+            break 
     total_ms = (ns() - total_start) / 1_000_000.0
     try:
         sock.close()

@@ -48,9 +48,6 @@ def run_tcp(port: int) -> None:
     print(f"[echo] TCP listening on 0.0.0.0:{port}", flush=True)
     while True:
         conn, addr = srv.accept()
-        # Disable Nagle: bench packets are small and back-to-back, we want
-        # every send to hit the wire immediately (mirrors what a real game
-        # server would do).
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         threading.Thread(target=_tcp_client, args=(conn, addr), daemon=True).start()
 
@@ -78,7 +75,6 @@ def main() -> int:
         return 2
 
     try:
-        # Sleep forever; threads are daemons so Ctrl+C exits cleanly.
         for t in threads:
             t.join()
     except KeyboardInterrupt:

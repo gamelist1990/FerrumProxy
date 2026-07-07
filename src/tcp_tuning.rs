@@ -35,6 +35,28 @@ pub fn apply_tcp_nodelay(stream: &TcpStream, context: &str) {
     }
 }
 
+
+
+pub fn apply_tcp_buffer_sizes(stream: &TcpStream, context: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        use socket2::SockRef;
+        const TARGET_BYTES: usize = 2 * 1024 * 1024;
+
+        let sock = SockRef::from(stream);
+        if let Err(err) = sock.set_send_buffer_size(TARGET_BYTES) {
+            warn!("Failed to enlarge TCP send buffer for {context}: {err}");
+        }
+        if let Err(err) = sock.set_recv_buffer_size(TARGET_BYTES) {
+            warn!("Failed to enlarge TCP recv buffer for {context}: {err}");
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (stream, context);
+    }
+}
+
 pub fn apply_udp_buffer_sizes(socket: &tokio::net::UdpSocket, context: &str) {
     use socket2::SockRef;
 

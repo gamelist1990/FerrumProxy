@@ -20,7 +20,7 @@ use crate::http_rewrite::{
 };
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
 use crate::runtime::{AppRuntime, PerformanceMetrics};
-use crate::tcp_tuning::{apply_tcp_keepalive, apply_tcp_nodelay};
+use crate::tcp_tuning::{apply_tcp_buffer_sizes, apply_tcp_keepalive, apply_tcp_nodelay};
 use crate::tls_config::resolve_tls_acceptor;
 
 const INITIAL_CLIENT_DATA_TIMEOUT_MSG: &str = "timed out waiting for initial client data";
@@ -61,6 +61,7 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
         };
         apply_tcp_nodelay(&client, "tcp listener client");
         apply_tcp_keepalive(&client, "tcp listener client");
+        apply_tcp_buffer_sizes(&client, "tcp listener client");
         let rule = Arc::clone(&rule);
         let runtime = Arc::clone(&runtime);
         let tls_acceptor = tls_acceptor.clone();
@@ -270,7 +271,6 @@ async fn copy_bidirectional(
     Ok(())
 }
 
-/// Which byte counter a pump feeds.
 #[derive(Clone, Copy)]
 enum Direction {
     ClientToTarget,
@@ -284,9 +284,6 @@ fn record_bytes(metrics: &PerformanceMetrics, direction: Direction, bytes: usize
     }
 }
 
-/// Zero-copy one-directional relay. Writes the freshly read slice straight
-/// through (no intermediate `Vec`), and on EOF issues a `shutdown()` so the
-/// peer receives a real FIN / TLS close_notify instead of an abrupt socket drop.
 async fn pump<R, W>(
     mut reader: R,
     mut writer: W,
@@ -321,12 +318,6 @@ where
     Ok(total)
 }
 
-/// Drives both directions to completion.
-///
-/// Unlike an abort-on-first-EOF `select!`, this keeps the surviving direction
-/// alive after its peer half-closes, so a client that shuts down its write side
-/// still receives the full response — native TCP half-close semantics. A real
-/// error (not a clean EOF) on one side tears the other down immediately.
 async fn run_relay(
     mut client_to_target: JoinHandle<io::Result<u64>>,
     mut target_to_client: JoinHandle<io::Result<u64>>,
@@ -372,8 +363,6 @@ async fn run_relay(
     Ok((sent, recv))
 }
 
-/// Buffering relay used only when a target requires HTTP request/response
-/// rewriting. Slower than `pump` by design, but now also propagates half-close.
 #[allow(clippy::too_many_arguments)]
 fn spawn_rewrite_relay(
     mut client_read: ReadHalf<BoxedStream>,
@@ -514,6 +503,7 @@ async fn connect_target(
     let tcp = timeout(connect_timeout, TcpStream::connect(target_addr)).await??;
     apply_tcp_nodelay(&tcp, "tcp target");
     apply_tcp_keepalive(&tcp, "tcp target");
+    apply_tcp_buffer_sizes(&tcp, "tcp target");
 
     if target.url_protocol.as_deref() == Some("https") {
         let mut roots = RootCertStore::empty();
