@@ -319,7 +319,6 @@ fn spawn_backend_recv(
                     }
                     runtime.metrics.udp_target_to_client_bytes(response.len());
                     debug!("UDP {backend_addr} -> {peer} {}B", response.len());
-
                 }
                 Ok(Err(err)) => {
                     error!("UDP backend socket for {peer} failed: {err}");
