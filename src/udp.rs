@@ -20,6 +20,7 @@ use crate::bedrock::{
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
 use crate::runtime::AppRuntime;
+use crate::tcp_tuning::apply_udp_buffer_sizes;
 
 const MAX_DATAGRAM_SIZE: usize = 65_535;
 
@@ -105,6 +106,10 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
             .await
             .with_context(|| format!("failed to bind UDP listener {bind}"))?,
     );
+    // Enlarge kernel buffers so the RakNet handshake burst + chunk-load
+    // spike don't spend microseconds queueing behind the default 200 KiB
+    // send/recv sizes.
+    apply_udp_buffer_sizes(&server, "udp listener");
     let sessions: SessionMap = Arc::new(Mutex::new(HashMap::new()));
     let shared_pong: SharedPongCache = Arc::new(StdMutex::new(None));
 
@@ -278,6 +283,9 @@ async fn obtain_session(
         })
         .await?,
     );
+    // Same reasoning as the listener bind: the RakNet handshake wants big
+    // buffers to avoid drops during the initial burst to the backend.
+    apply_udp_buffer_sizes(&socket, "udp upstream session");
 
     let mut guard = sessions.lock().await;
     if let Some(existing) = guard.get(&peer) {
