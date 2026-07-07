@@ -1,16 +1,3 @@
-//! Automatic host firewall configuration.
-//!
-//! When FerrumProxy binds a listener, the socket is only reachable from the
-//! outside if the OS firewall lets the traffic in. On stock Ubuntu boxes that
-//! typically means `ufw` is enabled but doesn't have a rule for the port; on
-//! RHEL-family systems it's `firewalld`; on Windows it's Windows Defender
-//! Firewall. This module papers over the difference: at startup it detects
-//! which firewall (if any) is active and adds an ACCEPT rule for each listener
-//! port -- but only if an equivalent rule doesn't already exist. Failure is
-//! non-fatal: we log the exact command the user should run manually and keep
-//! going, because a proxy that refuses to start because it can't touch the
-//! firewall is way worse UX than one that just tells you what to type.
-
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
@@ -18,16 +5,11 @@ use tracing::{debug, info, warn};
 
 use crate::config::{ListenerRule, Protocol};
 
-/// User-facing config knob. Lives under `firewall:` in `config.yml`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FirewallConfig {
-    /// Master switch. When `false`, we never touch the OS firewall -- useful
-    /// if you're behind a cloud LB / security group and the host firewall is
-    /// already permissive (or intentionally strict).
     pub enabled: bool,
-    /// Which firewall backend to use. `Auto` = probe and pick the first one
-    /// that looks active. The named variants force a specific tool.
+
     pub mode: FirewallMode,
 }
 
@@ -52,7 +34,6 @@ pub enum FirewallMode {
     Netsh,
 }
 
-/// A concrete firewall backend that was detected/selected at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {
     Ufw,

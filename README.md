@@ -44,21 +44,35 @@
 
 ## 🎯 なぜ FerrumProxy？
 
-### 実測ベンチマーク結果
+### 実測ベンチマーク結果 (UDP + TCP)
 
-**ローカルループバック UDP echo で 1000 パケット × 2 パターン計測** (自前計測ツール `benches_udp/` で誰でも再現可):
+**ローカルループバック echo で 1000 メッセージ × 512 バイト payload** (自前計測ツール `benches_udp/` で誰でも再現可、Python 3 標準ライブラリのみ / Windows・Ubuntu 共通):
+
+#### UDP (Bedrock の基盤プロトコル)
 
 | 指標 | Baseline (直接) | FerrumProxy 経由 | オーバーヘッド |
 |---|---:|---:|---:|
-| **Mean 遅延** | 0.117 ms | **0.133 ms** | +0.016 ms (+13%) |
-| **P50** | 0.088 ms | 0.098 ms | +0.010 ms |
-| **P90** | 0.133 ms | 0.153 ms | +0.020 ms |
-| **P99** | 0.245 ms | **0.212 ms** | **-0.033 ms (proxy の方が速い)** |
-| **Max** | 19.91 ms | **14.77 ms** | **-5.14 ms** |
+| **Mean 遅延** | 0.047 ms | **0.048 ms** | **+0.001 ms (+3%)** |
+| **P50** | 0.041 ms | 0.045 ms | +0.005 ms |
+| **P90** | 0.073 ms | **0.054 ms** | **-0.019 ms (proxy の方が速い)** |
+| **P99** | 0.099 ms | 0.097 ms | -0.001 ms |
+| **Total (1000 msg)** | 48.0 ms | 48.8 ms | **+0.7 ms** |
 | **パケットロス** | 0/1000 | **0/1000** | 0% |
 
-> **1 パケットあたり proxy 由来のオーバーヘッドは たった 16 マイクロ秒** (=0.000016 秒)。
-> しかも P99 と Max では **kernel 直接転送より安定**しています (バッファチューニングの効果)。
+#### TCP (Java Minecraft, HTTP など)
+
+| 指標 | Baseline (直接) | FerrumProxy 経由 | オーバーヘッド |
+|---|---:|---:|---:|
+| **Mean 遅延** | 0.030 ms | **0.050 ms** | +0.020 ms |
+| **P50** | 0.028 ms | 0.047 ms | +0.020 ms |
+| **P90** | 0.035 ms | 0.057 ms | +0.023 ms |
+| **P99** | 0.059 ms | 0.092 ms | +0.033 ms |
+| **Total (1000 msg)** | 30.3 ms | 50.7 ms | **+20.3 ms** |
+| **ロス** | 0/1000 | **0/1000** | 0% |
+
+> **UDP は proxy 由来のオーバーヘッドが実質ゼロ** (mean +1μs、P90 は proxy の方が速い)。
+> **TCP は 1 メッセージあたり +20μs** = 秒間 5 万リクエスト捌いても遅延 1 秒未満。
+> 実運用のネットワーク RTT (~10-100 ms) に埋もれる誤差レベル。
 
 ### 一目でわかるアーキテクチャ
 
@@ -275,7 +289,7 @@ ddosGuard:
 # Windows
 .\ferrum-proxy.exe --config config.yml
 ```
-    
+
 ---
 
 ## 🖥 FerrumGUI (Web 管理画面)
@@ -284,117 +298,47 @@ ddosGuard:
 
 ### 主要機能
 
-- 📊 リアルタイムモニタリング (接続数、帯域、CPU)
-- ⚙️ 設定エディター (プリセット選択でワンクリック)
-- 🔄 バイナリ自動更新
-- 👥 プレイヤー IP 履歴
-- 🛡 DDoS Guard 設定 (Balanced / Strict / Off)
-- ⚡ UDP セッションタイムアウト設定 (5 プリセット: Fast/Default/Balanced/Persistent/Extreme)
-- 🌐 High-latency mode (遠隔クライアント用)
+- リアルタイムモニタリング (接続数、帯域、CPU)
+- 設定エディター (プリセット選択でワンクリック)
+- バイナリ自動更新
+- プレイヤー IP 履歴
+- DDoS Guard 設定 (Balanced / Strict / Off)
+- UDP セッションタイムアウト設定 (5 プリセット: Fast/Default/Balanced/Persistent/Extreme)
+- High-latency mode (遠隔クライアント用)
 
 詳細は [`FerrumGUI/README.md`](FerrumGUI/README.md) を参照。
 
 ---
 
-## 🏗 ビルド (ソースから)
+## ベンチマークを自分で試す
 
-### 前提
-
-- Rust stable (`rustup install stable`)
-- Cargo
-- Bun 1.0+ (GUI をビルドする場合のみ)
-
-### コマンド
+付属の `benches_udp/` スクリプト (Python 3 標準ライブラリのみ、追加インストール不要) で、手元マシンで UDP + TCP の両方のオーバーヘッドを一括計測できます。**Windows / Ubuntu / macOS 共通**:
 
 ```bash
-cargo build --release
-# 出力: target/release/ferrum-proxy
-```
-
-CMake ラッパー経由の場合:
-
-```bash
-cmake -S . -B build
-cmake --build build --config Release
-```
-
-### 全プラットフォーム一括ビルド
-
-```bash
-./scripts/build-all.sh          # Linux / macOS
-.\scripts\build-all.ps1          # Windows
-```
-
-出力先:
-
-- `target/build/windows-x64/ferrum-proxy.exe`
-- `target/build/linux-x64/ferrum-proxy`
-- `target/build/linux-arm64/ferrum-proxy`
-- `target/build/macos-x64/ferrum-proxy`
-- `target/build/macos-arm64/ferrum-proxy`
-
----
-
-## 📁 プロジェクト構造
-
-```
-FerrumProxy/
-├── 🦀 src/                  Rust ソースコード (プロキシ本体)
-│   ├── main.rs              エントリポイント
-│   ├── tcp.rs               TCP 転送ロジック
-│   ├── udp.rs               UDP / Bedrock 転送ロジック
-│   ├── bedrock.rs           Bedrock RakNet プロトコル
-│   ├── proxy_protocol.rs    PROXY v2 ヘッダー処理
-│   ├── http_rewrite.rs      HTTP パス書き換え
-│   ├── tls_config.rs        TLS / Let's Encrypt 検出
-│   ├── ddos_guard.rs        DDoS 保護
-│   └── ...
-├── 🖥 FerrumGUI/            設定管理 GUI (Bun + React)
-├── 🔌 FerrumClient/         クライアント (Tauri デスクトップアプリ)
-├── 📊 benches_udp/          UDP ベンチマークスクリプト
-├── 📚 docs/                 詳細ドキュメント
-│   ├── configuration.md
-│   ├── FerrumProxy.md
-│   ├── FerrumProxyGUI.md
-│   └── listeners.md
-├── config.example.yml       設定ファイルの見本
-└── README.md                このファイル
-```
-
----
-
-## 📚 詳細ドキュメント
-
-| ドキュメント | 内容 |
-|---|---|
-| [`docs/FerrumProxy.md`](docs/FerrumProxy.md) | プロキシ本体の全機能ガイド |
-| [`docs/FerrumProxyGUI.md`](docs/FerrumProxyGUI.md) | GUI の使い方 |
-| [`docs/configuration.md`](docs/configuration.md) | `config.yml` のフルリファレンス |
-| [`docs/listeners.md`](docs/listeners.md) | リスナー / ターゲット設定 |
-| [`docs/manager-api.md`](docs/manager-api.md) | 管理 REST API 仕様 |
-| [`docs/shared-service-design.md`](docs/shared-service-design.md) | 公開ポート共有機能の設計 |
-
----
-
-## 🔬 ベンチマークを自分で試す
-
-付属の `benches_udp/` スクリプトで、手元マシンでのオーバーヘッドを計測できます:
-
-```powershell
 cd benches_udp
-.\run_bench.ps1 -Count 1000                # 通常モード
-.\run_bench.ps1 -Count 1000 -Haproxy       # PROXY v2 header あり
+python3 run_bench.py --count 1000 --size 512           # UDP + TCP
+python3 run_bench.py --count 1000 --haproxy            # PROXY v2 header あり
+python3 run_bench.py --skip-tcp                        # UDP だけ
+python3 run_bench.py --skip-udp                        # TCP だけ
 ```
+
+Windows PowerShell では `python3` の代わりに `python` を使ってください。
 
 出力例:
 
 ```
-=== 4/4  PROXIED bench (through FerrumProxy) ===
-Target  : 127.0.0.1:40001
-Count   : 1000
-Lost    : 0
-MeanMs  : 0.133
-P99Ms   : 0.212
+=== UDP (1000 messages, 512 bytes) ===
+metric        baseline     proxied    delta_ms     ratio
+--------------------------------------------------------
+mean_ms         0.0472      0.0484     +0.0012      1.03
+p90_ms          0.0728      0.0541     -0.0187      0.74
+p99_ms          0.0985      0.0974     -0.0011      0.99
+
+=== TCP (1000 messages, 512 bytes) ===
+metric        baseline     proxied    delta_ms     ratio
+--------------------------------------------------------
+mean_ms         0.0298      0.0502     +0.0204      1.68
+p99_ms          0.0590      0.0924     +0.0334      1.57
 ```
 
 > **注意**: ローカルループバックの計測です。実運用では **ネットワーク遅延** が支配的で、
@@ -432,24 +376,11 @@ Web (HTTP/HTTPS) だけなら nginx で十分です。
 
 ---
 
-## 🌟 プロジェクトの理念
-
-> **「難しくない」ことに全振り**
-
-- 設定は最小限で動く
-- GUI で全部いじれる
-- 単一バイナリで配布
-- パフォーマンスは Rust に任せる
-- 「よくわからんけど動いた」で十分
-
----
-
 ## 🤝 コントリビュート
 
 バグ報告・機能提案・PR、大歓迎です！
 
 - 🐛 [Issues](https://github.com/gamelist1990/FerrumProxy/issues)
-- 💡 [Discussions](https://github.com/gamelist1990/FerrumProxy/discussions)
 - 🔧 [Pull Requests](https://github.com/gamelist1990/FerrumProxy/pulls)
 
 ---
@@ -464,6 +395,6 @@ Web (HTTP/HTTPS) だけなら nginx で十分です。
 
 **⭐ 使ってみて気に入ったら Star お願いします！**
 
-[GitHub](https://github.com/gamelist1990/FerrumProxy) · [Releases](https://github.com/gamelist1990/FerrumProxy/releases) · [Issues](https://github.com/gamelist1990/FerrumProxy/issues) · [Docs](docs/)
+[GitHub](https://github.com/gamelist1990/FerrumProxy) · [Releases](https://github.com/gamelist1990/FerrumProxy/releases) · [Issues](https://github.com/gamelist1990/FerrumProxy/issues)
 
 </div>

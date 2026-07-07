@@ -11,12 +11,6 @@ const TEMP_BLOCK_BASE: Duration = Duration::from_secs(20);
 const TEMP_BLOCK_MAX: Duration = Duration::from_secs(10 * 60);
 const IDLE_STATE_RETENTION: Duration = Duration::from_secs(10 * 60);
 
-/// Tunable DDoS-guard thresholds.
-///
-/// Defaults are relaxed enough for HTTP/HTTPS reverse-proxy use — a browser
-/// opens many parallel connections to load a single page, so the previous
-/// 12 conn/s limit dropped legitimate asset/XHR connections and left pages
-/// rendering without their body. UDP defaults stay sized for real-time gaming.
 #[derive(Debug, Clone)]
 pub struct DdosGuardSettings {
     pub enabled: bool,

@@ -31,38 +31,21 @@ pub struct ProxyConfig {
     pub ddos_guard: DdosGuardConfig,
     #[serde(default)]
     pub high_latency: HighLatencyConfig,
-    /// Automatic OS firewall (ufw / firewalld / iptables / nftables / netsh)
-    /// configuration. Enabled by default: when FerrumProxy starts it probes
-    /// which firewall is active on the host and adds ACCEPT rules for every
-    /// listener port that doesn't already have one. Set `enabled: false` when
-    /// the host firewall is intentionally managed externally (cloud LB,
-    /// security group, another config-management tool).
+
     #[serde(default)]
     pub firewall: FirewallConfig,
     pub listeners: Vec<ListenerRule>,
 }
 
-/// Optional "very slow client" mode.
-///
-/// When `enabled` is true, we stretch the three latency-sensitive timeouts
-/// (initial-client-data, backend connect, UDP session idle) so that clients
-/// with 1000ms+ RTT can complete their handshake and stay connected without
-/// being torn down. Defaults are conservative: safe for a normal LAN game
-/// server, tight enough that scanners get dropped fast.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HighLatencyConfig {
-    /// Master switch. When `false`, the other fields are ignored and we use the
-    /// legacy hard-coded defaults (10s / 10s / 60s).
     pub enabled: bool,
-    /// How long we wait for the client to send the first byte(s) after the
-    /// TCP/TLS handshake completes. Higher = tolerates slow satellite links.
+
     pub initial_client_data_timeout_ms: u64,
-    /// How long we wait to `connect()` to a backend target. Higher = tolerates
-    /// slow SYN-ACK on distant backends.
+
     pub connect_timeout_ms: u64,
-    /// How long a UDP session can be idle before we tear it down. Higher =
-    /// tolerates users who briefly disappear (mobile networks, tunneling).
+
     pub udp_session_idle_timeout_ms: u64,
 }
 
@@ -78,7 +61,6 @@ impl Default for HighLatencyConfig {
 }
 
 impl HighLatencyConfig {
-    /// Preset for extremely laggy clients (1000ms - 5000ms RTT).
     #[allow(dead_code)]
     pub fn preset_extreme() -> Self {
         Self {
@@ -89,8 +71,6 @@ impl HighLatencyConfig {
         }
     }
 
-    /// Resolve the initial-client-data timeout, using the legacy default when
-    /// the feature is disabled.
     pub fn effective_initial_client_data_timeout(&self) -> std::time::Duration {
         if self.enabled {
             std::time::Duration::from_millis(self.initial_client_data_timeout_ms)
@@ -116,8 +96,6 @@ impl HighLatencyConfig {
     }
 }
 
-/// Serializable DDoS-guard thresholds. Missing fields fall back to the relaxed,
-/// HTTP-friendly defaults (see [`DdosGuardSettings::default`]).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DdosGuardConfig {

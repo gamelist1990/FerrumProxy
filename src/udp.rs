@@ -23,84 +23,36 @@ use crate::tcp_tuning::apply_udp_buffer_sizes;
 
 const MAX_DATAGRAM_SIZE: usize = 65_535;
 
-/// Sessions live in a std::sync::Mutex (NOT tokio::sync::Mutex) even though
-/// this is an async codebase. Rationale:
-///
-///   * Every packet does a `sessions.lock()` at least once, and one Bedrock
-///     join fires 200+ packets in bursts.
-///   * tokio's async Mutex is optimised for *long* critical sections and
-///     for holding across `.await` points -- neither applies here. Its
-///     acquire path always registers the task with a waiter list and yields
-///     to the scheduler, and on a shared-vCPU host (e.g. Xserver free tier)
-///     that scheduler round-trip costs tens to hundreds of microseconds.
-///   * Our critical sections are pure map ops (get / insert / remove) that
-///     complete in microseconds without any `.await`. std::sync::Mutex takes
-///     a single atomic op in the uncontended case, which is *what the`n///     workload actually is* -- there is one listener task producing all
-///     the accesses so there is no contention.
-///
-/// Just make sure nothing inside the guard is `.await`ed.
 type SessionMap = Arc<StdMutex<HashMap<SocketAddr, Arc<UdpSession>>>>;
 
-/// Listener-wide cache of the most recent backend UNCONNECTED_PONG.
-/// Shared across every session on a listener so a fresh pong from one client
-/// can be replayed instantly to future pings from any client without another
-/// backend round-trip.
 type SharedPongCache = Arc<StdMutex<Option<CachedPong>>>;
 
 #[derive(Clone)]
 struct CachedPong {
-    /// Fully rewritten pong (post port-fix + name-quote-strip) ready to relay.
-    /// Only the timestamp field (bytes 1..9) still needs per-ping rewriting.
     payload: Vec<u8>,
-    /// When this pong was captured from the backend.
+
     updated_at: Instant,
 }
 
-/// If the shared pong cache is fresher than this, we skip forwarding the ping
-/// to the backend entirely -- replaying the cached pong is enough for a MOTD
-/// refresh, saving a full backend RTT + one backend send/recv per ping.
 const PONG_CACHE_FRESH_MS: u64 = 3_000;
 
-/// Per-client relay state.
-///
-/// Sessions are shared via `Arc` and mutated in place through atomics / small
-/// locks. Nothing is ever cloned-out and written back, which removes the
-/// read-modify-write races (including the "resurrected session" bug) that the
-/// previous `insert`-on-every-datagram design suffered from.
 struct UdpSession {
-    /// Dedicated upstream socket for this client.
     socket: Arc<UdpSocket>,
-    /// Index of the currently selected upstream target (failover cursor).
+
     active_target_index: AtomicUsize,
-    /// Whether a PROXY v2 header has already been prepended on this socket.
+
     header_sent: AtomicBool,
-    /// Whether the connect webhook/notification has fired.
+
     notified: AtomicBool,
-    /// True once we have seen a connected FrameSet from the client. A fresh
-    /// OpenConnectionRequest1 arriving after this point means a real reconnect.
+
     established: AtomicBool,
-    /// Handle to the backend receive loop, so teardown can abort it promptly.
+
     recv_task: StdMutex<Option<JoinHandle<()>>>,
-    /// Session start monotonic reference. `last_activity_ms` is stored as ms
-    /// since this instant so we can compute idle time without allocating.
+
     session_start: Instant,
-    /// Milliseconds since `session_start` of the last observed activity in
-    /// **either direction** (client->backend send OR backend->client recv).
-    /// The receive loop uses this instead of a raw `recv_from` timeout so a
-    /// silent backend (e.g. world-load pause) doesn't tear down a session
-    /// that is still actively receiving client packets.
+
     last_activity_ms: AtomicU64,
-    /// Per-target resolved socket address cache. Indexed by target index in
-    /// `rule.targets_for(Protocol::Udp)`. `None` means "not resolved yet".
-    ///
-    /// This is critical: without it, `send_to_target()` called
-    /// `resolve_target_addr()` (= `lookup_host()` = getaddrinfo/DNS) on
-    /// EVERY forwarded packet. On a stock Linux without a DNS cache daemon
-    /// (systemd-resolved / nscd) each RakNet handshake packet would sync-
-    /// block for the DNS RTT, and with ~20 handshake packets + hundreds of
-    /// world-load packets this alone accounted for tens of seconds on the
-    /// "参加" -> "接続完了" timeline. Resolve once at session creation,
-    /// reuse forever after.
+
     resolved_targets: StdMutex<Vec<Option<SocketAddr>>>,
 }
 
@@ -133,9 +85,7 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
             .await
             .with_context(|| format!("failed to bind UDP listener {bind}"))?,
     );
-    // Enlarge kernel buffers so the RakNet handshake burst + chunk-load
-    // spike don't spend microseconds queueing behind the default 200 KiB
-    // send/recv sizes.
+
     apply_udp_buffer_sizes(&server, "udp listener");
     let sessions: SessionMap = Arc::new(StdMutex::new(HashMap::new()));
     let shared_pong: SharedPongCache = Arc::new(StdMutex::new(None));
@@ -146,8 +96,6 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     loop {
         let (len, peer) = server.recv_from(&mut buf).await?;
         let packet = buf[..len].to_vec();
-
-        // IMPORTANT: シーケンシャル処理にする。
 
         if let Err(err) = handle_datagram(
             Arc::clone(&server),
@@ -175,12 +123,7 @@ async fn handle_datagram(
     packet: Vec<u8>,
 ) -> Result<()> {
     let mut original_client = peer;
-    // Fast path: the overwhelming majority of Bedrock datagrams do NOT carry
-    // a PROXY v2 header prepended by an upstream LB, so avoid the parse
-    // (and its allocation churn) when the leading bytes obviously aren't
-    // the PROXY v2 signature '\r\n\r\n\0\r\nQUIT\n'. This saves both a
-    // function call and a small heap allocation on the hot path -- meaningful
-    // on shared/low-clock VPS boxes where each syscall/malloc costs more.
+
     let payload: &[u8] = if packet.len() >= 12 && &packet[..12] == b"\r\n\r\n\0\r\nQUIT\n" {
         let parsed = parse_proxy_chain(&packet).unwrap_or_else(|_| {
             crate::proxy_protocol::ParsedProxyChain {
@@ -215,9 +158,6 @@ async fn handle_datagram(
         return Ok(());
     }
 
-    // Skip the description helpers unless debug logging is actually enabled.
-    // They allocate Strings and walk the RakNet frame set for a log line that
-    // no one reads at release log-level -- a real overhead on 200-pkt bursts.
     if tracing::enabled!(tracing::Level::DEBUG) {
         if let Some(description) = describe_offline_ping(payload) {
             debug!("Bedrock offline ping from {original_client} via {peer}: {description}");
@@ -226,12 +166,6 @@ async fn handle_datagram(
         }
     }
 
-    // Bedrock offline-ping fast path: try the listener-wide shared pong cache
-    // first. If the cache is fresh (<PONG_CACHE_FRESH_MS since last backend
-    // pong), we serve the client immediately AND skip forwarding to the
-    // backend entirely. If the cache is stale/absent, we still serve from it
-    // (if we have anything at all) and then fall through so the backend gets
-    // pinged and the cache is refreshed.
     if is_offline_ping(payload) {
         let cached = shared_pong.lock().unwrap().clone();
         let mut cache_is_fresh = false;
@@ -259,11 +193,8 @@ async fn handle_datagram(
             }
         }
         if cache_is_fresh {
-            // Fresh cache: no session/backend traffic needed. All done.
             return Ok(());
         }
-        // Empty or stale cache: fall through so the backend is pinged and
-        // spawn_backend_recv publishes the fresh pong to shared_pong.
     }
 
     let is_new_conn = is_open_connection_request_1(&payload);
@@ -280,7 +211,6 @@ async fn handle_datagram(
 
     try_send_udp(&rule, &runtime, &session, original_client, payload).await?;
 
-    // Refresh the bidirectional idle marker: this client is clearly alive.
     session.touch();
 
     if matches!(payload.first(), Some(0x80..=0x8d)) {
@@ -294,14 +224,6 @@ async fn handle_datagram(
     Ok(())
 }
 
-/// Returns the session for `peer`, creating one if needed.
-///
-/// 以前は「established なセッションに OpenConnectionRequest1 (0x05) が来たら
-/// 再接続とみなして即リセット」していたが、これは Bedrock クライアントが
-/// パケットロス時に 0x05 を再送するケースで**進行中のセッションを勝手に破棄**
-/// してしまい、Geyser 側 RakNet が古い upstream ソケットに応答を送り続けて
-/// TIMED_OUT を引き起こしていた。
-///
 async fn obtain_session(
     server: &Arc<UdpSocket>,
     sessions: &SessionMap,
@@ -326,8 +248,7 @@ async fn obtain_session(
         })
         .await?,
     );
-    // Same reasoning as the listener bind: the RakNet handshake wants big
-    // buffers to avoid drops during the initial burst to the backend.
+
     apply_udp_buffer_sizes(&socket, "udp upstream session");
 
     let mut guard = sessions.lock().unwrap();
@@ -363,13 +284,6 @@ async fn obtain_session(
     Ok(session)
 }
 
-/// Removes and tears down the session for `peer`. The map `remove` is the
-/// single source of truth for who fires the close metric, so this never
-/// double-counts against the backend receive loop's own natural-exit cleanup.
-///
-/// 現在は client 側 payload の内容による明示的 close は行っておらず、
-/// backend 受信ループの自然終了 (idle timeout / backend disconnect / EOF)
-/// に一本化しているので未使用だが、将来別経路で必要になった時に備えて残す。
 #[allow(dead_code)]
 async fn close_session(sessions: &SessionMap, runtime: &AppRuntime, peer: SocketAddr) {
     let removed = { sessions.lock().unwrap().remove(&peer) };
@@ -388,16 +302,6 @@ fn spawn_backend_recv(
     shared_pong: SharedPongCache,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
-    // NOTE: 以前は `timeout(udp_session_idle, recv_from)` を回して 1 回でも
-    // 時間切れになったら break していた。しかしそれは「backend が沈黙した
-    // 時間」しか測っていない片方向 idle だった。Bedrock/Geyser の world load
-    // 中は backend 応答が数秒〜十数秒沈黙することが普通にある一方、client は
-    // ACK/移動パケットを送り続けているので、そのタイミングでセッションを
-    // 破棄すると upstream socket が入れ替わって TIMED_OUT を引き起こす。
-    //
-    // 修正: recv_from は短い interval (1s) で poll し、実際の idle 判定は
-    // `session.last_activity_ms` (両方向で更新される) を見る。これで backend
-    // が沈黙していても client 側送信が続いていればセッションを保つ。
     let idle_budget = runtime.timeouts.udp_session_idle;
     let poll_interval = std::time::Duration::from_secs(1);
     tokio::spawn(async move {
@@ -442,9 +346,7 @@ fn spawn_backend_recv(
                                 "Bedrock pong from backend {backend_addr} to {peer}: {description}"
                             );
                         }
-                        // Publish the freshly-rewritten pong to the
-                        // listener-wide cache so future pings from any peer
-                        // can be served without another backend round-trip.
+
                         *shared_pong.lock().unwrap() = Some(CachedPong {
                             payload: response.clone(),
                             updated_at: Instant::now(),
@@ -462,7 +364,6 @@ fn spawn_backend_recv(
                     runtime.metrics.udp_target_to_client_bytes(response.len());
                     debug!("UDP {backend_addr} -> {peer} {}B", response.len());
 
-                    // Backend からの受信もセッション活性としてカウント。
                     session.touch();
                 }
                 Ok(Err(err)) => {
@@ -470,9 +371,6 @@ fn spawn_backend_recv(
                     break;
                 }
                 Err(_) => {
-                    // poll_interval 分だけ backend が沈黙しただけ。
-                    // 実際の idle は last_activity_ms (両方向で更新される)
-                    // で判定して、idle_budget を超えていたら破棄。
                     let idle_ms = session.ms_since_last_activity();
                     if idle_ms >= idle_budget.as_millis() as u64 {
                         debug!(
@@ -483,7 +381,6 @@ fn spawn_backend_recv(
                         maybe_notify_disconnect(&runtime, &rule, peer).await;
                         break;
                     }
-                    // まだ活動中: 何もせず次の poll へ
                 }
             }
         }
@@ -628,11 +525,6 @@ async fn send_to_target(
     target_index: usize,
     force_proxy_header: bool,
 ) -> Result<()> {
-    // Try the per-session resolved-address cache first. If we've already
-    // sent to this target on this session, skip the DNS/getaddrinfo hop
-    // entirely -- otherwise every RakNet handshake packet would sync-block
-    // waiting for the resolver, which is the actual reason the join takes
-    // ~30 seconds via FerrumProxy vs ~5s via a raw pass-through.
     let cached = {
         let slots = session.resolved_targets.lock().unwrap();
         slots.get(target_index).copied().flatten()
@@ -648,14 +540,6 @@ async fn send_to_target(
         resolved
     };
 
-    // Hot-path allocation strategy:
-    //   * No PROXY header needed (most common on internal setups) -> send the
-    //     original payload slice directly, zero allocation.
-    //   * PROXY header needed -> allocate exactly ONE Vec with the final size
-    //     upfront (header + payload) and copy both parts in. Previously this
-    //     did payload.to_vec() and then [header, out].concat(), which is up to
-    //     3 allocations + 2 copies per forwarded packet -- a real burn on
-    //     shared / low-clock VPS boxes where malloc is measured in microseconds.
     let need_header =
         rule.haproxy && (force_proxy_header || !session.header_sent.load(Ordering::Relaxed));
 
@@ -686,9 +570,6 @@ async fn send_to_target(
         session.socket.send_to(&out, target_addr).await?;
         out.len()
     } else {
-        // No allocation, no copy: hand the borrowed payload straight to the
-        // kernel. This is the shape of the vast majority of packets after
-        // the very first one on any given session.
         session.socket.send_to(payload, target_addr).await?;
         payload.len()
     };

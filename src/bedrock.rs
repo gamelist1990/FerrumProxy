@@ -20,9 +20,6 @@ pub fn is_offline_ping(payload: &[u8]) -> bool {
     ) && payload[9..25] == RAKNET_OFFLINE_MESSAGE_ID
 }
 
-/// True when the datagram is a RakNet OpenConnectionRequest1 (0x05), i.e. the
-/// very first packet of a brand-new connection attempt. Used to distinguish a
-/// genuine (re)connect from ordinary in-session traffic.
 pub fn is_open_connection_request_1(payload: &[u8]) -> bool {
     payload.len() >= 18 && payload[0] == 0x05 && payload[1..17] == RAKNET_OFFLINE_MESSAGE_ID
 }
@@ -333,11 +330,6 @@ pub fn rewrite_unconnected_pong_ports(payload: &[u8], listener_port: u16) -> Opt
     Some(out)
 }
 
-/// Removes a single balanced pair of surrounding double quotes from the server
-/// name (MOTD field index 1). Some vanilla setups configure `server-name` in
-/// server.properties with quotes (e.g. `server-name="My Server"`), and the
-/// Bedrock server broadcasts those quotes verbatim, so clients see `"My Server"`
-/// in the server list. Returns `None` when there is nothing to strip.
 pub fn strip_unconnected_pong_name_quotes(payload: &[u8]) -> Option<Vec<u8>> {
     let parsed = parse_unconnected_pong(payload)?;
     let mut parts = parsed

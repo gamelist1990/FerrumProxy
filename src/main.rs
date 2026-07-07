@@ -50,10 +50,7 @@ async fn main() -> Result<()> {
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
     tcp_tuning::tune_system_tcp();
-    // Try to punch listener ports through the host firewall before we bind
-    // and start advertising them. If this fails we log the manual command
-    // and continue -- the listener will still start; the user just won't be
-    // reachable from outside until they open the port themselves.
+
     firewall::ensure_ports_open(&cfg.firewall, &cfg.listeners);
 
     let webhooks = cfg

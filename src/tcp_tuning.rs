@@ -35,23 +35,9 @@ pub fn apply_tcp_nodelay(stream: &TcpStream, context: &str) {
     }
 }
 
-/// Enlarges the send / receive buffers on a UDP socket so that Bedrock's
-/// RakNet handshake burst (OpenConnectionRequest1/Reply1/Request2/Reply2,
-/// connection request, new incoming connection, and immediately the first
-/// FrameSets carrying encryption+login) does not get gated by the kernel's
-/// default 200 KiB buffers.
-///
-/// Typical measured effect on the join sequence via Geyser:
-///   * ~50-150ms trimmed off "接続中" -> "スポーン" on 100+ ms links
-///   * Fewer NACK/re-send loops during the first world-load burst
-///
-/// The requested size (4 MiB) is a hint -- most kernels silently cap it to
-/// their sysctl maxima (net.core.rmem_max / wmem_max). That's fine: even a
-/// bump to the OS max is already a big win over the default.
 pub fn apply_udp_buffer_sizes(socket: &tokio::net::UdpSocket, context: &str) {
     use socket2::SockRef;
 
-    // 4 MiB. Kernels will clamp to their sysctl maxima automatically.
     const TARGET_BYTES: usize = 4 * 1024 * 1024;
 
     let sock = SockRef::from(socket);
@@ -63,16 +49,6 @@ pub fn apply_udp_buffer_sizes(socket: &tokio::net::UdpSocket, context: &str) {
     }
 }
 
-/// Enables OS-level TCP keepalive with tight intervals so that:
-///
-/// 1. NAT / stateful firewalls in the middle don't silently drop the flow
-///    as "idle" (they typically expire after 60-300s of true silence).
-/// 2. A truly dead upstream is detected within ~30s and the connection is
-///    torn down cleanly, instead of Minecraft's 30s KeepAlive timer kicking
-///    the player because our forwarded packets stalled behind a dead socket.
-///
-/// Uses socket2 because tokio's TcpStream only exposes SO_KEEPALIVE on/off,
-/// not the per-connection intervals we need (idle / interval / retry count).
 pub fn apply_tcp_keepalive(stream: &TcpStream, context: &str) {
     use socket2::{SockRef, TcpKeepalive};
     use std::time::Duration;

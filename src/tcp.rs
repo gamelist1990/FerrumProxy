@@ -98,11 +98,7 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     }
 }
 
-/// True for disconnect kinds that are part of normal client / backend life-cycle
-/// (idle scanners, players quitting, backend restarting, etc.) — logged at DEBUG.
 fn is_benign_disconnect(msg: &str) -> bool {
-    // NOTE: 文字列マッチだけど anyhow の `{:#}` フォーマットで OS message が
-
     msg.contains(INITIAL_CLIENT_DATA_TIMEOUT_MSG)
         || msg.contains("Connection reset by peer")
         || msg.contains("Broken pipe")

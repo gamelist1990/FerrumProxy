@@ -15,10 +15,6 @@ use crate::webhook_queue::WebhookGroupNotifier;
 const BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
 const TIMESTAMP_TOLERANCE_MS: i64 = 30_000;
 
-/// Resolved TCP/UDP timeouts. Populated from `HighLatencyConfig` in
-/// `AppRuntime::new`, then read by the TCP/UDP hot paths through the shared
-/// runtime so that a config change (via GUI restart) takes effect without
-/// needing to touch every listener.
 #[derive(Debug, Clone, Copy)]
 pub struct TimeoutSettings {
     pub initial_client_data: Duration,
@@ -27,11 +23,6 @@ pub struct TimeoutSettings {
 }
 
 impl TimeoutSettings {
-    /// Baseline defaults — 10s TCP / 10s connect / 10s UDP idle.
-    ///
-    /// UDP idle は元々 60 秒だったが、Bedrock RakNet は接続中に 1 秒間隔以下で
-    /// パケットが飛ぶプロトコルなので、10 秒無通信ならほぼ確実に切れている。
-    /// 短くすることで client 側切断のゾンビセッション回収が早くなる。
     pub fn defaults() -> Self {
         Self {
             initial_client_data: Duration::from_secs(10),
@@ -58,7 +49,7 @@ pub struct AppRuntime {
     pub player_ip_mapper: PlayerIpMapper,
     pub metrics: PerformanceMetrics,
     pub ddos_guard: DdosGuard,
-    /// Effective timeouts for this run, resolved from `high_latency`.
+
     pub timeouts: TimeoutSettings,
 }
 
