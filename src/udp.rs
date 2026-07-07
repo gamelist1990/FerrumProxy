@@ -75,6 +75,18 @@ struct UdpSession {
     /// silent backend (e.g. world-load pause) doesn't tear down a session
     /// that is still actively receiving client packets.
     last_activity_ms: AtomicU64,
+    /// Per-target resolved socket address cache. Indexed by target index in
+    /// `rule.targets_for(Protocol::Udp)`. `None` means "not resolved yet".
+    ///
+    /// This is critical: without it, `send_to_target()` called
+    /// `resolve_target_addr()` (= `lookup_host()` = getaddrinfo/DNS) on
+    /// EVERY forwarded packet. On a stock Linux without a DNS cache daemon
+    /// (systemd-resolved / nscd) each RakNet handshake packet would sync-
+    /// block for the DNS RTT, and with ~20 handshake packets + hundreds of
+    /// world-load packets this alone accounted for tens of seconds on the
+    /// "参加" -> "接続完了" timeline. Resolve once at session creation,
+    /// reuse forever after.
+    resolved_targets: StdMutex<Vec<Option<SocketAddr>>>,
 }
 
 impl UdpSession {
@@ -292,6 +304,7 @@ async fn obtain_session(
         return Ok(Arc::clone(existing));
     }
 
+    let target_count = rule.targets_for(Protocol::Udp).len();
     let session = Arc::new(UdpSession {
         socket: Arc::clone(&socket),
         active_target_index: AtomicUsize::new(0),
@@ -301,6 +314,7 @@ async fn obtain_session(
         recv_task: StdMutex::new(None),
         session_start: Instant::now(),
         last_activity_ms: AtomicU64::new(0),
+        resolved_targets: StdMutex::new(vec![None; target_count]),
     });
     runtime.metrics.udp_session_opened();
 
@@ -583,7 +597,25 @@ async fn send_to_target(
     target_index: usize,
     force_proxy_header: bool,
 ) -> Result<()> {
-    let target_addr = resolve_target_addr(&target.host, target_port).await?;
+    // Try the per-session resolved-address cache first. If we've already
+    // sent to this target on this session, skip the DNS/getaddrinfo hop
+    // entirely -- otherwise every RakNet handshake packet would sync-block
+    // waiting for the resolver, which is the actual reason the join takes
+    // ~30 seconds via FerrumProxy vs ~5s via a raw pass-through.
+    let cached = {
+        let slots = session.resolved_targets.lock().unwrap();
+        slots.get(target_index).copied().flatten()
+    };
+    let target_addr = if let Some(addr) = cached {
+        addr
+    } else {
+        let resolved = resolve_target_addr(&target.host, target_port).await?;
+        let mut slots = session.resolved_targets.lock().unwrap();
+        if let Some(slot) = slots.get_mut(target_index) {
+            *slot = Some(resolved);
+        }
+        resolved
+    };
     let mut out = payload.to_vec();
 
     if rule.haproxy && (force_proxy_header || !session.header_sent.load(Ordering::Relaxed)) {
