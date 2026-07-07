@@ -75,16 +75,31 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     loop {
         let (len, peer) = server.recv_from(&mut buf).await?;
         let packet = buf[..len].to_vec();
-        let server = Arc::clone(&server);
-        let sessions = Arc::clone(&sessions);
-        let rule = Arc::clone(&rule);
-        let runtime = Arc::clone(&runtime);
 
-        tokio::spawn(async move {
-            if let Err(err) = handle_datagram(server, sessions, rule, runtime, peer, packet).await {
-                warn!("UDP datagram from {peer} failed: {err:#}");
-            }
-        });
+        // IMPORTANT: シーケンシャル処理にする。
+        //
+        // 以前は tokio::spawn で並列化していたが、RakNet の FrameSet は
+        // sequence number で順序管理されており、プロキシがパケット順序を
+        // 入れ替えると Bedrock クライアント/サーバー側が NACK を返して
+        // 大量のパケット再送が発生し、ワールドロード直後 (パケット密度が
+        // 高い時) に容易にセッションタイムアウトを引き起こしていた。
+        //
+        // handle_datagram は全て非同期 I/O のみ (sessions map lookup と
+        // 上流 send_to) なので、シーケンシャルでも他クライアントの処理は
+        // Tokio が正しく並行にスケジューリングする。バックエンドからの
+        // 受信は各セッションごとの独立タスクで処理される (spawn_backend_recv)。
+        if let Err(err) = handle_datagram(
+            Arc::clone(&server),
+            Arc::clone(&sessions),
+            Arc::clone(&rule),
+            Arc::clone(&runtime),
+            peer,
+            packet,
+        )
+        .await
+        {
+            warn!("UDP datagram from {peer} failed: {err:#}");
+        }
     }
 }
 
