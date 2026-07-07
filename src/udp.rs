@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::net::{lookup_host, UdpSocket};
@@ -46,6 +47,27 @@ struct UdpSession {
     cached_offline_pong: StdMutex<Option<Vec<u8>>>,
     /// Handle to the backend receive loop, so teardown can abort it promptly.
     recv_task: StdMutex<Option<JoinHandle<()>>>,
+    /// Session start monotonic reference. `last_activity_ms` is stored as ms
+    /// since this instant so we can compute idle time without allocating.
+    session_start: Instant,
+    /// Milliseconds since `session_start` of the last observed activity in
+    /// **either direction** (client->backend send OR backend->client recv).
+    /// The receive loop uses this instead of a raw `recv_from` timeout so a
+    /// silent backend (e.g. world-load pause) doesn't tear down a session
+    /// that is still actively receiving client packets.
+    last_activity_ms: AtomicU64,
+}
+
+impl UdpSession {
+    fn touch(&self) {
+        let elapsed = self.session_start.elapsed().as_millis() as u64;
+        self.last_activity_ms.store(elapsed, Ordering::Relaxed);
+    }
+
+    fn ms_since_last_activity(&self) -> u64 {
+        let now = self.session_start.elapsed().as_millis() as u64;
+        now.saturating_sub(self.last_activity_ms.load(Ordering::Relaxed))
+    }
 }
 
 impl UdpSession {
@@ -163,6 +185,9 @@ async fn handle_datagram(
 
     try_send_udp(&rule, &runtime, &session, original_client, &payload).await?;
 
+    // Refresh the bidirectional idle marker: this client is clearly alive.
+    session.touch();
+
     if matches!(payload.first(), Some(0x80..=0x8d)) {
         session.established.store(true, Ordering::Relaxed);
     }
@@ -219,6 +244,8 @@ async fn obtain_session(
         established: AtomicBool::new(false),
         cached_offline_pong: StdMutex::new(None),
         recv_task: StdMutex::new(None),
+        session_start: Instant::now(),
+        last_activity_ms: AtomicU64::new(0),
     });
     runtime.metrics.udp_session_opened();
 
@@ -259,15 +286,22 @@ fn spawn_backend_recv(
     runtime: Arc<AppRuntime>,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
+    // NOTE: 以前は `timeout(udp_session_idle, recv_from)` を回して 1 回でも
+    // 時間切れになったら break していた。しかしそれは「backend が沈黙した
+    // 時間」しか測っていない片方向 idle だった。Bedrock/Geyser の world load
+    // 中は backend 応答が数秒〜十数秒沈黙することが普通にある一方、client は
+    // ACK/移動パケットを送り続けているので、そのタイミングでセッションを
+    // 破棄すると upstream socket が入れ替わって TIMED_OUT を引き起こす。
+    //
+    // 修正: recv_from は短い interval (1s) で poll し、実際の idle 判定は
+    // `session.last_activity_ms` (両方向で更新される) を見る。これで backend
+    // が沈黙していても client 側送信が続いていればセッションを保つ。
+    let idle_budget = runtime.timeouts.udp_session_idle;
+    let poll_interval = std::time::Duration::from_secs(1);
     tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
         loop {
-            match timeout(
-                runtime.timeouts.udp_session_idle,
-                session.socket.recv_from(&mut buf),
-            )
-            .await
-            {
+            match timeout(poll_interval, session.socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, backend_addr))) => {
                     let mut response = buf[..len].to_vec();
                     if let Ok(parsed) = parse_proxy_chain(&response) {
@@ -319,15 +353,29 @@ fn spawn_backend_recv(
                     }
                     runtime.metrics.udp_target_to_client_bytes(response.len());
                     debug!("UDP {backend_addr} -> {peer} {}B", response.len());
+
+                    // Backend からの受信もセッション活性としてカウント。
+                    session.touch();
                 }
                 Ok(Err(err)) => {
                     error!("UDP backend socket for {peer} failed: {err}");
                     break;
                 }
                 Err(_) => {
-                    debug!("UDP session idle timeout {peer}");
-                    maybe_notify_disconnect(&runtime, &rule, peer).await;
-                    break;
+                    // poll_interval 分だけ backend が沈黙しただけ。
+                    // 実際の idle は last_activity_ms (両方向で更新される)
+                    // で判定して、idle_budget を超えていたら破棄。
+                    let idle_ms = session.ms_since_last_activity();
+                    if idle_ms >= idle_budget.as_millis() as u64 {
+                        debug!(
+                            "UDP session idle timeout {peer} ({}ms >= {}ms)",
+                            idle_ms,
+                            idle_budget.as_millis()
+                        );
+                        maybe_notify_disconnect(&runtime, &rule, peer).await;
+                        break;
+                    }
+                    // まだ活動中: 何もせず次の poll へ
                 }
             }
         }
