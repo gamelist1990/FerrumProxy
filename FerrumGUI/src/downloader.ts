@@ -101,11 +101,20 @@ function toVersionJsonPlatform(platform: FerrumProxyPlatform): string {
 /**
  * 固定タグの Release には version.json が同梱される。これが真の source of truth。
  * 直接 HTTP で version.json を取得するので GitHub API のレート制限を消費しない。
+ *
+ * `force = true` のときはブラウザ / CDN の中間キャッシュもバイパスするため、
+ *   - URL に `?t=<Date.now()>` を付ける (cache-buster)
+ *   - `Cache-Control: no-cache` / `Pragma: no-cache` を送る
+ * を組み合わせる。update 確認や self-update ではこちらを使う。
  */
-async function fetchVersionManifest(): Promise<Release | null> {
-  const url = `https://github.com/${GITHUB_REPO}/releases/download/${FERRUMPROXY_RELEASE_TAG}/version.json`;
+async function fetchVersionManifest(force = false): Promise<Release | null> {
+  const base = `https://github.com/${GITHUB_REPO}/releases/download/${FERRUMPROXY_RELEASE_TAG}/version.json`;
+  const url = force ? `${base}?t=${Date.now()}` : base;
+  const headers: Record<string, string> = force
+    ? { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
+    : {};
   try {
-    const res = await fetch(url, { redirect: 'follow' });
+    const res = await fetch(url, { redirect: 'follow', headers });
     if (!res.ok) {
       if (res.status === 404) return null;
       throw new Error(`version.json fetch failed: ${res.status} ${res.statusText}`);
@@ -142,15 +151,26 @@ function fallbackRelease(): Release {
   };
 }
 
-export async function getLatestRelease(): Promise<Release> {
-  const cached = releaseCache.get<Release>('latest');
-  if (cached) {
-    console.log(chalk.blue('Using cached latest release'));
-    return cached;
+/**
+ * @param force `true` のときはローカルキャッシュも中間 CDN もバイパスし、
+ *              毎回 GitHub Releases から version.json を取り直す。
+ *              update 確認や self-update パスは必ず force=true で呼ぶ。
+ */
+export async function getLatestRelease(force = false): Promise<Release> {
+  if (!force) {
+    const cached = releaseCache.get<Release>('latest');
+    if (cached) {
+      console.log(chalk.blue('Using cached latest release'));
+      return cached;
+    }
   }
 
-  console.log(chalk.blue(`Fetching version.json for ${FERRUMPROXY_RELEASE_TAG}...`));
-  const release = await fetchVersionManifest();
+  console.log(
+    chalk.blue(
+      `Fetching version.json for ${FERRUMPROXY_RELEASE_TAG}${force ? ' (force refresh)' : ''}...`
+    )
+  );
+  const release = await fetchVersionManifest(force);
   if (!release) {
     console.log(
       chalk.yellow('version.json unavailable, falling back to default "latest" placeholder')
@@ -161,24 +181,27 @@ export async function getLatestRelease(): Promise<Release> {
   }
 
   releaseCache.set('latest', release);
+  releaseCache.set('all', [release]);
   return release;
 }
 
-export async function getAllReleases(): Promise<Release[]> {
+export async function getAllReleases(force = false): Promise<Release[]> {
   // 固定タグ運用では単一リリースしか公開しないので、latest をそのまま返す。
-  const cached = releaseCache.get<Release[]>('all');
-  if (cached) {
-    return cached;
+  if (!force) {
+    const cached = releaseCache.get<Release[]>('all');
+    if (cached) {
+      return cached;
+    }
   }
-  const latest = await getLatestRelease();
+  const latest = await getLatestRelease(force);
   const list = [latest];
   releaseCache.set('all', list);
   return list;
 }
 
-export async function getReleaseByVersion(_version: string): Promise<Release> {
+export async function getReleaseByVersion(_version: string, force = false): Promise<Release> {
   // 固定タグでは常に最新版だけを扱う（過去バージョンは同一タグに残さない前提）。
-  return getLatestRelease();
+  return getLatestRelease(force);
 }
 
 /**

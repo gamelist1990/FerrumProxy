@@ -1144,7 +1144,8 @@ app.get('/api/self/version', async (_req, res) => {
     const selfUpdateSupported = isSelfUpdateSupported(isCompiled);
     let latest: Awaited<ReturnType<typeof fetchLatestGuiRelease>> = null;
     try {
-      latest = await fetchLatestGuiRelease();
+      // GUI ヘッダーの「更新確認」ボタンから毎回叩かれる。キャッシュ回避のため force=true。
+      latest = await fetchLatestGuiRelease(true);
     } catch (err: any) {
       // 取得失敗しても current だけは返す
       return res.json({
@@ -2170,7 +2171,9 @@ app.post('/api/instances/:id/listeners/:index/tls-assets', async (req, res) => {
 
 app.get('/api/updates/check', async (req, res) => {
   try {
-    const latestRelease = await getLatestRelease();
+    // 「更新確認 & 一括更新」ボタンから毎回叩かれる。ここは必ず最新の version.json を
+    // 取り直したいので force=true。ローカル 1 時間キャッシュも中間 CDN もバイパスする。
+    const latestRelease = await getLatestRelease(true);
     const instances = serviceManager.getAll();
 
     const updates = instances.map((instance) => ({
@@ -2194,7 +2197,8 @@ app.get('/api/updates/check', async (req, res) => {
 
 app.get('/api/releases/latest', async (req, res) => {
   try {
-    const release = await getLatestRelease();
+    // 明示的にリリースを問い合わせるエンドポイント。常に最新を返したい。
+    const release = await getLatestRelease(true);
     res.json(release);
   } catch (error: any) {
     console.error('Failed to fetch latest release:', error.message);
@@ -2204,7 +2208,7 @@ app.get('/api/releases/latest', async (req, res) => {
 
 app.get('/api/releases', async (req, res) => {
   try {
-    const releases = await getAllReleases();
+    const releases = await getAllReleases(true);
     res.json(releases);
   } catch (error: any) {
     console.error('Failed to fetch releases:', error.message);
@@ -2267,7 +2271,8 @@ app.post('/api/instances/:id/update', async (req, res) => {
     
     let targetVersion = version;
     if (version === 'latest') {
-      const latestRelease = await getLatestRelease();
+      // 実際にダウンロードする直前に最新版を取り直す（キャッシュ回避）
+      const latestRelease = await getLatestRelease(true);
       targetVersion = latestRelease.version;
     }
 
@@ -2276,8 +2281,8 @@ app.post('/api/instances/:id/update', async (req, res) => {
       return res.status(400).json({ error: 'Instance is already on this version' });
     }
 
-    // version.json.assets[].platform で解決する
-    const release = await getReleaseByVersion(targetVersion);
+    // version.json.assets[].platform で解決する（同じく force refresh）
+    const release = await getReleaseByVersion(targetVersion, true);
     const asset = resolveAssetForPlatform(release, instance.platform);
 
     if (!asset) {

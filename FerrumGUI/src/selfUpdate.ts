@@ -111,10 +111,20 @@ export interface GuiReleaseInfo {
 /**
  * `https://github.com/<repo>/releases/download/<tag>/version.json` を直接取得する。
  * GitHub API を叩かないのでレート制限の影響を受けない。
+ *
+ * `force = true` のときは cache-buster URL パラメータと no-cache ヘッダーで
+ * ブラウザ / CDN の中間キャッシュもバイパスする。GUI の更新確認押下時は必ず
+ * force=true を渡す。
  */
-export async function fetchGuiVersionManifest(): Promise<VersionManifest | null> {
-  const url = `https://github.com/${GUI_REPO}/releases/download/${GUI_TAG}/version.json`;
-  const res = await fetch(url, { redirect: 'follow' });
+export async function fetchGuiVersionManifest(
+  force = false
+): Promise<VersionManifest | null> {
+  const base = `https://github.com/${GUI_REPO}/releases/download/${GUI_TAG}/version.json`;
+  const url = force ? `${base}?t=${Date.now()}` : base;
+  const headers: Record<string, string> = force
+    ? { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
+    : {};
+  const res = await fetch(url, { redirect: 'follow', headers });
   if (!res.ok) {
     if (res.status === 404) return null;
     throw new Error(
@@ -129,8 +139,10 @@ export async function fetchGuiVersionManifest(): Promise<VersionManifest | null>
 }
 
 /** version.json を最新リリース情報として返す（呼び出し側との互換用）。 */
-export async function fetchLatestGuiRelease(): Promise<GuiReleaseInfo | null> {
-  const manifest = await fetchGuiVersionManifest();
+export async function fetchLatestGuiRelease(
+  force = false
+): Promise<GuiReleaseInfo | null> {
+  const manifest = await fetchGuiVersionManifest(force);
   if (!manifest) return null;
   const platformKey = getCurrentGuiPlatformKey();
   const asset = platformKey
@@ -209,7 +221,8 @@ export async function performGuiSelfUpdate(
     };
   }
 
-  const manifest = await fetchGuiVersionManifest();
+  // self-update は必ず最新の version.json を取り直す（キャッシュ回避）
+  const manifest = await fetchGuiVersionManifest(true);
   if (!manifest) {
     return { success: false, error: 'No GUI release manifest (version.json) found' };
   }
