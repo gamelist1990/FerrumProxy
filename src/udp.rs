@@ -198,26 +198,35 @@ async fn handle_datagram(
     Ok(())
 }
 
-/// Returns the session for `peer`, creating one if needed. If `is_new_conn` is
-/// set and an *established* session already exists, that session is torn down
-/// and replaced — this is what makes rejoining a world instant instead of
-/// waiting for the old session to idle out.
+/// Returns the session for `peer`, creating one if needed.
+///
+/// 以前は「established なセッションに OpenConnectionRequest1 (0x05) が来たら
+/// 再接続とみなして即リセット」していたが、これは Bedrock クライアントが
+/// パケットロス時に 0x05 を再送するケースで**進行中のセッションを勝手に破棄**
+/// してしまい、Geyser 側 RakNet が古い upstream ソケットに応答を送り続けて
+/// TIMED_OUT を引き起こしていた。
+///
+/// 正しい再接続は「DisconnectNotification (0x15) → 新規 OpenConnectionRequest1」
+/// のシーケンスで、前者は `contains_disconnect` が検出して `close_session` が
+/// セッションを削除するため、次の 0x05 では自然に新規セッションが作られる。
+/// つまり `is_new_conn` に基づくリセットは不要どころか有害。
+///
+/// `is_new_conn` 引数は将来の再拡張余地のために残しているが、現在は使わない。
 async fn obtain_session(
     server: &Arc<UdpSocket>,
     sessions: &SessionMap,
     rule: &Arc<ListenerRule>,
     runtime: &Arc<AppRuntime>,
     peer: SocketAddr,
-    is_new_conn: bool,
+    _is_new_conn: bool,
 ) -> Result<Arc<UdpSession>> {
-    // Fast path: reuse the existing session unless this is a reconnect.
+    // Fast path: 既存セッションがあれば必ず再利用する。
+    // 再送された OpenConnectionRequest1 も upstream にそのまま転送し、
+    // Geyser 側の RakNet が「既に接続済み」応答を返して自然に処理される。
     {
         let guard = sessions.lock().await;
         if let Some(existing) = guard.get(&peer) {
-            let reset = is_new_conn && existing.established.load(Ordering::Relaxed);
-            if !reset {
-                return Ok(Arc::clone(existing));
-            }
+            return Ok(Arc::clone(existing));
         }
     }
 
@@ -234,18 +243,9 @@ async fn obtain_session(
 
     let mut guard = sessions.lock().await;
     if let Some(existing) = guard.get(&peer) {
-        let reset = is_new_conn && existing.established.load(Ordering::Relaxed);
-        if reset {
-            if let Some(old) = guard.remove(&peer) {
-                old.abort_recv_task();
-                runtime.metrics.udp_session_closed();
-                debug!("UDP reconnect: reset established session for {peer}");
-            }
-        } else {
-            // Another datagram created the session while we were binding; drop
-            // our now-unneeded socket and reuse theirs.
-            return Ok(Arc::clone(existing));
-        }
+        // 別のデータグラム処理が先にセッションを作った。自分の new socket は
+        // 捨てて既存を返す。
+        return Ok(Arc::clone(existing));
     }
 
     let session = Arc::new(UdpSession {
