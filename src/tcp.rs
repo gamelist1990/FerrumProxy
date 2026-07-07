@@ -90,16 +90,32 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
             };
             if let Err(err) = result {
                 let msg = format!("{err:#}");
-                // 初期データ未受信タイムアウトはポートスキャナー等の無害な事象が大半なので
-                // WARN でスパムせず DEBUG に落とす。真の異常（バックエンド接続失敗など）は WARN のまま残す。
-                if msg.contains(INITIAL_CLIENT_DATA_TIMEOUT_MSG) {
-                    debug!("TCP connection {client_addr} idle-closed (no initial data)");
+                // クライアント都合の通常切断・バックエンド一時停止などは日常的に起きるので
+                // WARN でスパムせず DEBUG に落とす。真の異常だけ WARN に残す。
+                if is_benign_disconnect(&msg) {
+                    debug!("TCP connection {client_addr} closed: {msg}");
                 } else {
                     warn!("TCP connection {client_addr} ended: {msg}");
                 }
             }
         });
     }
+}
+
+/// True for disconnect kinds that are part of normal client / backend life-cycle
+/// (idle scanners, players quitting, backend restarting, etc.) — logged at DEBUG.
+fn is_benign_disconnect(msg: &str) -> bool {
+    // NOTE: 文字列マッチだけど anyhow の `{:#}` フォーマットで OS message が
+    // そのまま出るので、これで十分。将来 io::ErrorKind 判定に切り替えても良い。
+    msg.contains(INITIAL_CLIENT_DATA_TIMEOUT_MSG)
+        || msg.contains("Connection reset by peer")
+        || msg.contains("Broken pipe")
+        || msg.contains("Connection refused")
+        || msg.contains("Connection aborted")
+        || msg.contains("An existing connection was forcibly closed") // Windows
+        || msg.contains("An established connection was aborted") // Windows
+        || msg.contains("forcibly closed by the remote host") // Windows variant
+        || msg.contains("timed out")
 }
 
 async fn handle_client(
