@@ -4,6 +4,8 @@ import { t } from '../lang';
 import { GeneralSettings } from './config/GeneralSettings';
 import { SharedRelaySettings } from './config/SharedRelaySettings';
 import { ListenerList } from './config/ListenerList';
+import { DdosGuardSettingsPanel } from './config/DdosGuardSettings';
+import { HighLatencySettingsPanel } from './config/HighLatencySettings';
 import { Button } from './ui/Button';
 import './ConfigEditor.css';
 
@@ -33,6 +35,14 @@ export function ConfigEditor({ instanceId, config, onChange, onSave }: ConfigEdi
       {!showAdvanced ? (
         <>
           <GeneralSettings config={localConfig} onChange={handleChange} />
+          <DdosGuardSettingsPanel
+            config={localConfig.ddosGuard}
+            onChange={(ddosGuard) => handleChange('ddosGuard', ddosGuard)}
+          />
+          <HighLatencySettingsPanel
+            config={localConfig.highLatency}
+            onChange={(highLatency) => handleChange('highLatency', highLatency)}
+          />
           <SharedRelaySettings
             config={localConfig}
             onChange={(sharedService) => handleChange('sharedService', sharedService)}

@@ -56,11 +56,26 @@ async fn main() -> Result<()> {
         .filter_map(|rule| rule.webhook.clone())
         .filter(|webhook| !webhook.trim().is_empty())
         .collect::<Vec<_>>();
-    let runtime = Arc::new(runtime::AppRuntime::new(
+    let high_latency = cfg.high_latency.clone();
+    if high_latency.enabled {
+        info!(
+            "High-latency mode ENABLED: initial_client_data={} ms, connect={} ms, udp_idle={} ms",
+            high_latency.initial_client_data_timeout_ms,
+            high_latency.connect_timeout_ms,
+            high_latency.udp_session_idle_timeout_ms,
+        );
+    }
+    let timeouts = runtime::TimeoutSettings {
+        initial_client_data: high_latency.effective_initial_client_data_timeout(),
+        connect: high_latency.effective_connect_timeout(),
+        udp_session_idle: high_latency.effective_udp_session_idle_timeout(),
+    };
+    let runtime = Arc::new(runtime::AppRuntime::with_timeouts(
         cfg.use_rest_api,
         cfg.save_player_ip,
         webhooks,
         cfg.ddos_guard.to_settings(),
+        timeouts,
     ));
     let mut tasks = JoinSet::new();
 

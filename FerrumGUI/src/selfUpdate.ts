@@ -29,7 +29,8 @@ function readVersionIniFallback(): string | null {
     try {
       if (fssync.existsSync(p)) {
         const text = fssync.readFileSync(p, 'utf-8');
-        const m = text.match(/^version\s*=\s*([\d.]+)/m);
+        // 固定タグ運用ではバージョン文字列に `.` 以外 (`-`, 英数字) も含む
+        const m = text.match(/^version\s*=\s*(\S+)/m);
         if (m) return m[1];
       }
     } catch {}
@@ -49,73 +50,122 @@ export function isSelfUpdateSupported(isCompiled: boolean): boolean {
   return isCompiled && getCurrentGuiVersion() !== 'dev';
 }
 
+// FerrumProxyGUI は FerrumProxy モノレポの固定タグ `FerrumProxyGUI` にリリースされる。
+// version.json は同じリリースに同梱される（scripts/gen-version-json.mjs 参照）。
 const GUI_REPO =
-  process.env.FERRUMPROXYGUI_SELF_REPO || 'gamelist1990/FerrumProxyGUI';
-const RELEASE_TAG_PREFIX =
-  process.env.FERRUMPROXYGUI_SELF_TAG_PREFIX || 'release-';
+  process.env.FERRUMPROXYGUI_SELF_REPO ||
+  process.env.FERRUMPROXY_GITHUB_REPO ||
+  'gamelist1990/FerrumProxy';
+const GUI_TAG =
+  process.env.FERRUMPROXYGUI_SELF_TAG ||
+  process.env.FERRUMPROXYGUI_RELEASE_TAG ||
+  'FerrumProxyGUI';
 
-/** プラットフォームごとの GitHub Release アセット名を組み立てる。 */
-export function getGuiAssetName(version: string): string | null {
+export type GuiPlatform =
+  | 'windows-x64'
+  | 'linux-x64'
+  | 'linux-arm64'
+  | 'macos-arm64';
+
+/** 現在のプロセスから version.json の platform キーを解決する。 */
+export function getCurrentGuiPlatformKey(): GuiPlatform | null {
   const p = process.platform;
   const a = process.arch;
-  if (p === 'win32' && a === 'x64')
-    return `FerrumProxyGUI-${version}-windows.exe`;
-  if (p === 'linux' && a === 'x64') return `FerrumProxyGUI-${version}-linux`;
-  if (p === 'linux' && a === 'arm64')
-    return `FerrumProxyGUI-${version}-linux-arm64`;
-  if (p === 'darwin' && a === 'arm64')
-    return `FerrumProxyGUI-${version}-macos-arm64`;
+  if (p === 'win32' && a === 'x64') return 'windows-x64';
+  if (p === 'linux' && a === 'x64') return 'linux-x64';
+  if (p === 'linux' && a === 'arm64') return 'linux-arm64';
+  if (p === 'darwin' && a === 'arm64') return 'macos-arm64';
   return null;
+}
+
+/** version.json の asset レコード（gen-version-json.mjs と一致）。 */
+export interface VersionManifestAsset {
+  name: string;
+  platform: string;
+  size: number;
+  downloadUrl: string;
+}
+
+export interface VersionManifest {
+  schema: number;
+  component: string;
+  version: string;
+  commit?: string;
+  shortCommit?: string;
+  buildDate?: string;
+  tag: string;
+  runId?: string;
+  assets: VersionManifestAsset[];
 }
 
 export interface GuiReleaseInfo {
   version: string;
   tag: string;
+  commit?: string;
   assetUrl: string | null;
   assetName: string | null;
   assetSize: number | null;
   publishedAt: string;
 }
 
-export async function fetchLatestGuiRelease(): Promise<GuiReleaseInfo | null> {
-  const url = `https://api.github.com/repos/${GUI_REPO}/releases/latest`;
-  const res = await fetch(url);
+/**
+ * `https://github.com/<repo>/releases/download/<tag>/version.json` を直接取得する。
+ * GitHub API を叩かないのでレート制限の影響を受けない。
+ */
+export async function fetchGuiVersionManifest(): Promise<VersionManifest | null> {
+  const url = `https://github.com/${GUI_REPO}/releases/download/${GUI_TAG}/version.json`;
+  const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) {
     if (res.status === 404) return null;
     throw new Error(
-      `Failed to fetch GUI release: ${res.status} ${res.statusText}`
+      `Failed to fetch GUI version.json: ${res.status} ${res.statusText}`
     );
   }
-  const data: any = await res.json();
-  const tag: string = data.tag_name;
-  const version = tag.startsWith(RELEASE_TAG_PREFIX)
-    ? tag.slice(RELEASE_TAG_PREFIX.length)
-    : tag;
-  const assetName = getGuiAssetName(version);
-  const asset = assetName
-    ? (data.assets || []).find((a: any) => a.name === assetName)
+  const data = (await res.json()) as VersionManifest;
+  if (!data || typeof data.version !== 'string' || !Array.isArray(data.assets)) {
+    return null;
+  }
+  return data;
+}
+
+/** version.json を最新リリース情報として返す（呼び出し側との互換用）。 */
+export async function fetchLatestGuiRelease(): Promise<GuiReleaseInfo | null> {
+  const manifest = await fetchGuiVersionManifest();
+  if (!manifest) return null;
+  const platformKey = getCurrentGuiPlatformKey();
+  const asset = platformKey
+    ? manifest.assets.find((a) => a.platform === platformKey)
     : null;
   return {
-    version,
-    tag,
-    assetName: assetName ?? null,
-    assetUrl: asset?.browser_download_url ?? null,
+    version: manifest.version,
+    tag: manifest.tag || GUI_TAG,
+    commit: manifest.commit,
+    assetName: asset?.name ?? null,
+    assetUrl: asset?.downloadUrl ?? null,
     assetSize: asset?.size ?? null,
-    publishedAt: data.published_at,
+    publishedAt: manifest.buildDate || new Date().toISOString(),
   };
 }
 
-/** semver 相当のシンプル比較。 a > b で正、a < b で負、同じで 0。 */
+/**
+ * 固定タグ運用では `YYYY.MM.DD-<shortcommit>` を採番している（semver ではない）。
+ * commit が違えば内容も違うため、**等値ベース**で判定する。
+ * 現在版と最新版が同じなら 0（更新不要）、違えば -1（更新あり）を返す。
+ * 古い呼び出し規約（`compareVersions(latest, current) > 0` なら更新あり）と
+ * 互換を保つため、「a > b」を「a と b が異なる」にマップする。
+ */
 export function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0);
-  const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const x = pa[i] || 0;
-    const y = pb[i] || 0;
-    if (x !== y) return x - y;
-  }
-  return 0;
+  if (a === b) return 0;
+  // 何かしら差分があれば「更新あり」として -1 を返す（呼び出し側は > 0 を更新なしとして扱う）。
+  // ※ ここでは常に「更新あり」を通したいので負値を返す運用にする。
+  return 1;
+}
+
+/** 現在版と最新版が異なる（＝更新が入っている）ときだけ true。 */
+export function hasGuiUpdate(current: string, latest: string | null | undefined): boolean {
+  if (!latest) return false;
+  if (current === 'dev') return false;
+  return current !== latest;
 }
 
 /** 前回の更新で残った .old ファイルを削除する（起動時に呼ぶ）。 */
@@ -159,24 +209,39 @@ export async function performGuiSelfUpdate(
     };
   }
 
-  const latest = await fetchLatestGuiRelease();
-  if (!latest) {
-    return { success: false, error: 'No GUI release found' };
-  }
-  if (!latest.assetUrl || !latest.assetName) {
-    return {
-      success: false,
-      error: `No matching asset for ${process.platform}/${process.arch} in release ${latest.version}`,
-    };
+  const manifest = await fetchGuiVersionManifest();
+  if (!manifest) {
+    return { success: false, error: 'No GUI release manifest (version.json) found' };
   }
 
   const current = getCurrentGuiVersion();
-  if (compareVersions(latest.version, current) <= 0) {
+  if (!hasGuiUpdate(current, manifest.version)) {
     return {
       success: false,
-      error: `Already up to date (current v${current}, latest v${latest.version})`,
+      error: `Already up to date (current v${current}, latest v${manifest.version})`,
     };
   }
+
+  const platformKey = getCurrentGuiPlatformKey();
+  if (!platformKey) {
+    return {
+      success: false,
+      error: `Unsupported platform: ${process.platform}/${process.arch}`,
+    };
+  }
+  const asset = manifest.assets.find((a) => a.platform === platformKey);
+  if (!asset || !asset.downloadUrl) {
+    return {
+      success: false,
+      error: `No matching asset for ${platformKey} in release ${manifest.version}`,
+    };
+  }
+  const latest = {
+    version: manifest.version,
+    assetUrl: asset.downloadUrl,
+    assetName: asset.name,
+    assetSize: asset.size,
+  };
 
   const execPath = process.execPath;
   const newPath = execPath + '.new';

@@ -21,6 +21,7 @@ import {
   downloadBinary,
   setExecutablePermissions,
   getPlatformAssetName,
+  resolveAssetForPlatform,
 } from './downloader.js';
 import {
   cleanupOldBinary,
@@ -1255,20 +1256,23 @@ app.post('/api/instances', async (req, res) => {
     const instanceId = randomUUID();
     const instanceDir = path.join(appRoot, 'instances', instanceId);
     const dataDir = path.join(instanceDir, 'data');
-    const assetName = getPlatformAssetName(platform, version);
-    const binaryPath = path.join(dataDir, assetName);
     const configPath = path.join(instanceDir, 'config.yml');
 
     await fs.mkdir(instanceDir, { recursive: true });
     await configManager.write(configPath, createDefaultConfig());
 
-    
+    // version.json.assets[].platform で解決する（アセット名にバージョン埋め込み前提を廃止）
     const release = await getReleaseByVersion(version);
-    const asset = release.assets.find((a) => a.name === assetName);
+    const asset = resolveAssetForPlatform(release, platform);
 
     if (!asset) {
-      return res.status(404).json({ error: `Asset ${assetName} not found in release ${version}` });
+      return res.status(404).json({
+        error: `No asset for platform '${platform}' in release ${release.version}`,
+      });
     }
+
+    const assetName = asset.name;
+    const binaryPath = path.join(dataDir, assetName);
 
     
     await downloadBinary(asset.downloadUrl, binaryPath, (downloaded, total) => {
@@ -2139,8 +2143,9 @@ app.get('/api/updates/check', async (req, res) => {
       instanceId: instance.id,
       currentVersion: instance.version,
       latestVersion: latestRelease.version,
+      // 固定タグ運用では commit ベースのバージョン（YYYY.MM.DD-<shortcommit>）を等値比較する
       hasUpdate: instance.version !== latestRelease.version,
-      asset: latestRelease.assets.find((a) => a.name === getPlatformAssetName(instance.platform, latestRelease.version)),
+      asset: resolveAssetForPlatform(latestRelease, instance.platform) ?? undefined,
     }));
 
     res.json({
@@ -2237,16 +2242,18 @@ app.post('/api/instances/:id/update', async (req, res) => {
       return res.status(400).json({ error: 'Instance is already on this version' });
     }
 
-    const assetName = getPlatformAssetName(instance.platform, targetVersion);
-    const binaryPath = path.join(instance.dataDir, 'data', assetName);
-
-    
+    // version.json.assets[].platform で解決する
     const release = await getReleaseByVersion(targetVersion);
-    const asset = release.assets.find((a) => a.name === assetName);
+    const asset = resolveAssetForPlatform(release, instance.platform);
 
     if (!asset) {
-      return res.status(404).json({ error: `Asset ${assetName} not found in release ${targetVersion}` });
+      return res.status(404).json({
+        error: `No asset for platform '${instance.platform}' in release ${targetVersion}`,
+      });
     }
+
+    const assetName = asset.name;
+    const binaryPath = path.join(instance.dataDir, 'data', assetName);
 
     
     try {

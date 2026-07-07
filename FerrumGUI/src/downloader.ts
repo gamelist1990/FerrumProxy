@@ -4,7 +4,6 @@ import { createWriteStream } from 'fs';
 import chalk from 'chalk';
 
 const GITHUB_REPO = process.env.FERRUMPROXY_GITHUB_REPO || 'gamelist1990/FerrumProxy';
-const RELEASE_API_BASE = `https://api.github.com/repos/${GITHUB_REPO}/releases`;
 const FERRUMPROXY_RELEASE_TAG = process.env.FERRUMPROXY_RELEASE_TAG || 'FerrumProxy';
 const DEFAULT_VERSION = 'latest';
 
@@ -71,6 +70,8 @@ export interface ReleaseAsset {
   url: string;
   downloadUrl: string;
   size: number;
+  /** version.json で採番された platform キー（`windows-x64` など）。 */
+  platform?: string;
 }
 
 export interface Release {
@@ -81,27 +82,64 @@ export interface Release {
   commit?: string;
 }
 
+export type FerrumProxyPlatform = 'linux' | 'linux-arm64' | 'macos-arm64' | 'windows';
+
+/** GUI 側の platform 表記から version.json 側の platform キーへ。 */
+function toVersionJsonPlatform(platform: FerrumProxyPlatform): string {
+  switch (platform) {
+    case 'linux':
+      return 'linux-x64';
+    case 'linux-arm64':
+      return 'linux-arm64';
+    case 'macos-arm64':
+      return 'macos-arm64';
+    case 'windows':
+      return 'windows-x64';
+  }
+}
+
 /**
- * Fixed-tag releases carry no semantic version, so the real version lives in a
- * `version.json` asset published alongside the binaries (see
- * scripts/gen-version-json.mjs). Reads it and returns a Release with the real
- * commit/date-based version. Falls back to the input release untouched when the
- * manifest is missing or unreadable, so older releases keep working.
+ * 固定タグの Release には version.json が同梱される。これが真の source of truth。
+ * 直接 HTTP で version.json を取得するので GitHub API のレート制限を消費しない。
  */
-async function applyVersionManifest(release: Release): Promise<Release> {
-  const manifestAsset = release.assets.find((a) => a.name === 'version.json');
-  if (!manifestAsset) return release;
+async function fetchVersionManifest(): Promise<Release | null> {
+  const url = `https://github.com/${GITHUB_REPO}/releases/download/${FERRUMPROXY_RELEASE_TAG}/version.json`;
   try {
-    const res = await fetch(manifestAsset.downloadUrl);
-    if (!res.ok) return release;
-    const manifest: any = await res.json();
-    if (manifest && typeof manifest.version === 'string' && manifest.version.length > 0) {
-      return { ...release, version: manifest.version, commit: manifest.commit };
+    const res = await fetch(url, { redirect: 'follow' });
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(`version.json fetch failed: ${res.status} ${res.statusText}`);
     }
+    const manifest: any = await res.json();
+    if (!manifest || typeof manifest.version !== 'string' || !Array.isArray(manifest.assets)) {
+      return null;
+    }
+    return {
+      version: manifest.version,
+      tag: manifest.tag || FERRUMPROXY_RELEASE_TAG,
+      publishedAt: manifest.buildDate || new Date().toISOString(),
+      commit: manifest.commit,
+      assets: (manifest.assets as any[]).map((a) => ({
+        name: a.name,
+        url: a.downloadUrl,
+        downloadUrl: a.downloadUrl,
+        size: typeof a.size === 'number' ? a.size : 0,
+        platform: typeof a.platform === 'string' ? a.platform : undefined,
+      })),
+    };
   } catch (err: any) {
     console.log(chalk.yellow(`Failed to read version.json manifest: ${err?.message ?? err}`));
+    return null;
   }
-  return release;
+}
+
+function fallbackRelease(): Release {
+  return {
+    version: DEFAULT_VERSION,
+    tag: FERRUMPROXY_RELEASE_TAG,
+    publishedAt: new Date().toISOString(),
+    assets: [],
+  };
 }
 
 export async function getLatestRelease(): Promise<Release> {
@@ -111,110 +149,48 @@ export async function getLatestRelease(): Promise<Release> {
     return cached;
   }
 
-  console.log(chalk.blue(`Fetching ${FERRUMPROXY_RELEASE_TAG} release from GitHub...`));
-  const response = await fetch(`${RELEASE_API_BASE}/tags/${FERRUMPROXY_RELEASE_TAG}`);
-
-  if (!response.ok) {
-    if (response.status === 403) {
-      console.log(chalk.yellow('GitHub API rate limit exceeded, using default version'));
-      releaseCache.setRateLimited();
-      const defaultRelease: Release = {
-        version: DEFAULT_VERSION,
-        tag: FERRUMPROXY_RELEASE_TAG,
-        publishedAt: new Date().toISOString(),
-        assets: [],
-      };
-      releaseCache.set('latest', defaultRelease);
-      return defaultRelease;
-    }
-    throw new Error(`Failed to fetch latest release: ${response.statusText}`);
+  console.log(chalk.blue(`Fetching version.json for ${FERRUMPROXY_RELEASE_TAG}...`));
+  const release = await fetchVersionManifest();
+  if (!release) {
+    console.log(
+      chalk.yellow('version.json unavailable, falling back to default "latest" placeholder')
+    );
+    const fb = fallbackRelease();
+    releaseCache.set('latest', fb);
+    return fb;
   }
-
-  const data: any = await response.json();
-  const release: Release = await applyVersionManifest({
-    version: DEFAULT_VERSION,
-    tag: data.tag_name,
-    publishedAt: data.published_at,
-    assets: data.assets.map((asset: any) => ({
-      name: asset.name,
-      url: asset.url,
-      downloadUrl: asset.browser_download_url,
-      size: asset.size,
-    })),
-  });
 
   releaseCache.set('latest', release);
   return release;
 }
 
 export async function getAllReleases(): Promise<Release[]> {
+  // 固定タグ運用では単一リリースしか公開しないので、latest をそのまま返す。
   const cached = releaseCache.get<Release[]>('all');
   if (cached) {
-    console.log(chalk.blue('Using cached releases list'));
     return cached;
   }
-
-  console.log(chalk.blue(`Fetching ${FERRUMPROXY_RELEASE_TAG} release from GitHub...`));
-  const response = await fetch(`${RELEASE_API_BASE}/tags/${FERRUMPROXY_RELEASE_TAG}`);
-
-  if (!response.ok) {
-    if (response.status === 403) {
-      console.log(chalk.yellow('GitHub API rate limit exceeded, using default version'));
-      releaseCache.setRateLimited();
-      const defaultReleases: Release[] = [{
-        version: DEFAULT_VERSION,
-        tag: FERRUMPROXY_RELEASE_TAG,
-        publishedAt: new Date().toISOString(),
-        assets: [],
-      }];
-      releaseCache.set('all', defaultReleases);
-      return defaultReleases;
-    }
-    throw new Error(`Failed to fetch releases: ${response.statusText}`);
-  }
-
-  const data: any = await response.json();
-  const releases: Release[] = [await applyVersionManifest({
-    version: DEFAULT_VERSION,
-    tag: data.tag_name,
-    publishedAt: data.published_at,
-    assets: data.assets.map((asset: any) => ({
-      name: asset.name,
-      url: asset.url,
-      downloadUrl: asset.browser_download_url,
-      size: asset.size,
-    })),
-  })];
-
-  releaseCache.set('all', releases);
-  return releases;
+  const latest = await getLatestRelease();
+  const list = [latest];
+  releaseCache.set('all', list);
+  return list;
 }
 
-export async function getReleaseByVersion(version: string): Promise<Release> {
-  console.log(chalk.blue(`Fetching ${FERRUMPROXY_RELEASE_TAG} release from GitHub...`));
-  const response = await fetch(`${RELEASE_API_BASE}/tags/${FERRUMPROXY_RELEASE_TAG}`);
+export async function getReleaseByVersion(_version: string): Promise<Release> {
+  // 固定タグでは常に最新版だけを扱う（過去バージョンは同一タグに残さない前提）。
+  return getLatestRelease();
+}
 
-  if (!response.ok) {
-    if (response.status === 403) {
-      releaseCache.setRateLimited();
-      throw new Error(`rate limit exceeded`);
-    }
-    throw new Error(`Failed to fetch release ${version}: ${response.statusText}`);
-  }
-
-  const data: any = await response.json();
-
-  return applyVersionManifest({
-    version: DEFAULT_VERSION,
-    tag: data.tag_name,
-    publishedAt: data.published_at,
-    assets: data.assets.map((asset: any) => ({
-      name: asset.name,
-      url: asset.url,
-      downloadUrl: asset.browser_download_url,
-      size: asset.size,
-    })),
-  });
+/**
+ * 指定プラットフォーム向けのアセットを version.json.assets[].platform から解決する。
+ * これで「アセット名にバージョンが埋め込まれている」前提を廃止できる。
+ */
+export function resolveAssetForPlatform(
+  release: Release,
+  platform: FerrumProxyPlatform
+): ReleaseAsset | null {
+  const wanted = toVersionJsonPlatform(platform);
+  return release.assets.find((a) => a.platform === wanted) || null;
 }
 
 export async function downloadBinary(
@@ -279,8 +255,10 @@ export async function setExecutablePermissions(filePath: string): Promise<void> 
   }
 }
 
-export type FerrumProxyPlatform = 'linux' | 'linux-arm64' | 'macos-arm64' | 'windows';
-
+/**
+ * 後方互換用: プラットフォームごとの既定アセット名を返す。
+ * 新しい呼び出し側は `resolveAssetForPlatform` を使うこと。
+ */
 export function getPlatformAssetName(platform: FerrumProxyPlatform, _version: string): string {
   switch (platform) {
     case 'linux':
@@ -294,27 +272,22 @@ export function getPlatformAssetName(platform: FerrumProxyPlatform, _version: st
   }
 }
 
-
 export async function downloadAndVerifyBinary(
   platform: FerrumProxyPlatform,
-  version: string,
+  _version: string,
   destinationPath: string,
   onProgress?: (downloaded: number, total: number) => void
 ): Promise<void> {
-  console.log(chalk.blue(`Downloading FerrumProxy ${version} for ${platform}...`));
-
   const release = await getLatestRelease();
-  const assetName = getPlatformAssetName(platform, version);
-  const asset = release.assets.find(a => a.name === assetName);
+  const asset = resolveAssetForPlatform(release, platform);
 
   if (!asset) {
-    throw new Error(`Asset ${assetName} not found in release ${release.version}`);
+    throw new Error(`No asset for ${platform} in release ${release.version}`);
   }
 
+  console.log(chalk.blue(`Downloading FerrumProxy ${release.version} for ${platform}...`));
   await downloadBinary(asset.downloadUrl, destinationPath, onProgress);
-
-
   await setExecutablePermissions(destinationPath);
 
-  console.log(chalk.green(`✓ Successfully downloaded and verified ${assetName}`));
+  console.log(chalk.green(`✓ Successfully downloaded ${asset.name}`));
 }

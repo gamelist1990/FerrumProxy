@@ -54,6 +54,25 @@ export interface ProxyTargetConfig {
     udp?: number;
 }
 
+export interface DdosGuardConfig {
+  enabled?: boolean;
+  tcpMaxActivePerIp?: number;
+  tcpNewConnectionsPerSecond?: number;
+  tcpNewConnectionBurst?: number;
+  udpPacketsPerSecond?: number;
+  udpPacketBurst?: number;
+  udpBytesPerSecond?: number;
+  udpByteBurst?: number;
+  udpMaxDatagramBytes?: number;
+}
+
+export interface HighLatencyConfig {
+  enabled?: boolean;
+  initialClientDataTimeoutMs?: number;
+  connectTimeoutMs?: number;
+  udpSessionIdleTimeoutMs?: number;
+}
+
 export interface FerrumProxyConfig {
   endpoint?: number;
   useRestApi?: boolean;
@@ -75,6 +94,8 @@ export interface FerrumProxyConfig {
     defaults?: Partial<SharedServiceLimits>;
     maximums?: Partial<SharedServiceLimits>;
   };
+  ddosGuard?: DdosGuardConfig;
+  highLatency?: HighLatencyConfig;
   listeners?: Array<ListenerConfig>;
 }
 

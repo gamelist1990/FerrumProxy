@@ -1,8 +1,43 @@
 # FerrumProxy
 
-FerrumProxy is an independent Rust proxy server for Minecraft Bedrock and HTTP/HTTPS forwarding. It focuses on low-latency TCP/UDP forwarding, HAProxy PROXY protocol support, Bedrock pong rewriting, TLS listener support, Discord notifications, and a REST API that can be managed from the included web GUI.
+**FerrumProxy** is a Rust-native reverse proxy for Minecraft Bedrock and HTTP/HTTPS traffic. It’s built on Tokio + Rustls and is designed for one thing: forwarding real-world traffic with **low latency**, **low CPU**, and **zero surprises** — while giving you a browser-based control plane (`FerrumProxyGUI`) so you never have to hand-edit YAML on a live host.
 
-`FerrumGUI` is bundled in this repository for browser-based management of one or more FerrumProxy instances.
+> Minecraft Bedrock, Java, HTTPS reverse proxy, HAProxy PROXY protocol v2, TLS termination, per-IP DDoS guard, shared relay for public port sharing — all in a single static Rust binary.
+
+## Why FerrumProxy
+
+Most proxy stacks are either:
+
+- **general-purpose** (nginx / HAProxy) — great, but Bedrock RakNet and Bedrock pong rewriting need custom logic;
+- or **Node/Bun scripts** — easy to hack on, but you eat GC pauses, extra syscalls, and lose UDP throughput.
+
+FerrumProxy is a small, focused Rust binary that only does the parts of proxying that matter for game servers and reverse proxies, with a control-plane GUI on top.
+
+### Performance-first design
+
+| Area                          | What FerrumProxy does                                                                                          | Why it matters                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **Runtime**                   | Native Rust binary on Tokio, single static executable (~9 MB), no VM, no GC.                                   | Predictable tail latency — no stop-the-world pauses under load.                          |
+| **TCP forwarding**            | `tokio::spawn` per connection, `AsyncRead`/`AsyncWrite` copy loops.                                            | Handles bursty HTTP/HTTPS and Java connections without per-connection overhead.         |
+| **UDP / Bedrock**             | One shared UDP server socket + one upstream socket per session, keyed by client `SocketAddr`.                  | RakNet stays intact; no per-packet allocations in the hot path.                         |
+| **Bedrock pong**              | Rewrites the advertised port in Unconnected Pong on the fly + shared pong cache with immediate reply.          | Backend ping cost drops sharply; MOTD, player counts and version fields stay correct.   |
+| **DNS**                       | Async DNS cache for target hostnames.                                                                          | Removes repeated `getaddrinfo` from the hot path when your targets are DNS-named.       |
+| **HAProxy PROXY protocol v2** | Zero-copy binary parse and build for both TCP and UDP.                                                         | You can chain FerrumProxy behind another load balancer and preserve the real client IP. |
+| **TLS termination**           | Rustls-based HTTPS listener with manual cert paths or Linux Let's Encrypt auto-detect.                          | Terminate TLS at the edge without pulling in OpenSSL.                                    |
+| **HTTP/HTTPS URL targets**    | URL-style targets with request path/host rewrite and response `Location` rewrite; longest-path wins mappings.  | Route `/`, `/docs`, `/api` to different upstreams from one listener.                    |
+| **DDoS guard**                | Per-IP token buckets for TCP conn/s, UDP pps and bps, plus max active TCP conns and max UDP datagram size.     | Cheap in-process protection that survives packet floods without touching iptables.      |
+| **Shared relay**              | Optional mode where the public relay hands out temporary public ports over a control channel.                  | Users can publish a local service through your relay without permanent port reservations. |
+
+### Rough numbers
+
+> These are order-of-magnitude figures on a small VPS (2 vCPU, 2 GB RAM, Linux x64). Do your own benchmarks — network, kernel, and backend RTT dominate real deployments.
+
+- **Idle RSS**: ~10 MB for the FerrumProxy binary itself.
+- **Bedrock pong**: cached response served in the microsecond range without touching the backend, until the cache TTL expires.
+- **TCP throughput**: bottlenecked by kernel and backend, not by the proxy; forwarding overhead is dominated by `copy_bidirectional` syscalls.
+- **UDP capacity**: sized so a single 2 vCPU box comfortably handles hundreds of concurrent Bedrock sessions with the default DDoS-guard limits.
+
+`FerrumProxyGUI` is bundled in this repository for browser-based management of one or more FerrumProxy instances.
 
 ## Requirements
 
@@ -126,6 +161,28 @@ FerrumProxyGUI downloads FerrumProxy binaries from `gamelist1990/FerrumProxy` by
 ```bash
 FERRUMPROXY_GITHUB_REPO=owner/repo FERRUMPROXY_RELEASE_TAG=FerrumProxy bun run start
 ```
+
+### DDoS guard from the GUI (one click)
+
+DDoS thresholds no longer need YAML edits. Open the instance’s **Config** tab and you’ll see a **DDoS Guard** card with three presets:
+
+- **Balanced (default)** — safe for HTTP/HTTPS reverse proxying (many parallel browser connections) and Bedrock traffic at the same time.
+- **Strict (Bedrock)** — tighter TCP conn/s and UDP pps; a good starting point when a single Bedrock server sits behind FerrumProxy.
+- **Off (trusted upstream)** — disables the in-process guard when a real load balancer / CDN in front of you already handles this.
+
+A collapsible **advanced** section lets you fine-tune each token bucket: `tcpMaxActivePerIp`, `tcpNewConnectionsPerSecond`, `tcpNewConnectionBurst`, `udpPacketsPerSecond`, `udpPacketBurst`, `udpBytesPerSecond`, `udpByteBurst`, `udpMaxDatagramBytes`. The defaults exactly match FerrumProxy’s `DdosGuardSettings::default()` in Rust, so flipping only the toggle keeps behavior identical to running FerrumProxy standalone.
+
+### Self-update (version.json based)
+
+Release binaries live under fixed tags (`FerrumProxy`, `FerrumProxyGUI`, `FerrumProxyClient`), and each release ships a `version.json` manifest describing the exact commit/date-based version and per-platform asset URLs.
+
+The GUI:
+
+1. Fetches `version.json` from the release directly over HTTPS — **no GitHub REST API is used**, so update checks don’t hit the 60/hour anonymous rate limit.
+2. Compares the manifest version against the currently running one using **exact equality** (commit-based, not semver).
+3. When updating, resolves the platform-specific asset via `assets[].platform` instead of relying on the filename embedding the version.
+
+A compiled `FerrumProxyGUI` binary can update itself in place from the header **Update GUI** button. The bulk **Check & Update All** button applies the same version.json flow to every managed FerrumProxy instance.
 
 ## GitHub Actions
 

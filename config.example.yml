@@ -26,6 +26,16 @@ sharedService:
     idleTimeoutSeconds: 3600
     udpSessionTimeoutSeconds: 600
 
+# Optional "very slow client" mode. When `enabled` is true, FerrumProxy stretches
+# the three latency-sensitive timeouts so that clients with 1000ms - 5000ms RTT
+# can complete their handshake and stay connected without being torn down.
+# Defaults below are the recommended preset for extremely laggy clients.
+highLatency:
+  enabled: false
+  initialClientDataTimeoutMs: 30000    # 30s wait for the first client bytes
+  connectTimeoutMs: 30000              # 30s to connect to the backend
+  udpSessionIdleTimeoutMs: 600000      # 10 minutes UDP idle
+
 # Per-IP DDoS protection. Defaults are relaxed for HTTP/HTTPS reverse-proxy use
 # (a browser opens many parallel connections per page). Lower them to harden, or
 # set enabled: false if a trusted upstream load balancer already protects you.

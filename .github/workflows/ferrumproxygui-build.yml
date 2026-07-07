@@ -49,14 +49,27 @@ jobs:
       - name: Generate embedded files
         run: bun run generate:embed
 
+      - name: Compute BUILD_VERSION
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          DATE="$(date -u +%Y.%m.%d)"
+          VERSION="${DATE}-${SHORT_SHA}"
+          echo "BUILD_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "Building FerrumProxyGUI ${VERSION}"
+
       - name: Build release binaries
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p target/build
-          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-linux-x64 ./src/index.ts --outfile target/build/FerrumProxyGUI-linux-x64
-          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-linux-arm64 ./src/index.ts --outfile target/build/FerrumProxyGUI-linux-arm64
-          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-windows-x64 ./src/index.ts --outfile target/build/FerrumProxyGUI-windows-x64.exe
-          bun build --compile --minify --asset-naming="[name].[ext]" --target=bun-darwin-arm64 ./src/index.ts --outfile target/build/FerrumProxyGUI-macos-arm64
+          # Bun の --define は JS 値としてパースされるので、文字列は '"..."' の形で渡す
+          BV_DEFINE="BUILD_VERSION=\"${BUILD_VERSION}\""
+          bun build --compile --minify --asset-naming="[name].[ext]" --define "$BV_DEFINE" --target=bun-linux-x64   ./src/index.ts --outfile target/build/FerrumProxyGUI-linux-x64
+          bun build --compile --minify --asset-naming="[name].[ext]" --define "$BV_DEFINE" --target=bun-linux-arm64 ./src/index.ts --outfile target/build/FerrumProxyGUI-linux-arm64
+          bun build --compile --minify --asset-naming="[name].[ext]" --define "$BV_DEFINE" --target=bun-windows-x64 ./src/index.ts --outfile target/build/FerrumProxyGUI-windows-x64.exe
+          bun build --compile --minify --asset-naming="[name].[ext]" --define "$BV_DEFINE" --target=bun-darwin-arm64 ./src/index.ts --outfile target/build/FerrumProxyGUI-macos-arm64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

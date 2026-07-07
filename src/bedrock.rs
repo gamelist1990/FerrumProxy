@@ -175,11 +175,7 @@ pub fn describe_unconnected_pong(payload: &[u8]) -> Option<String> {
             truncate_for_log(parts[1], 96)
         );
     } else {
-        let _ = write!(
-            description,
-            " motd={}",
-            truncate_for_log(&parsed.motd, 160)
-        );
+        let _ = write!(description, " motd={}", truncate_for_log(&parsed.motd, 160));
     }
 
     Some(description)

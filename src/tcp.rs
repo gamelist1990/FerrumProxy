@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[allow(unused_imports)]
 use anyhow::{Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{lookup_host, TcpListener, TcpStream};
@@ -22,11 +23,9 @@ use crate::runtime::{AppRuntime, PerformanceMetrics};
 use crate::tcp_tuning::apply_tcp_nodelay;
 use crate::tls_config::resolve_tls_acceptor;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-// スキャナーなどが接続だけ張って何も送ってこないケースが多いため、短めに設定して
-// 無駄なバッファ保持時間とログスパムを抑える。まともなクライアント（Minecraft/HTTP/TLS）は
-// 接続直後にハンドシェイクを送るため 10 秒で十分。
-const INITIAL_CLIENT_DATA_TIMEOUT: Duration = Duration::from_secs(10);
+// 既定は 10 秒。`highLatency.enabled = true` のときは runtime.timeouts 経由で
+// 30 秒などに拡張される。スキャナーなどが接続だけ張って何も送ってこないケースが
+// 多いので、既定値は短めのまま保つ。
 const INITIAL_CLIENT_DATA_TIMEOUT_MSG: &str = "timed out waiting for initial client data";
 const BUFFER_SIZE: usize = 16 * 1024;
 
@@ -109,9 +108,12 @@ async fn handle_client(
     runtime: Arc<AppRuntime>,
 ) -> Result<()> {
     let mut first_buf = vec![0u8; BUFFER_SIZE];
-    let first_len = timeout(INITIAL_CLIENT_DATA_TIMEOUT, client.read(&mut first_buf))
-        .await
-        .context(INITIAL_CLIENT_DATA_TIMEOUT_MSG)??;
+    let first_len = timeout(
+        runtime.timeouts.initial_client_data,
+        client.read(&mut first_buf),
+    )
+    .await
+    .context(INITIAL_CLIENT_DATA_TIMEOUT_MSG)??;
     if first_len == 0 {
         return Ok(());
     }
@@ -161,7 +163,7 @@ async fn handle_client(
         };
         debug!("TCP connect {original_client} => {target_addr}");
 
-        match connect_target(&target, target_addr).await {
+        match connect_target(&target, target_addr, runtime.timeouts.connect).await {
             Ok(mut target_stream) => {
                 let initial_payload = initial_payload.to_vec();
 
@@ -192,7 +194,7 @@ async fn handle_client(
                 .await;
             }
             Err(err) => {
-                last_error = Some(err.into());
+                last_error = Some(err);
             }
         }
     }
@@ -499,8 +501,12 @@ fn spawn_rewrite_relay(
     (client_to_target, target_to_client)
 }
 
-async fn connect_target(target: &ProxyTarget, target_addr: SocketAddr) -> Result<BoxedStream> {
-    let tcp = timeout(CONNECT_TIMEOUT, TcpStream::connect(target_addr)).await??;
+async fn connect_target(
+    target: &ProxyTarget,
+    target_addr: SocketAddr,
+    connect_timeout: Duration,
+) -> Result<BoxedStream> {
+    let tcp = timeout(connect_timeout, TcpStream::connect(target_addr)).await??;
     apply_tcp_nodelay(&tcp, "tcp target");
 
     if target.url_protocol.as_deref() == Some("https") {

@@ -28,7 +28,83 @@ pub struct ProxyConfig {
     pub shared_service: Option<SharedServiceConfig>,
     #[serde(default)]
     pub ddos_guard: DdosGuardConfig,
+    #[serde(default)]
+    pub high_latency: HighLatencyConfig,
     pub listeners: Vec<ListenerRule>,
+}
+
+/// Optional "very slow client" mode.
+///
+/// When `enabled` is true, we stretch the three latency-sensitive timeouts
+/// (initial-client-data, backend connect, UDP session idle) so that clients
+/// with 1000ms+ RTT can complete their handshake and stay connected without
+/// being torn down. Defaults are conservative: safe for a normal LAN game
+/// server, tight enough that scanners get dropped fast.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HighLatencyConfig {
+    /// Master switch. When `false`, the other fields are ignored and we use the
+    /// legacy hard-coded defaults (10s / 10s / 60s).
+    pub enabled: bool,
+    /// How long we wait for the client to send the first byte(s) after the
+    /// TCP/TLS handshake completes. Higher = tolerates slow satellite links.
+    pub initial_client_data_timeout_ms: u64,
+    /// How long we wait to `connect()` to a backend target. Higher = tolerates
+    /// slow SYN-ACK on distant backends.
+    pub connect_timeout_ms: u64,
+    /// How long a UDP session can be idle before we tear it down. Higher =
+    /// tolerates users who briefly disappear (mobile networks, tunneling).
+    pub udp_session_idle_timeout_ms: u64,
+}
+
+impl Default for HighLatencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            initial_client_data_timeout_ms: default_initial_client_data_timeout_ms(),
+            connect_timeout_ms: default_connect_timeout_ms(),
+            udp_session_idle_timeout_ms: default_udp_session_idle_timeout_ms(),
+        }
+    }
+}
+
+impl HighLatencyConfig {
+    /// Preset for extremely laggy clients (1000ms - 5000ms RTT).
+    #[allow(dead_code)]
+    pub fn preset_extreme() -> Self {
+        Self {
+            enabled: true,
+            initial_client_data_timeout_ms: 30_000,
+            connect_timeout_ms: 30_000,
+            udp_session_idle_timeout_ms: 600_000,
+        }
+    }
+
+    /// Resolve the initial-client-data timeout, using the legacy default when
+    /// the feature is disabled.
+    pub fn effective_initial_client_data_timeout(&self) -> std::time::Duration {
+        if self.enabled {
+            std::time::Duration::from_millis(self.initial_client_data_timeout_ms)
+        } else {
+            std::time::Duration::from_millis(default_initial_client_data_timeout_ms())
+        }
+    }
+
+    pub fn effective_connect_timeout(&self) -> std::time::Duration {
+        if self.enabled {
+            std::time::Duration::from_millis(self.connect_timeout_ms)
+        } else {
+            std::time::Duration::from_millis(default_connect_timeout_ms())
+        }
+    }
+
+    pub fn effective_udp_session_idle_timeout(&self) -> std::time::Duration {
+        if self.enabled {
+            std::time::Duration::from_millis(self.udp_session_idle_timeout_ms)
+        } else {
+            std::time::Duration::from_millis(default_udp_session_idle_timeout_ms())
+        }
+    }
 }
 
 /// Serializable DDoS-guard thresholds. Missing fields fall back to the relaxed,
@@ -557,6 +633,18 @@ fn default_idle_timeout_seconds() -> u64 {
 
 fn default_udp_session_timeout_seconds() -> u64 {
     60
+}
+
+fn default_initial_client_data_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_connect_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_udp_session_idle_timeout_ms() -> u64 {
+    60_000
 }
 
 fn default_true() -> bool {

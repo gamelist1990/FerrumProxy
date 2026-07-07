@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::{lookup_host, UdpSocket};
@@ -22,7 +21,8 @@ use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
 use crate::runtime::AppRuntime;
 
-const UDP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+// UDP session idle timeout はランタイム経由で解決する（`highLatency.enabled` が
+// true のときは 10 分などに拡張される）。
 const MAX_DATAGRAM_SIZE: usize = 65_535;
 
 type SessionMap = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSession>>>>;
@@ -136,15 +136,7 @@ async fn handle_datagram(
     // client left and is rejoining: obtain_session tears the old one down and
     // hands the backend a brand-new upstream socket for an immediate reconnect.
     let is_new_conn = is_open_connection_request_1(&payload);
-    let session = obtain_session(
-        &server,
-        &sessions,
-        &rule,
-        &runtime,
-        peer,
-        is_new_conn,
-    )
-    .await?;
+    let session = obtain_session(&server, &sessions, &rule, &runtime, peer, is_new_conn).await?;
 
     if is_offline_ping(&payload) {
         let cached = session.cached_offline_pong.lock().unwrap().clone();
@@ -287,7 +279,12 @@ fn spawn_backend_recv(
     tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
         loop {
-            match timeout(UDP_SESSION_IDLE_TIMEOUT, session.socket.recv_from(&mut buf)).await {
+            match timeout(
+                runtime.timeouts.udp_session_idle,
+                session.socket.recv_from(&mut buf),
+            )
+            .await
+            {
                 Ok(Ok((len, backend_addr))) => {
                     let mut response = buf[..len].to_vec();
                     if let Ok(parsed) = parse_proxy_chain(&response) {
@@ -310,7 +307,9 @@ fn spawn_backend_recv(
                             }
                             response = rewritten;
                         } else if let Some(description) = before_rewrite {
-                            debug!("Bedrock pong did not need port rewrite for {peer}: {description}");
+                            debug!(
+                                "Bedrock pong did not need port rewrite for {peer}: {description}"
+                            );
                         }
                     }
 
@@ -329,7 +328,9 @@ fn spawn_backend_recv(
                         }
                         *session.cached_offline_pong.lock().unwrap() = Some(response.clone());
                     } else if let Some(description) = describe_raknet_packet(&response) {
-                        debug!("RakNet backend packet from {backend_addr} to {peer}: {description}");
+                        debug!(
+                            "RakNet backend packet from {backend_addr} to {peer}: {description}"
+                        );
                     }
 
                     if let Err(err) = server.send_to(&response, peer).await {

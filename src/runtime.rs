@@ -15,6 +15,35 @@ use crate::webhook_queue::WebhookGroupNotifier;
 const BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
 const TIMESTAMP_TOLERANCE_MS: i64 = 30_000;
 
+/// Resolved TCP/UDP timeouts. Populated from `HighLatencyConfig` in
+/// `AppRuntime::new`, then read by the TCP/UDP hot paths through the shared
+/// runtime so that a config change (via GUI restart) takes effect without
+/// needing to touch every listener.
+#[derive(Debug, Clone, Copy)]
+pub struct TimeoutSettings {
+    pub initial_client_data: Duration,
+    pub connect: Duration,
+    pub udp_session_idle: Duration,
+}
+
+impl TimeoutSettings {
+    /// Legacy fixed defaults — 10s / 10s / 60s, matching the original
+    /// hard-coded constants in `tcp.rs` and `udp.rs`.
+    pub fn defaults() -> Self {
+        Self {
+            initial_client_data: Duration::from_secs(10),
+            connect: Duration::from_secs(10),
+            udp_session_idle: Duration::from_secs(60),
+        }
+    }
+}
+
+impl Default for TimeoutSettings {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppRuntime {
     pub use_rest_api: bool,
@@ -26,14 +55,33 @@ pub struct AppRuntime {
     pub player_ip_mapper: PlayerIpMapper,
     pub metrics: PerformanceMetrics,
     pub ddos_guard: DdosGuard,
+    /// Effective timeouts for this run, resolved from `high_latency`.
+    pub timeouts: TimeoutSettings,
 }
 
 impl AppRuntime {
+    #[allow(dead_code)]
     pub fn new(
         use_rest_api: bool,
         save_player_ip: bool,
         webhooks: Vec<String>,
         ddos_settings: DdosGuardSettings,
+    ) -> Self {
+        Self::with_timeouts(
+            use_rest_api,
+            save_player_ip,
+            webhooks,
+            ddos_settings,
+            TimeoutSettings::defaults(),
+        )
+    }
+
+    pub fn with_timeouts(
+        use_rest_api: bool,
+        save_player_ip: bool,
+        webhooks: Vec<String>,
+        ddos_settings: DdosGuardSettings,
+        timeouts: TimeoutSettings,
     ) -> Self {
         let http_client = reqwest::Client::new();
         Self {
@@ -46,6 +94,7 @@ impl AppRuntime {
             player_ip_mapper: PlayerIpMapper::new(PathBuf::from("playerIP.json"), save_player_ip),
             metrics: PerformanceMetrics::new(),
             ddos_guard: DdosGuard::new(ddos_settings),
+            timeouts,
         }
     }
 }
