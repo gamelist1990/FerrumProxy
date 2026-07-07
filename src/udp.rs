@@ -52,6 +52,7 @@ struct UdpSession {
 }
 
 impl UdpSession {
+    #[allow(dead_code)]
     fn abort_recv_task(&self) {
         if let Some(handle) = self.recv_task.lock().unwrap().take() {
             handle.abort();
@@ -188,12 +189,22 @@ async fn handle_datagram(
         maybe_notify_connect(&runtime, &rule, &session, original_client).await;
     }
 
-    // Client-initiated disconnect: forward it (done above) so the backend can
-    // release its RakNet connection immediately, then drop our session.
-    if contains_disconnect(&payload) {
-        close_session(&sessions, &runtime, peer).await;
-        debug!("UDP session closed by disconnect notification {peer}");
-    }
+    // NOTE: 以前はここで `contains_disconnect(&payload)` を判定して
+    // client-initiated disconnect を検出し `close_session` していたが、
+    // これが誤検知の温床になっていた。
+    //
+    // RakNet の DisconnectNotification (0x15) は FrameSet (0x80..=0x8d) に
+    // encapsulated されて来るが、Bedrock は暗号化開始後の encapsulated
+    // payload の中身を解析できず、`frame_set_contains_body_id` が
+    // 大きなパケット (ワールドロード等) の中で偶然の 0x15 バイトを
+    // 誤検知して進行中セッションを勝手に閉じていた。
+    //
+    // 正しい方針: client→backend 方向の disconnect はそのまま転送するだけ。
+    // backend (Geyser) がそれを受け取って本当に切断すべきなら backend 側
+    // から DisconnectNotification が返り、`spawn_backend_recv` 内の
+    // `contains_disconnect(&response)` で検出して自然にセッションを畳む。
+    // また、client 側からの新規パケットが来なくなれば idle_timeout で
+    // 自動的にセッションが消える。誤検知ゼロ、正しいシャットダウン維持。
 
     Ok(())
 }
@@ -275,6 +286,11 @@ async fn obtain_session(
 /// Removes and tears down the session for `peer`. The map `remove` is the
 /// single source of truth for who fires the close metric, so this never
 /// double-counts against the backend receive loop's own natural-exit cleanup.
+///
+/// 現在は client 側 payload の内容による明示的 close は行っておらず、
+/// backend 受信ループの自然終了 (idle timeout / backend disconnect / EOF)
+/// に一本化しているので未使用だが、将来別経路で必要になった時に備えて残す。
+#[allow(dead_code)]
 async fn close_session(sessions: &SessionMap, runtime: &AppRuntime, peer: SocketAddr) {
     let removed = { sessions.lock().await.remove(&peer) };
     if let Some(session) = removed {
