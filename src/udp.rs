@@ -171,8 +171,6 @@ async fn handle_datagram(
         maybe_notify_connect(&runtime, &rule, &session, original_client).await;
     }
 
-    // NOTE: 以前はここで `contains_disconnect(&payload)` を判定して
-
     Ok(())
 }
 
@@ -184,12 +182,6 @@ async fn handle_datagram(
 /// してしまい、Geyser 側 RakNet が古い upstream ソケットに応答を送り続けて
 /// TIMED_OUT を引き起こしていた。
 ///
-/// 正しい再接続は「DisconnectNotification (0x15) → 新規 OpenConnectionRequest1」
-/// のシーケンスで、前者は `contains_disconnect` が検出して `close_session` が
-/// セッションを削除するため、次の 0x05 では自然に新規セッションが作られる。
-/// つまり `is_new_conn` に基づくリセットは不要どころか有害。
-///
-/// `is_new_conn` 引数は将来の再拡張余地のために残しているが、現在は使わない。
 async fn obtain_session(
     server: &Arc<UdpSocket>,
     sessions: &SessionMap,
@@ -328,7 +320,6 @@ fn spawn_backend_recv(
                     runtime.metrics.udp_target_to_client_bytes(response.len());
                     debug!("UDP {backend_addr} -> {peer} {}B", response.len());
 
-                    // NOTE: 以前はここで `contains_disconnect(&response)` を判定して
                 }
                 Ok(Err(err)) => {
                     error!("UDP backend socket for {peer} failed: {err}");
