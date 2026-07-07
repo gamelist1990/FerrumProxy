@@ -12,10 +12,9 @@ use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 use crate::bedrock::{
-    contains_disconnect, describe_offline_ping, describe_raknet_packet, describe_unconnected_pong,
-    is_offline_ping, is_open_connection_request_1, is_unconnected_pong,
-    rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
-    strip_unconnected_pong_name_quotes,
+    describe_offline_ping, describe_raknet_packet, describe_unconnected_pong, is_offline_ping,
+    is_open_connection_request_1, is_unconnected_pong, rewrite_unconnected_pong_ports,
+    rewrite_unconnected_pong_timestamp, strip_unconnected_pong_name_quotes,
 };
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
@@ -371,12 +370,18 @@ fn spawn_backend_recv(
                     runtime.metrics.udp_target_to_client_bytes(response.len());
                     debug!("UDP {backend_addr} -> {peer} {}B", response.len());
 
-                    // Server-initiated disconnect (kick / shutdown): forward it
-                    // (done above), then stop so a rejoin starts clean.
-                    if contains_disconnect(&response) {
-                        debug!("UDP session closed by backend disconnect {peer}");
-                        break;
-                    }
+                    // NOTE: 以前はここで `contains_disconnect(&response)` を判定して
+                    // backend からの kick / shutdown を検出し break していたが、
+                    // これは client 側の同じ誤検知と同じ理由で有害だった:
+                    // Bedrock RakNet の FrameSet は backend → client 方向でも
+                    // encapsulated payload が (Bedrock プロトコル層で) 暗号化されて
+                    // いるため、大きなパケット (world load 等) の中の偶然の 0x15
+                    // バイトを DisconnectNotification と誤検知して進行中セッションを
+                    // 破棄していた。ログでは upstream socket が数秒で別 port に
+                    // 切り替わり、Geyser 側は PROXY header 不整合 (over 1172 bytes)
+                    // で切断していた。
+                    //
+                    // 真の切断は idle timeout (10s) が代わりに拾う。
                 }
                 Ok(Err(err)) => {
                     error!("UDP backend socket for {peer} failed: {err}");
