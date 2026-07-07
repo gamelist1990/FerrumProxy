@@ -2,6 +2,17 @@ endpoint: 6000
 useRestApi: false
 savePlayerIP: true
 debug: false
+
+# Automatic host firewall configuration. When enabled, FerrumProxy detects the
+# active firewall on this host (ufw > firewalld > nftables > iptables on Linux,
+# netsh on Windows) and adds ACCEPT rules for each listener's TCP/UDP port.
+# Existing rules are detected and left alone -- no duplicates.
+# Disable this if you manage the firewall externally (cloud security groups,
+# reverse-proxy in front, etc.).
+firewall:
+  enabled: true
+  # auto | off | ufw | firewalld | iptables | nftables | netsh
+  mode: auto
 sharedService:
   enabled: false
   controlBind: 0.0.0.0:7000

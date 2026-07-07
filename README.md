@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ FerrumProxy
+# FerrumProxy
 
 **Minecraft と Web のための、爆速・低遅延な Rust 製リバースプロキシ**
 
@@ -10,7 +10,7 @@
 ![Binary size](https://img.shields.io/badge/binary-~9MB-brightgreen)
 ![Idle RAM](https://img.shields.io/badge/idle_RAM-~10MB-brightgreen)
 
-**「難しい設定ゼロ」で本番運用できる、ゲームサーバー向けプロキシ**
+**「難しい設定ゼロ」で本番運用できる、ゲームサーバー向けプロキシだよ～**
 
 </div>
 
@@ -18,7 +18,7 @@
 
 ## 📖 これは何？
 
-**FerrumProxy** (フェラムプロキシ) は、Rust で書かれた小さな **中継サーバー** です。
+**FerrumProxy** (フェルムプロキシ) は、Rust で書かれた小さな **中継サーバー** です。
 
 > 「中継サーバー」＝ 外から来た通信を、あなたのサーバー本体に受け渡す仕組みのこと。
 > nginx や HAProxy と同じ「プロキシ」というジャンルの、**Minecraft・Web 特化版** です。
@@ -34,11 +34,11 @@
 
 ### 何に使える？
 
-- 🎮 **Minecraft Bedrock サーバー** を Geyser 経由で公開する (RakNet 対応)
-- ☕ **Minecraft Java サーバー** を安全に公開する (TCP 転送)
-- 🌐 **Web サーバー** の前段に置いて TLS 終端 / パス書き換え
-- 🛡 **DDoS 対策** を IP 単位で軽量に (iptables 不要)
-- 🔗 **公開ポート共有 (Playit 風)** — 一時ポートで自宅サーバーを公開
+-  **Minecraft Bedrock サーバー** を Geyser 経由で公開する (RakNet 対応)
+-  **Minecraft Java サーバー** を安全に公開する (TCP 転送)
+-  **Web サーバー** の前段に置いて TLS 終端 / パス書き換え
+-  **DDoS 対策** を IP 単位で軽量に (iptables 不要)
+-  **公開ポート共有 (Playit 風)** — 一時ポートで自宅サーバーを公開
 
 ---
 
@@ -64,10 +64,10 @@
 
 ```mermaid
 graph LR
-    Client([🎮 Bedrock<br/>クライアント])
-    Proxy[⚡ FerrumProxy]
-    Backend[🖥 Geyser / Java<br/>サーバー]
-    GUI[🖥 FerrumGUI<br/>Web 管理画面]
+    Client([Bedrock<br/>クライアント])
+    Proxy[FerrumProxy]
+    Backend[Geyser / Java<br/>サーバー]
+    GUI[FerrumGUI<br/>Web 管理画面]
 
     Client -.UDP/RakNet.-> Proxy
     Proxy -.PROXY v2 + UDP.-> Backend
@@ -81,10 +81,10 @@ graph LR
 
 ```mermaid
 sequenceDiagram
-    participant C as 🎮 Client
-    participant P as ⚡ FerrumProxy
-    participant Cache as 📦 Pong Cache
-    participant B as 🖥 Geyser Backend
+    participant C as Client
+    participant P as FerrumProxy
+    participant Cache as Pong Cache
+    participant B as Geyser Backend
 
     Note over C,B: サーバー一覧 (ping)
     C->>P: UNCONNECTED_PING
@@ -92,7 +92,7 @@ sequenceDiagram
     alt キャッシュあり (3秒以内)
         Cache-->>P: 保存済み PONG
         P-->>C: 即応答 (0.02ms)
-        Note over P,B: backend への転送はスキップ ⚡
+        Note over P,B: backend への転送はスキップ
     else 初回 or キャッシュ切れ
         P->>B: PING 転送
         B-->>P: PONG
@@ -109,27 +109,27 @@ sequenceDiagram
 
 ---
 
-## 🏗 アーキテクチャ設計
+## アーキテクチャ設計
 
 ```mermaid
 graph TB
-    subgraph "🌐 外部"
+    subgraph "外部"
         BC[Bedrock クライアント<br/>UDP]
         JC[Java クライアント<br/>TCP]
         WC[Web ブラウザ<br/>HTTPS]
     end
 
-    subgraph "⚡ FerrumProxy Core"
+    subgraph "FerrumProxy Core"
         Listener[Listener<br/>マルチプロトコル待受]
         UDPPath[UDP 転送パス<br/>Bedrock 対応]
         TCPPath[TCP 転送パス<br/>Java / 汎用]
         HTTPPath[HTTPS + パス書換<br/>Web 用]
-        DDoS[🛡 DDoS Guard<br/>IP 単位 rate limit]
-        PongCache[📦 Pong Cache<br/>Listener 共有]
-        SessionMap[🗺 Session Map<br/>Peer 単位状態管理]
+        DDoS[DDoS Guard<br/>IP 単位 rate limit]
+        PongCache[Pong Cache<br/>Listener 共有]
+        SessionMap[Session Map<br/>Peer 単位状態管理]
     end
 
-    subgraph "🖥 バックエンド"
+    subgraph "バックエンド"
         Geyser[Geyser<br/>Bedrock→Java 変換]
         JavaSrv[Java サーバー]
         WebApp[Web アプリ]
@@ -156,9 +156,9 @@ graph TB
 
 ---
 
-## ✨ 主な機能
+## 主な機能
 
-### 🎮 Minecraft 特化機能
+### Minecraft 特化機能
 
 | 機能 | 説明 |
 |---|---|
@@ -169,7 +169,7 @@ graph TB
 | **双方向 idle 検出** | ワールドロード中の沈黙で誤切断しない |
 | **RakNet 順序保証** | パケット並び替え問題を回避 |
 
-### 🌐 Web リバースプロキシ機能
+### Web リバースプロキシ機能
 
 | 機能 | 説明 |
 |---|---|
@@ -192,60 +192,28 @@ graph TB
 
 ---
 
-## 🆚 他プロキシとの比較
+## 他プロキシとの比較
 
 ### FerrumProxy が得意なところ
 
 | 項目 | 🔥 FerrumProxy | nginx / HAProxy | Node.js プロキシ |
 |---|:---:|:---:|:---:|
 | **Bedrock RakNet 対応** | ✅ 専用実装 | ❌ 不可 | ⚠️ 実装次第 |
-| **Bedrock Pong 書き換え** | ✅ 内蔵 | ❌ 不可 | ⚠️ 自分で書く |
+| **Bedrock Pong 書き換え** | ✅ 内蔵 | ❌ 不可 | ⚠️ 自作でやるしか.. |
 | **PROXY Protocol v2 (UDP)** | ✅ 送受信両対応 | ⚠️ HAProxy のみ TCP | ❌ ほぼ無い |
 | **単一バイナリ** | ✅ ~9 MB | ⚠️ nginx は依存あり | ❌ Node ランタイム必須 |
 | **アイドル時 RAM** | ✅ ~10 MB | ~30 MB | ~80 MB+ |
 | **GC (Stop-the-world)** | ✅ なし | ✅ なし | ❌ V8 の GC あり |
-| **設定 GUI** | ✅ 内蔵 (FerrumGUI) | ❌ 別途 | ❌ 自作必要 |
+| **設定 GUI** | ✅ 内蔵 (FerrumGUI) | ❌ 別途 | ❌ 自作必要dayo |
 | **設定ホットリロード** | ✅ 即反映 | ⚠️ `nginx -s reload` | ⚠️ プロセス再起動 |
-| **Web 一般用途** | ✅ 対応 | ⭐ 王道 | ✅ 対応 |
+| **Web 一般用途** | ✅ 対応 | ⭐ みんな使ってるはず | ✅ 対応 |
 | **HTTP/2 / HTTP/3** | ❌ 未対応 | ✅ 対応 | ✅ 対応 |
 
 **まとめ**: 汎用 Web だけなら nginx で十分ですが、**Bedrock を含む Minecraft サーバー運用**では他に選択肢がほぼありません。
 
 ---
 
-## 🧰 使用ライブラリ
-
-```mermaid
-graph TB
-    subgraph "🦀 Rust エコシステム"
-        Tokio[tokio<br/>非同期ランタイム]
-        Rustls[tokio-rustls<br/>Pure Rust TLS]
-        Axum[axum<br/>Web フレームワーク]
-        Serde[serde + serde_yaml<br/>設定パース]
-        Socket2[socket2<br/>ソケット低レベル制御]
-    end
-
-    subgraph "🌐 GUI (別プロセス)"
-        Bun[Bun<br/>ランタイム]
-        React[React<br/>UI]
-        Vite[Vite<br/>ビルド]
-    end
-
-    Tokio --> FP[⚡ FerrumProxy]
-    Rustls --> FP
-    Axum --> FP
-    Serde --> FP
-    Socket2 --> FP
-
-    Bun --> GUI[🖥 FerrumGUI]
-    React --> GUI
-    Vite --> GUI
-
-    FP <-.REST API.-> GUI
-
-    style FP fill:#ff6b35,color:#fff
-    style GUI fill:#4ecdc4,color:#fff
-```
+## 使用ライブラリ
 
 ### 主要な依存関係
 
@@ -307,16 +275,7 @@ ddosGuard:
 # Windows
 .\ferrum-proxy.exe --config config.yml
 ```
-
-起動ログ例:
-
-```
-🔥 FerrumProxy v0.1.0 starting
-📡 UDP listening on 0.0.0.0:19132
-🛡 DDoS guard enabled (balanced preset)
-✅ Ready
-```
-
+    
 ---
 
 ## 🖥 FerrumGUI (Web 管理画面)

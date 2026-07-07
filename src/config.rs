@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::ddos_guard::DdosGuardSettings;
+use crate::firewall::FirewallConfig;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Protocol {
@@ -30,6 +31,14 @@ pub struct ProxyConfig {
     pub ddos_guard: DdosGuardConfig,
     #[serde(default)]
     pub high_latency: HighLatencyConfig,
+    /// Automatic OS firewall (ufw / firewalld / iptables / nftables / netsh)
+    /// configuration. Enabled by default: when FerrumProxy starts it probes
+    /// which firewall is active on the host and adds ACCEPT rules for every
+    /// listener port that doesn't already have one. Set `enabled: false` when
+    /// the host firewall is intentionally managed externally (cloud LB,
+    /// security group, another config-management tool).
+    #[serde(default)]
+    pub firewall: FirewallConfig,
     pub listeners: Vec<ListenerRule>,
 }
 
