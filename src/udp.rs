@@ -7,7 +7,6 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::net::{lookup_host, UdpSocket};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
@@ -24,7 +23,23 @@ use crate::tcp_tuning::apply_udp_buffer_sizes;
 
 const MAX_DATAGRAM_SIZE: usize = 65_535;
 
-type SessionMap = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSession>>>>;
+/// Sessions live in a std::sync::Mutex (NOT tokio::sync::Mutex) even though
+/// this is an async codebase. Rationale:
+///
+///   * Every packet does a `sessions.lock()` at least once, and one Bedrock
+///     join fires 200+ packets in bursts.
+///   * tokio's async Mutex is optimised for *long* critical sections and
+///     for holding across `.await` points -- neither applies here. Its
+///     acquire path always registers the task with a waiter list and yields
+///     to the scheduler, and on a shared-vCPU host (e.g. Xserver free tier)
+///     that scheduler round-trip costs tens to hundreds of microseconds.
+///   * Our critical sections are pure map ops (get / insert / remove) that
+///     complete in microseconds without any `.await`. std::sync::Mutex takes
+///     a single atomic op in the uncontended case, which is *what the`n///     workload actually is* -- there is one listener task producing all
+///     the accesses so there is no contention.
+///
+/// Just make sure nothing inside the guard is `.await`ed.
+type SessionMap = Arc<StdMutex<HashMap<SocketAddr, Arc<UdpSession>>>>;
 
 /// Listener-wide cache of the most recent backend UNCONNECTED_PONG.
 /// Shared across every session on a listener so a fresh pong from one client
@@ -122,7 +137,7 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     // spike don't spend microseconds queueing behind the default 200 KiB
     // send/recv sizes.
     apply_udp_buffer_sizes(&server, "udp listener");
-    let sessions: SessionMap = Arc::new(Mutex::new(HashMap::new()));
+    let sessions: SessionMap = Arc::new(StdMutex::new(HashMap::new()));
     let shared_pong: SharedPongCache = Arc::new(StdMutex::new(None));
 
     info!("UDP listening on {bind}");
@@ -297,7 +312,7 @@ async fn obtain_session(
     _is_new_conn: bool,
 ) -> Result<Arc<UdpSession>> {
     {
-        let guard = sessions.lock().await;
+        let guard = sessions.lock().unwrap();
         if let Some(existing) = guard.get(&peer) {
             return Ok(Arc::clone(existing));
         }
@@ -315,7 +330,7 @@ async fn obtain_session(
     // buffers to avoid drops during the initial burst to the backend.
     apply_udp_buffer_sizes(&socket, "udp upstream session");
 
-    let mut guard = sessions.lock().await;
+    let mut guard = sessions.lock().unwrap();
     if let Some(existing) = guard.get(&peer) {
         return Ok(Arc::clone(existing));
     }
@@ -357,7 +372,7 @@ async fn obtain_session(
 /// に一本化しているので未使用だが、将来別経路で必要になった時に備えて残す。
 #[allow(dead_code)]
 async fn close_session(sessions: &SessionMap, runtime: &AppRuntime, peer: SocketAddr) {
-    let removed = { sessions.lock().await.remove(&peer) };
+    let removed = { sessions.lock().unwrap().remove(&peer) };
     if let Some(session) = removed {
         session.abort_recv_task();
         runtime.metrics.udp_session_closed();
@@ -473,7 +488,7 @@ fn spawn_backend_recv(
             }
         }
 
-        let removed = sessions.lock().await.remove(&peer).is_some();
+        let removed = sessions.lock().unwrap().remove(&peer).is_some();
         if removed {
             runtime.metrics.udp_session_closed();
         }
