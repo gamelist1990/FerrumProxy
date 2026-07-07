@@ -6,8 +6,6 @@ import { randomUUID } from 'crypto';
 type Protocol = 'tcp' | 'udp';
 
 export interface SharedServiceLimits {
-  maxTcpConnections: number;
-  maxUdpPeers: number;
   maxBytesPerSecond: number;
   idleTimeoutSeconds: number;
   udpSessionTimeoutSeconds: number;
@@ -83,8 +81,6 @@ interface UdpPeer {
 }
 
 const DEFAULT_LIMITS: SharedServiceLimits = {
-  maxTcpConnections: 32,
-  maxUdpPeers: 64,
   maxBytesPerSecond: 10 * 1024 * 1024,
   idleTimeoutSeconds: 120,
   udpSessionTimeoutSeconds: 60,
@@ -242,11 +238,6 @@ export class SharedServiceManager extends EventEmitter {
     remote.setKeepAlive(true, 15000);
 
     const remoteAddress = `${remote.remoteAddress || 'unknown'}:${remote.remotePort || 0}`;
-    if (this.tcpConnections.size >= this.status.limits.maxTcpConnections) {
-      this.log('warn', 'share.limit_reached', 'TCP connection limit reached', 'tcp', remoteAddress);
-      remote.destroy();
-      return;
-    }
 
     const local = net.createConnection({ host: localHost, port: localPort });
     local.setNoDelay(true);
@@ -347,13 +338,6 @@ export class SharedServiceManager extends EventEmitter {
     const peerId = `${remoteHost}:${remotePort}`;
     let peer = this.udpPeers.get(peerId);
     if (!peer) {
-      if (this.udpPeers.size >= this.status.limits.maxUdpPeers) {
-        this.status.stats.droppedDatagrams += 1;
-        this.log('warn', 'share.limit_reached', 'UDP peer limit reached', 'udp', peerId);
-        this.emitChange();
-        return;
-      }
-
       const localSocket = dgram.createSocket('udp4');
       peer = {
         remoteHost,
@@ -461,8 +445,6 @@ export class SharedServiceManager extends EventEmitter {
 
   private normalizeLimits(limits?: Partial<SharedServiceLimits>): SharedServiceLimits {
     return {
-      maxTcpConnections: this.positiveInt(limits?.maxTcpConnections, DEFAULT_LIMITS.maxTcpConnections),
-      maxUdpPeers: this.positiveInt(limits?.maxUdpPeers, DEFAULT_LIMITS.maxUdpPeers),
       maxBytesPerSecond: this.positiveInt(limits?.maxBytesPerSecond, DEFAULT_LIMITS.maxBytesPerSecond),
       idleTimeoutSeconds: this.positiveInt(limits?.idleTimeoutSeconds, DEFAULT_LIMITS.idleTimeoutSeconds),
       udpSessionTimeoutSeconds: this.positiveInt(limits?.udpSessionTimeoutSeconds, DEFAULT_LIMITS.udpSessionTimeoutSeconds),

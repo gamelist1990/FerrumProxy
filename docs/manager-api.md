@@ -99,9 +99,7 @@ Body:
   "priority": 10,
   "fixedPort": 41000,
   "limits": {
-    "maxBytesPerSecond": 10485760,
-    "maxTcpConnections": 32,
-    "maxUdpPeers": 64
+    "maxBytesPerSecond": 10485760
   }
 }
 ```
@@ -193,9 +191,7 @@ curl -X POST "http://<gui-host>:3000/api/instances/<instanceId>/manager/api/v1/t
     "priority": 10,
     "fixedPort": 41000,
     "limits": {
-      "maxBytesPerSecond": 10485760,
-      "maxTcpConnections": 32,
-      "maxUdpPeers": 64
+      "maxBytesPerSecond": 10485760
     }
   }'
 ```

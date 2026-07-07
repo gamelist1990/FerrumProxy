@@ -38,23 +38,17 @@ export interface FerrumProxyConfig {
       fixedPort?: number;
       priority?: number;
       limits?: {
-        maxTcpConnections?: number;
-        maxUdpPeers?: number;
         maxBytesPerSecond?: number;
         idleTimeoutSeconds?: number;
         udpSessionTimeoutSeconds?: number;
       };
     }>;
     defaults?: {
-      maxTcpConnections?: number;
-      maxUdpPeers?: number;
       maxBytesPerSecond?: number;
       idleTimeoutSeconds?: number;
       udpSessionTimeoutSeconds?: number;
     };
     maximums?: {
-      maxTcpConnections?: number;
-      maxUdpPeers?: number;
       maxBytesPerSecond?: number;
       idleTimeoutSeconds?: number;
       udpSessionTimeoutSeconds?: number;
@@ -253,8 +247,6 @@ export class ConfigManager extends EventEmitter {
       for (const groupName of ['defaults', 'maximums'] as const) {
         const group = shared[groupName];
         if (!group) continue;
-        validatePositiveLimit(group.maxTcpConnections, `sharedService.${groupName}.maxTcpConnections`);
-        validatePositiveLimit(group.maxUdpPeers, `sharedService.${groupName}.maxUdpPeers`);
         validatePositiveLimit(group.maxBytesPerSecond, `sharedService.${groupName}.maxBytesPerSecond`);
         validatePositiveLimit(group.idleTimeoutSeconds, `sharedService.${groupName}.idleTimeoutSeconds`);
         validatePositiveLimit(group.udpSessionTimeoutSeconds, `sharedService.${groupName}.udpSessionTimeoutSeconds`);
@@ -286,8 +278,6 @@ export class ConfigManager extends EventEmitter {
               errors.push(`sharedService.tokens[${index}].priority must be a non-negative integer`);
             }
             if (token.limits) {
-              validatePositiveLimit(token.limits.maxTcpConnections, `sharedService.tokens[${index}].limits.maxTcpConnections`);
-              validatePositiveLimit(token.limits.maxUdpPeers, `sharedService.tokens[${index}].limits.maxUdpPeers`);
               validatePositiveLimit(token.limits.maxBytesPerSecond, `sharedService.tokens[${index}].limits.maxBytesPerSecond`);
               validatePositiveLimit(token.limits.idleTimeoutSeconds, `sharedService.tokens[${index}].limits.idleTimeoutSeconds`);
               validatePositiveLimit(token.limits.udpSessionTimeoutSeconds, `sharedService.tokens[${index}].limits.udpSessionTimeoutSeconds`);

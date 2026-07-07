@@ -1,17 +1,20 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 use crate::bedrock::{
-    describe_offline_ping, describe_raknet_packet, describe_unconnected_pong,
-    is_disconnect_notification, is_offline_ping, is_unconnected_pong,
+    contains_disconnect, describe_offline_ping, describe_raknet_packet, describe_unconnected_pong,
+    is_offline_ping, is_open_connection_request_1, is_unconnected_pong,
     rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
 };
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
@@ -21,15 +24,38 @@ use crate::runtime::AppRuntime;
 const UDP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_DATAGRAM_SIZE: usize = 65_535;
 
-type SessionMap = Arc<Mutex<HashMap<SocketAddr, UdpSession>>>;
+type SessionMap = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSession>>>>;
 
-#[derive(Clone)]
+/// Per-client relay state.
+///
+/// Sessions are shared via `Arc` and mutated in place through atomics / small
+/// locks. Nothing is ever cloned-out and written back, which removes the
+/// read-modify-write races (including the "resurrected session" bug) that the
+/// previous `insert`-on-every-datagram design suffered from.
 struct UdpSession {
+    /// Dedicated upstream socket for this client.
     socket: Arc<UdpSocket>,
-    active_target_index: usize,
-    header_sent: bool,
-    notified: bool,
-    cached_offline_pong: Option<Vec<u8>>,
+    /// Index of the currently selected upstream target (failover cursor).
+    active_target_index: AtomicUsize,
+    /// Whether a PROXY v2 header has already been prepended on this socket.
+    header_sent: AtomicBool,
+    /// Whether the connect webhook/notification has fired.
+    notified: AtomicBool,
+    /// True once we have seen a connected FrameSet from the client. A fresh
+    /// OpenConnectionRequest1 arriving after this point means a real reconnect.
+    established: AtomicBool,
+    /// Last backend UNCONNECTED_PONG, replayed instantly to new pings.
+    cached_offline_pong: StdMutex<Option<Vec<u8>>>,
+    /// Handle to the backend receive loop, so teardown can abort it promptly.
+    recv_task: StdMutex<Option<JoinHandle<()>>>,
+}
+
+impl UdpSession {
+    fn abort_recv_task(&self) {
+        if let Some(handle) = self.recv_task.lock().unwrap().take() {
+            handle.abort();
+        }
+    }
 }
 
 pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) -> Result<()> {
@@ -105,37 +131,24 @@ async fn handle_datagram(
         debug!("RakNet client packet from {original_client} via {peer}: {description}");
     }
 
-    let mut session = {
-        let guard = sessions.lock().await;
-        guard.get(&peer).cloned()
-    };
-
-    if session.is_none() {
-        session = Some(
-            create_session(
-                Arc::clone(&server),
-                Arc::clone(&sessions),
-                Arc::clone(&rule),
-                Arc::clone(&runtime),
-                peer,
-            )
-            .await?,
-        );
-    }
-
-    let mut session = session.context("failed to create UDP session")?;
-
-    if is_disconnect_notification(&payload) {
-        sessions.lock().await.remove(&peer);
-        debug!("UDP session closed by disconnect notification {peer}");
-        return Ok(());
-    }
+    // A fresh OpenConnectionRequest1 on an already-established session means the
+    // client left and is rejoining: obtain_session tears the old one down and
+    // hands the backend a brand-new upstream socket for an immediate reconnect.
+    let is_new_conn = is_open_connection_request_1(&payload);
+    let session = obtain_session(
+        &server,
+        &sessions,
+        &rule,
+        &runtime,
+        peer,
+        is_new_conn,
+    )
+    .await?;
 
     if is_offline_ping(&payload) {
-        if let (Some(cached_pong), Some(timestamp)) =
-            (session.cached_offline_pong.as_ref(), payload.get(1..9))
-        {
-            let immediate_pong = rewrite_unconnected_pong_timestamp(cached_pong, timestamp)
+        let cached = session.cached_offline_pong.lock().unwrap().clone();
+        if let (Some(cached_pong), Some(timestamp)) = (cached, payload.get(1..9)) {
+            let immediate_pong = rewrite_unconnected_pong_timestamp(&cached_pong, timestamp)
                 .unwrap_or_else(|| {
                     let mut out = cached_pong.clone();
                     if out.len() >= 9 {
@@ -155,28 +168,53 @@ async fn handle_datagram(
         }
     }
 
-    try_send_udp(&rule, &runtime, &mut session, original_client, &payload).await?;
-    if !session.notified {
+    try_send_udp(&rule, &runtime, &session, original_client, &payload).await?;
+
+    // Mark the session established once real connected traffic (a FrameSet)
+    // flows, so retransmitted handshake packets don't trigger a reset.
+    if matches!(payload.first(), Some(0x80..=0x8d)) {
+        session.established.store(true, Ordering::Relaxed);
+    }
+
+    if !session.notified.swap(true, Ordering::Relaxed) {
         maybe_notify_connect(&runtime, &rule, &session, original_client).await;
-        session.notified = true;
     }
-    let mut guard = sessions.lock().await;
-    if session.cached_offline_pong.is_none() {
-        if let Some(current) = guard.get(&peer) {
-            session.cached_offline_pong = current.cached_offline_pong.clone();
-        }
+
+    // Client-initiated disconnect: forward it (done above) so the backend can
+    // release its RakNet connection immediately, then drop our session.
+    if contains_disconnect(&payload) {
+        close_session(&sessions, &runtime, peer).await;
+        debug!("UDP session closed by disconnect notification {peer}");
     }
-    guard.insert(peer, session);
+
     Ok(())
 }
 
-async fn create_session(
-    server: Arc<UdpSocket>,
-    sessions: SessionMap,
-    rule: Arc<ListenerRule>,
-    runtime: Arc<AppRuntime>,
+/// Returns the session for `peer`, creating one if needed. If `is_new_conn` is
+/// set and an *established* session already exists, that session is torn down
+/// and replaced — this is what makes rejoining a world instant instead of
+/// waiting for the old session to idle out.
+async fn obtain_session(
+    server: &Arc<UdpSocket>,
+    sessions: &SessionMap,
+    rule: &Arc<ListenerRule>,
+    runtime: &Arc<AppRuntime>,
     peer: SocketAddr,
-) -> Result<UdpSession> {
+    is_new_conn: bool,
+) -> Result<Arc<UdpSession>> {
+    // Fast path: reuse the existing session unless this is a reconnect.
+    {
+        let guard = sessions.lock().await;
+        if let Some(existing) = guard.get(&peer) {
+            let reset = is_new_conn && existing.established.load(Ordering::Relaxed);
+            if !reset {
+                return Ok(Arc::clone(existing));
+            }
+        }
+    }
+
+    // Slow path: bind the new upstream socket outside the map lock to keep the
+    // hot path (data forwarding for other clients) from stalling.
     let socket = Arc::new(
         UdpSocket::bind(if peer.is_ipv6() {
             "[::]:0"
@@ -185,17 +223,70 @@ async fn create_session(
         })
         .await?,
     );
-    runtime.metrics.udp_session_opened();
-    let recv_socket = Arc::clone(&socket);
-    let send_server = Arc::clone(&server);
-    let recv_sessions = Arc::clone(&sessions);
-    let recv_rule = Arc::clone(&rule);
-    let recv_runtime = Arc::clone(&runtime);
 
+    let mut guard = sessions.lock().await;
+    if let Some(existing) = guard.get(&peer) {
+        let reset = is_new_conn && existing.established.load(Ordering::Relaxed);
+        if reset {
+            if let Some(old) = guard.remove(&peer) {
+                old.abort_recv_task();
+                runtime.metrics.udp_session_closed();
+                debug!("UDP reconnect: reset established session for {peer}");
+            }
+        } else {
+            // Another datagram created the session while we were binding; drop
+            // our now-unneeded socket and reuse theirs.
+            return Ok(Arc::clone(existing));
+        }
+    }
+
+    let session = Arc::new(UdpSession {
+        socket: Arc::clone(&socket),
+        active_target_index: AtomicUsize::new(0),
+        header_sent: AtomicBool::new(false),
+        notified: AtomicBool::new(false),
+        established: AtomicBool::new(false),
+        cached_offline_pong: StdMutex::new(None),
+        recv_task: StdMutex::new(None),
+    });
+    runtime.metrics.udp_session_opened();
+
+    let handle = spawn_backend_recv(
+        Arc::clone(&session),
+        Arc::clone(server),
+        Arc::clone(sessions),
+        Arc::clone(rule),
+        Arc::clone(runtime),
+        peer,
+    );
+    *session.recv_task.lock().unwrap() = Some(handle);
+    guard.insert(peer, Arc::clone(&session));
+    Ok(session)
+}
+
+/// Removes and tears down the session for `peer`. The map `remove` is the
+/// single source of truth for who fires the close metric, so this never
+/// double-counts against the backend receive loop's own natural-exit cleanup.
+async fn close_session(sessions: &SessionMap, runtime: &AppRuntime, peer: SocketAddr) {
+    let removed = { sessions.lock().await.remove(&peer) };
+    if let Some(session) = removed {
+        session.abort_recv_task();
+        runtime.metrics.udp_session_closed();
+    }
+}
+
+fn spawn_backend_recv(
+    session: Arc<UdpSession>,
+    server: Arc<UdpSocket>,
+    sessions: SessionMap,
+    rule: Arc<ListenerRule>,
+    runtime: Arc<AppRuntime>,
+    peer: SocketAddr,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
         loop {
-            match timeout(UDP_SESSION_IDLE_TIMEOUT, recv_socket.recv_from(&mut buf)).await {
+            match timeout(UDP_SESSION_IDLE_TIMEOUT, session.socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, backend_addr))) => {
                     let mut response = buf[..len].to_vec();
                     if let Ok(parsed) = parse_proxy_chain(&response) {
@@ -204,12 +295,11 @@ async fn create_session(
                         }
                     }
 
-                    if recv_rule.rewrite_bedrock_pong_ports {
+                    if rule.rewrite_bedrock_pong_ports {
                         let before_rewrite = describe_unconnected_pong(&response);
-                        if let Some(rewritten) = rewrite_unconnected_pong_ports(
-                            &response,
-                            recv_rule.udp.unwrap_or_default(),
-                        ) {
+                        if let Some(rewritten) =
+                            rewrite_unconnected_pong_ports(&response, rule.udp.unwrap_or_default())
+                        {
                             if let Some(before_rewrite) = before_rewrite {
                                 let after_rewrite = describe_unconnected_pong(&rewritten)
                                     .unwrap_or_else(|| format!("len={}", rewritten.len()));
@@ -219,9 +309,7 @@ async fn create_session(
                             }
                             response = rewritten;
                         } else if let Some(description) = before_rewrite {
-                            debug!(
-                                "Bedrock pong did not need port rewrite for {peer}: {description}"
-                            );
+                            debug!("Bedrock pong did not need port rewrite for {peer}: {description}");
                         }
                     }
 
@@ -231,23 +319,24 @@ async fn create_session(
                                 "Bedrock pong from backend {backend_addr} to {peer}: {description}"
                             );
                         }
-                        if let Some(session) = recv_sessions.lock().await.get_mut(&peer) {
-                            session.cached_offline_pong = Some(response.clone());
-                        }
+                        *session.cached_offline_pong.lock().unwrap() = Some(response.clone());
                     } else if let Some(description) = describe_raknet_packet(&response) {
-                        debug!(
-                            "RakNet backend packet from {backend_addr} to {peer}: {description}"
-                        );
+                        debug!("RakNet backend packet from {backend_addr} to {peer}: {description}");
                     }
 
-                    if let Err(err) = send_server.send_to(&response, peer).await {
+                    if let Err(err) = server.send_to(&response, peer).await {
                         error!("UDP response send to {peer} failed: {err}");
                         break;
                     }
-                    recv_runtime
-                        .metrics
-                        .udp_target_to_client_bytes(response.len());
+                    runtime.metrics.udp_target_to_client_bytes(response.len());
                     debug!("UDP {backend_addr} -> {peer} {}B", response.len());
+
+                    // Server-initiated disconnect (kick / shutdown): forward it
+                    // (done above), then stop so a rejoin starts clean.
+                    if contains_disconnect(&response) {
+                        debug!("UDP session closed by backend disconnect {peer}");
+                        break;
+                    }
                 }
                 Ok(Err(err)) => {
                     error!("UDP backend socket for {peer} failed: {err}");
@@ -255,25 +344,20 @@ async fn create_session(
                 }
                 Err(_) => {
                     debug!("UDP session idle timeout {peer}");
-                    maybe_notify_disconnect(&recv_runtime, &recv_rule, peer).await;
+                    maybe_notify_disconnect(&runtime, &rule, peer).await;
                     break;
                 }
             }
         }
 
-        recv_sessions.lock().await.remove(&peer);
-        recv_runtime.metrics.udp_session_closed();
-    });
-
-    let session = UdpSession {
-        socket,
-        active_target_index: 0,
-        header_sent: false,
-        notified: false,
-        cached_offline_pong: None,
-    };
-    sessions.lock().await.insert(peer, session.clone());
-    Ok(session)
+        // Natural exit. `remove` returning the session means we own the metric
+        // decrement; if teardown already removed it we stay silent (no abort of
+        // ourselves is needed here — we are the task that is ending).
+        let removed = sessions.lock().await.remove(&peer).is_some();
+        if removed {
+            runtime.metrics.udp_session_closed();
+        }
+    })
 }
 
 async fn maybe_notify_connect(
@@ -291,10 +375,8 @@ async fn maybe_notify_connect(
     };
 
     let targets = rule.targets_for(Protocol::Udp);
-    let Some(target) = targets
-        .get(session.active_target_index)
-        .or_else(|| targets.first())
-    else {
+    let index = session.active_target_index.load(Ordering::Relaxed);
+    let Some(target) = targets.get(index).or_else(|| targets.first()) else {
         return;
     };
     let target_key = format!("{}:{}", target.host, target.udp.unwrap_or_default());
@@ -357,7 +439,7 @@ async fn maybe_notify_disconnect(
 async fn try_send_udp(
     rule: &ListenerRule,
     runtime: &AppRuntime,
-    session: &mut UdpSession,
+    session: &UdpSession,
     original_client: SocketAddr,
     payload: &[u8],
 ) -> Result<()> {
@@ -365,7 +447,8 @@ async fn try_send_udp(
     let force_proxy_header = rule.haproxy && is_offline_ping(payload);
     let mut last_error = None;
 
-    for index in session.active_target_index..targets.len() {
+    let start = session.active_target_index.load(Ordering::Relaxed);
+    for index in start..targets.len() {
         let target = &targets[index];
         let Some(target_port) = target.udp else {
             continue;
@@ -385,12 +468,12 @@ async fn try_send_udp(
         .await
         {
             Ok(()) => {
-                session.active_target_index = index;
+                session.active_target_index.store(index, Ordering::Relaxed);
                 return Ok(());
             }
             Err(err) => {
                 last_error = Some(err);
-                session.header_sent = false;
+                session.header_sent.store(false, Ordering::Relaxed);
             }
         }
     }
@@ -398,10 +481,11 @@ async fn try_send_udp(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("all UDP targets failed")))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_to_target(
     rule: &ListenerRule,
     runtime: &AppRuntime,
-    session: &mut UdpSession,
+    session: &UdpSession,
     original_client: SocketAddr,
     payload: &[u8],
     target: &ProxyTarget,
@@ -412,7 +496,7 @@ async fn send_to_target(
     let target_addr = resolve_target_addr(&target.host, target_port).await?;
     let mut out = payload.to_vec();
 
-    if rule.haproxy && (force_proxy_header || !session.header_sent) {
+    if rule.haproxy && (force_proxy_header || !session.header_sent.load(Ordering::Relaxed)) {
         let header = build_proxy_v2_header(
             original_client.ip(),
             original_client.port(),
@@ -423,7 +507,7 @@ async fn send_to_target(
         out = [header, out].concat();
 
         if !is_offline_ping(payload) {
-            session.header_sent = true;
+            session.header_sent.store(true, Ordering::Relaxed);
         }
 
         debug!(
@@ -435,7 +519,9 @@ async fn send_to_target(
 
     session.socket.send_to(&out, target_addr).await?;
     runtime.metrics.udp_client_to_target_bytes(out.len());
-    session.active_target_index = target_index;
+    session
+        .active_target_index
+        .store(target_index, Ordering::Relaxed);
     debug!("UDP {original_client} -> {target_addr} {}B", out.len());
     Ok(())
 }

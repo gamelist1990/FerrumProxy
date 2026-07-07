@@ -12,8 +12,6 @@ interface SharedRelaySettingsProps {
 }
 
 const defaultLimits: SharedServiceLimits = {
-  maxTcpConnections: 32,
-  maxUdpPeers: 64,
   maxBytesPerSecond: 10 * 1024 * 1024,
 };
 

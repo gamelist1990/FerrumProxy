@@ -18,14 +18,10 @@ sharedService:
     maxSize: 128
   tokens: []
   defaults:
-    maxTcpConnections: 32
-    maxUdpPeers: 64
     maxBytesPerSecond: 10485760
     idleTimeoutSeconds: 120
     udpSessionTimeoutSeconds: 60
   maximums:
-    maxTcpConnections: 256
-    maxUdpPeers: 512
     maxBytesPerSecond: 104857600
     idleTimeoutSeconds: 3600
     udpSessionTimeoutSeconds: 600

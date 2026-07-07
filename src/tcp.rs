@@ -1,10 +1,12 @@
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{lookup_host, TcpListener, TcpStream};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
@@ -16,7 +18,7 @@ use crate::http_rewrite::{
     http_request_path, is_likely_http_request, rewrite_http_request, rewrite_http_response,
 };
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
-use crate::runtime::AppRuntime;
+use crate::runtime::{AppRuntime, PerformanceMetrics};
 use crate::tcp_tuning::apply_tcp_nodelay;
 use crate::tls_config::resolve_tls_acceptor;
 
@@ -207,6 +209,7 @@ async fn resolve_target_addr(host: &str, port: u16) -> Result<SocketAddr> {
         .with_context(|| format!("no addresses returned for {host}:{port}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn copy_bidirectional(
     client: BoxedStream,
     target: BoxedStream,
@@ -217,12 +220,170 @@ async fn copy_bidirectional(
     forwarded_proto: &'static str,
     initial_client_payload: Vec<u8>,
 ) -> Result<()> {
-    let (mut client_read, mut client_write) = tokio::io::split(client);
-    let (mut target_read, mut target_write) = tokio::io::split(target);
+    let (client_read, client_write) = tokio::io::split(client);
+    let (target_read, target_write) = tokio::io::split(target);
+
+    // Pure passthrough (no HTTP rewriting, e.g. Minecraft/TLS) takes the fast
+    // path: borrowed-slice writes with zero per-chunk allocation. Only when a
+    // target needs request/response rewriting do we fall back to the buffering
+    // path.
+    let (client_to_target, target_to_client) = if target_config.url_protocol.is_none() {
+        let c2t = tokio::spawn(pump(
+            client_read,
+            target_write,
+            initial_client_payload,
+            runtime.metrics.clone(),
+            Direction::ClientToTarget,
+        ));
+        let t2c = tokio::spawn(pump(
+            target_read,
+            client_write,
+            Vec::new(),
+            runtime.metrics.clone(),
+            Direction::TargetToClient,
+        ));
+        (c2t, t2c)
+    } else {
+        spawn_rewrite_relay(
+            client_read,
+            client_write,
+            target_read,
+            target_write,
+            target_config,
+            runtime.metrics.clone(),
+            forwarded_proto,
+            initial_client_payload,
+            client_addr,
+            target_addr,
+        )
+    };
+
+    let (sent, recv) = run_relay(client_to_target, target_to_client).await?;
+    debug!("TCP closed {client_addr} => {target_addr} sent={sent} recv={recv}");
+    Ok(())
+}
+
+/// Which byte counter a pump feeds.
+#[derive(Clone, Copy)]
+enum Direction {
+    ClientToTarget,
+    TargetToClient,
+}
+
+fn record_bytes(metrics: &PerformanceMetrics, direction: Direction, bytes: usize) {
+    match direction {
+        Direction::ClientToTarget => metrics.tcp_client_to_target_bytes(bytes),
+        Direction::TargetToClient => metrics.tcp_target_to_client_bytes(bytes),
+    }
+}
+
+/// Zero-copy one-directional relay. Writes the freshly read slice straight
+/// through (no intermediate `Vec`), and on EOF issues a `shutdown()` so the
+/// peer receives a real FIN / TLS close_notify instead of an abrupt socket drop.
+async fn pump<R, W>(
+    mut reader: R,
+    mut writer: W,
+    initial: Vec<u8>,
+    metrics: PerformanceMetrics,
+    direction: Direction,
+) -> io::Result<u64>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut total = 0u64;
+
+    if !initial.is_empty() {
+        writer.write_all(&initial).await?;
+        record_bytes(&metrics, direction, initial.len());
+        total += initial.len() as u64;
+    }
+
+    let mut buf = vec![0u8; BUFFER_SIZE];
+    loop {
+        let len = reader.read(&mut buf).await?;
+        if len == 0 {
+            break;
+        }
+        writer.write_all(&buf[..len]).await?;
+        record_bytes(&metrics, direction, len);
+        total += len as u64;
+    }
+
+    let _ = writer.shutdown().await;
+    Ok(total)
+}
+
+/// Drives both directions to completion.
+///
+/// Unlike an abort-on-first-EOF `select!`, this keeps the surviving direction
+/// alive after its peer half-closes, so a client that shuts down its write side
+/// still receives the full response — native TCP half-close semantics. A real
+/// error (not a clean EOF) on one side tears the other down immediately.
+async fn run_relay(
+    mut client_to_target: JoinHandle<io::Result<u64>>,
+    mut target_to_client: JoinHandle<io::Result<u64>>,
+) -> Result<(u64, u64)> {
+    let mut sent = 0u64;
+    let mut recv = 0u64;
+    let mut c2t_done = false;
+    let mut t2c_done = false;
+
+    while !(c2t_done && t2c_done) {
+        tokio::select! {
+            result = &mut client_to_target, if !c2t_done => {
+                c2t_done = true;
+                match result {
+                    Ok(Ok(bytes)) => sent = bytes,
+                    Ok(Err(err)) => {
+                        target_to_client.abort();
+                        return Err(err.into());
+                    }
+                    Err(join_err) => {
+                        target_to_client.abort();
+                        return Err(anyhow::anyhow!("client->target relay task failed: {join_err}"));
+                    }
+                }
+            }
+            result = &mut target_to_client, if !t2c_done => {
+                t2c_done = true;
+                match result {
+                    Ok(Ok(bytes)) => recv = bytes,
+                    Ok(Err(err)) => {
+                        client_to_target.abort();
+                        return Err(err.into());
+                    }
+                    Err(join_err) => {
+                        client_to_target.abort();
+                        return Err(anyhow::anyhow!("target->client relay task failed: {join_err}"));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((sent, recv))
+}
+
+/// Buffering relay used only when a target requires HTTP request/response
+/// rewriting. Slower than `pump` by design, but now also propagates half-close.
+#[allow(clippy::too_many_arguments)]
+fn spawn_rewrite_relay(
+    mut client_read: ReadHalf<BoxedStream>,
+    mut client_write: WriteHalf<BoxedStream>,
+    mut target_read: ReadHalf<BoxedStream>,
+    mut target_write: WriteHalf<BoxedStream>,
+    target_config: ProxyTarget,
+    metrics: PerformanceMetrics,
+    forwarded_proto: &'static str,
+    initial_client_payload: Vec<u8>,
+    client_addr: SocketAddr,
+    target_addr: SocketAddr,
+) -> (JoinHandle<io::Result<u64>>, JoinHandle<io::Result<u64>>) {
     let request_target_config = target_config.clone();
     let response_target_config = target_config;
-    let request_metrics = runtime.metrics.clone();
-    let response_metrics = runtime.metrics.clone();
+    let request_metrics = metrics.clone();
+    let response_metrics = metrics;
 
     let client_to_target = tokio::spawn(async move {
         let mut total = 0u64;
@@ -290,7 +451,8 @@ async fn copy_bidirectional(
             total += pending_initial_http.len() as u64;
         }
 
-        Ok::<u64, std::io::Error>(total)
+        let _ = target_write.shutdown().await;
+        Ok::<u64, io::Error>(total)
     });
 
     let target_to_client = tokio::spawn(async move {
@@ -330,23 +492,11 @@ async fn copy_bidirectional(
             total += pending.len() as u64;
         }
 
-        Ok::<u64, std::io::Error>(total)
+        let _ = client_write.shutdown().await;
+        Ok::<u64, io::Error>(total)
     });
 
-    let mut client_to_target = client_to_target;
-    let mut target_to_client = target_to_client;
-    let (sent, recv) = tokio::select! {
-        result = &mut client_to_target => {
-            target_to_client.abort();
-            (result??, 0)
-        }
-        result = &mut target_to_client => {
-            client_to_target.abort();
-            (0, result??)
-        }
-    };
-    debug!("TCP closed {client_addr} => {target_addr} sent={sent} recv={recv}");
-    Ok(())
+    (client_to_target, target_to_client)
 }
 
 async fn connect_target(target: &ProxyTarget, target_addr: SocketAddr) -> Result<BoxedStream> {

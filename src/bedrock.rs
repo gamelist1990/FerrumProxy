@@ -20,8 +20,80 @@ pub fn is_offline_ping(payload: &[u8]) -> bool {
     ) && payload[9..25] == RAKNET_OFFLINE_MESSAGE_ID
 }
 
-pub fn is_disconnect_notification(payload: &[u8]) -> bool {
-    payload.first().copied() == Some(0x15)
+/// Detects a RakNet DisconnectNotification.
+///
+/// In the connected phase a disconnect is a reliable message encapsulated
+/// inside a FrameSet (0x80..=0x8d), so checking the first byte alone (the old
+/// behaviour) essentially never matched real Bedrock disconnects. We now walk
+/// the encapsulated frames as well, plus keep the raw 0x15 form as a fallback.
+pub fn contains_disconnect(payload: &[u8]) -> bool {
+    match payload.first().copied() {
+        Some(0x15) => true,
+        Some(0x80..=0x8d) => frame_set_contains_body_id(payload, 0x15),
+        _ => false,
+    }
+}
+
+/// True when the datagram is a RakNet OpenConnectionRequest1 (0x05), i.e. the
+/// very first packet of a brand-new connection attempt. Used to distinguish a
+/// genuine (re)connect from ordinary in-session traffic.
+pub fn is_open_connection_request_1(payload: &[u8]) -> bool {
+    payload.len() >= 18 && payload[0] == 0x05 && payload[1..17] == RAKNET_OFFLINE_MESSAGE_ID
+}
+
+/// Walks a FrameSet (0x80..=0x8d) and reports whether any encapsulated frame's
+/// body begins with `target_id`. Mirrors the frame arithmetic in
+/// `describe_frame_set`, but only inspects body ids so it stays allocation-free.
+fn frame_set_contains_body_id(payload: &[u8], target_id: u8) -> bool {
+    if payload
+        .first()
+        .map_or(true, |id| !(0x80..=0x8d).contains(id))
+    {
+        return false;
+    }
+
+    let mut offset = 4; // skip datagram id byte + 3-byte sequence number
+    while offset + 3 <= payload.len() {
+        let flags = payload[offset];
+        offset += 1;
+
+        let Some(bits) = payload.get(offset..offset + 2) else {
+            break;
+        };
+        let bit_length = u16::from_be_bytes([bits[0], bits[1]]);
+        offset += 2;
+
+        let body_length = (usize::from(bit_length) + 7) / 8;
+        let reliability = flags >> 5;
+        let split = flags & 0x10 != 0;
+
+        if matches!(reliability, 2 | 3 | 4 | 6 | 7) {
+            offset += 3;
+        }
+        if matches!(reliability, 1 | 4) {
+            offset += 3;
+        }
+        if matches!(reliability, 1 | 3 | 4 | 7) {
+            offset += 4;
+        }
+        if split {
+            offset += 10;
+        }
+
+        let body_start = offset;
+        let Some(body_end) = body_start.checked_add(body_length) else {
+            break;
+        };
+        if body_end > payload.len() {
+            break;
+        }
+        if body_length > 0 && payload[body_start] == target_id {
+            return true;
+        }
+        offset = body_end;
+    }
+
+    false
 }
 
 pub fn describe_raknet_packet(payload: &[u8]) -> Option<String> {
@@ -92,7 +164,7 @@ pub fn describe_unconnected_pong(payload: &[u8]) -> Option<String> {
     if parts.len() >= 12 {
         let _ = write!(
             description,
-            " edition={} protocol={} version={} players={}/{} port_v4={} port_v6={} name=\"{}\"",
+            " edition={} protocol={} version={} players={}/{} port_v4={} port_v6={} name={}",
             parts[0],
             parts[2],
             parts[3],
@@ -105,7 +177,7 @@ pub fn describe_unconnected_pong(payload: &[u8]) -> Option<String> {
     } else {
         let _ = write!(
             description,
-            " motd=\"{}\"",
+            " motd={}",
             truncate_for_log(&parsed.motd, 160)
         );
     }
@@ -436,6 +508,44 @@ mod tests {
             parsed.motd,
             "MCPE;Dedicated Server;390;1.20.0;0;10;123;World;Survival;1;43211"
         );
+    }
+
+    #[test]
+    fn detects_disconnect_inside_frame_set() {
+        // FrameSet(0x84) + seq(0,0,0) + one UNRELIABLE frame carrying 0x15.
+        let frame_set = [0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x15];
+        assert!(contains_disconnect(&frame_set));
+    }
+
+    #[test]
+    fn detects_disconnect_inside_reliable_frame_set() {
+        // Reliability 2 (reliable) => 3-byte reliable message number after header.
+        let frame_set = [
+            0x84, 0x00, 0x00, 0x00, // id + sequence
+            0x40, // flags: reliability 2 << 5
+            0x00, 0x08, // bit length = 8
+            0x00, 0x00, 0x00, // reliable message number
+            0x15, // body: DisconnectNotification
+        ];
+        assert!(contains_disconnect(&frame_set));
+    }
+
+    #[test]
+    fn ignores_frame_set_without_disconnect() {
+        // Same shape but body is a game packet (0xfe).
+        let frame_set = [0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0xfe];
+        assert!(!contains_disconnect(&frame_set));
+    }
+
+    #[test]
+    fn detects_raw_disconnect_and_open_connection_request() {
+        assert!(contains_disconnect(&[0x15]));
+
+        let mut req1 = vec![0x05];
+        req1.extend_from_slice(&RAKNET_OFFLINE_MESSAGE_ID);
+        req1.push(0x0b); // protocol version
+        assert!(is_open_connection_request_1(&req1));
+        assert!(!is_open_connection_request_1(&[0x05, 0x00]));
     }
 
     fn bedrock_pong(motd: &str) -> Vec<u8> {

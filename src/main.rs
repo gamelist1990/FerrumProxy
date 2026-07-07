@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
                 .max()
                 .unwrap_or_default();
             info!(
-                "Shared service config enabled: control_bind={}, public_bind={}, public_host={}, port_range={}-{}, allow_anonymous={}, queue(enabled={}, max_size={}), defaults(max_tcp_connections={}, max_udp_peers={}, max_bytes_per_second={}, idle_timeout_seconds={}, udp_session_timeout_seconds={}), maximums(max_tcp_connections={}, max_udp_peers={}, max_bytes_per_second={}, idle_timeout_seconds={}, udp_session_timeout_seconds={}), legacy_tokens={}, tokens={}, enabled_tokens={}, named_tokens={}, best_priority={}, highest_token_bandwidth={}",
+                "Shared service config enabled: control_bind={}, public_bind={}, public_host={}, port_range={}-{}, allow_anonymous={}, queue(enabled={}, max_size={}), defaults(max_bytes_per_second={}, idle_timeout_seconds={}, udp_session_timeout_seconds={}), maximums(max_bytes_per_second={}, idle_timeout_seconds={}, udp_session_timeout_seconds={}), legacy_tokens={}, tokens={}, enabled_tokens={}, named_tokens={}, best_priority={}, highest_token_bandwidth={}",
                 shared_service.control_bind,
                 shared_service.public_bind,
                 shared_service.public_host,
@@ -148,13 +148,9 @@ async fn main() -> Result<()> {
                 shared_service.allow_anonymous,
                 shared_service.queue.enabled,
                 shared_service.queue.max_size,
-                shared_service.defaults.max_tcp_connections,
-                shared_service.defaults.max_udp_peers,
                 shared_service.defaults.max_bytes_per_second,
                 shared_service.defaults.idle_timeout_seconds,
                 shared_service.defaults.udp_session_timeout_seconds,
-                shared_service.maximums.max_tcp_connections,
-                shared_service.maximums.max_udp_peers,
                 shared_service.maximums.max_bytes_per_second,
                 shared_service.maximums.idle_timeout_seconds,
                 shared_service.maximums.udp_session_timeout_seconds,

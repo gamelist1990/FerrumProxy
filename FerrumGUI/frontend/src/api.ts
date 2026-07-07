@@ -111,8 +111,6 @@ export interface PerformanceMetrics {
 }
 
 export interface SharedServiceLimits {
-  maxTcpConnections: number;
-  maxUdpPeers: number;
   maxBytesPerSecond: number;
 }
 

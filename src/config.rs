@@ -108,10 +108,6 @@ pub struct SharedServiceToken {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedServiceLimits {
-    #[serde(default = "default_max_tcp_connections")]
-    pub max_tcp_connections: usize,
-    #[serde(default = "default_max_udp_peers")]
-    pub max_udp_peers: usize,
     #[serde(default = "default_max_bytes_per_second")]
     pub max_bytes_per_second: u64,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -261,14 +257,10 @@ sharedService:
     maxSize: 128
   tokens: []
   defaults:
-    maxTcpConnections: 32
-    maxUdpPeers: 64
     maxBytesPerSecond: 10485760
     idleTimeoutSeconds: 120
     udpSessionTimeoutSeconds: 60
   maximums:
-    maxTcpConnections: 256
-    maxUdpPeers: 512
     maxBytesPerSecond: 104857600
     idleTimeoutSeconds: 3600
     udpSessionTimeoutSeconds: 600
@@ -451,8 +443,6 @@ impl Default for SharedServicePortRange {
 impl Default for SharedServiceLimits {
     fn default() -> Self {
         Self {
-            max_tcp_connections: default_max_tcp_connections(),
-            max_udp_peers: default_max_udp_peers(),
             max_bytes_per_second: default_max_bytes_per_second(),
             idle_timeout_seconds: default_idle_timeout_seconds(),
             udp_session_timeout_seconds: default_udp_session_timeout_seconds(),
@@ -499,14 +489,6 @@ fn default_shared_queue_max_size() -> usize {
 
 fn default_shared_token_priority() -> u16 {
     10
-}
-
-fn default_max_tcp_connections() -> usize {
-    32
-}
-
-fn default_max_udp_peers() -> usize {
-    64
 }
 
 fn default_max_bytes_per_second() -> u64 {
