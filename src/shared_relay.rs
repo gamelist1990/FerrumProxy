@@ -221,10 +221,6 @@ async fn handle_connect(
     state: &Arc<SharedRelayState>,
     config: &SharedServiceConfig,
 ) -> Result<String> {
-    // Format: CONNECT <target_spec>
-    // target_spec can be:
-    //   token:host:port   (authenticated)
-    //   host:port         (anonymous, if allowed)
     let parts: Vec<&str> = request.split_whitespace().collect();
     if parts.len() < 2 {
         return Ok("ERROR Usage: CONNECT <token:host:port> or CONNECT <host:port>\n".to_string());
@@ -235,7 +231,6 @@ async fn handle_connect(
     let auth_config = shared_service_auth_config(state, config).await;
 
     let (token, target_host, target_port) = if target_parts.len() == 3 {
-        // token:host:port
         let token_value = target_parts[0].trim();
         if token_value.is_empty() {
             return Ok("ERROR Invalid token\n".to_string());
@@ -247,7 +242,6 @@ async fn handle_connect(
             port,
         )
     } else if target_parts.len() == 2 {
-        // host:port (anonymous)
         if !auth_config.allow_anonymous {
             return Ok("ERROR Token required\n".to_string());
         }
@@ -261,7 +255,6 @@ async fn handle_connect(
         return Ok("ERROR Invalid port\n".to_string());
     }
 
-    // Validate token if provided
     let fixed_port = if let Some(ref token_value) = token {
         if !shared_token_is_valid(&auth_config, token_value) {
             return Ok("ERROR Invalid token\n".to_string());
@@ -314,7 +307,6 @@ async fn handle_connect(
         client_addr
     );
 
-    // Actually start the relay listener on the allocated port
     let relay_state = Arc::clone(state);
     let relay_config = Arc::new(config.clone());
     let relay_target_host = target_host.clone();
@@ -1270,13 +1262,12 @@ listeners: []
     async fn wait_for_udp_port(port: u16) -> Result<()> {
         let started = tokio::time::Instant::now();
         loop {
-            // Try to bind on 127.0.0.1 (test's public_bind address)
             match UdpSocket::bind(("127.0.0.1", port)).await {
                 Ok(socket) => {
                     drop(socket);
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                Err(_) => return Ok(()), // Port is in use by relay, test can proceed
+                Err(_) => return Ok(()),
             }
             anyhow::ensure!(
                 started.elapsed() < Duration::from_secs(5),
@@ -1686,7 +1677,6 @@ async fn start_udp_relay_port(
     config: Arc<SharedServiceConfig>,
     state: Arc<SharedRelayState>,
 ) -> Result<()> {
-    // Bind to the public_bind address to ensure consistent source address for outbound packets
     let bind_addr = format!("{}:{}", config.public_bind, port);
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
 

@@ -23,9 +23,6 @@ use crate::runtime::{AppRuntime, PerformanceMetrics};
 use crate::tcp_tuning::{apply_tcp_keepalive, apply_tcp_nodelay};
 use crate::tls_config::resolve_tls_acceptor;
 
-// 既定は 10 秒。`highLatency.enabled = true` のときは runtime.timeouts 経由で
-// 30 秒などに拡張される。スキャナーなどが接続だけ張って何も送ってこないケースが
-// 多いので、既定値は短めのまま保つ。
 const INITIAL_CLIENT_DATA_TIMEOUT_MSG: &str = "timed out waiting for initial client data";
 const BUFFER_SIZE: usize = 16 * 1024;
 
@@ -90,8 +87,7 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
             };
             if let Err(err) = result {
                 let msg = format!("{err:#}");
-                // クライアント都合の通常切断・バックエンド一時停止などは日常的に起きるので
-                // WARN でスパムせず DEBUG に落とす。真の異常だけ WARN に残す。
+
                 if is_benign_disconnect(&msg) {
                     debug!("TCP connection {client_addr} closed: {msg}");
                 } else {
@@ -106,15 +102,15 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
 /// (idle scanners, players quitting, backend restarting, etc.) — logged at DEBUG.
 fn is_benign_disconnect(msg: &str) -> bool {
     // NOTE: 文字列マッチだけど anyhow の `{:#}` フォーマットで OS message が
-    // そのまま出るので、これで十分。将来 io::ErrorKind 判定に切り替えても良い。
+
     msg.contains(INITIAL_CLIENT_DATA_TIMEOUT_MSG)
         || msg.contains("Connection reset by peer")
         || msg.contains("Broken pipe")
         || msg.contains("Connection refused")
         || msg.contains("Connection aborted")
-        || msg.contains("An existing connection was forcibly closed") // Windows
-        || msg.contains("An established connection was aborted") // Windows
-        || msg.contains("forcibly closed by the remote host") // Windows variant
+        || msg.contains("An existing connection was forcibly closed")
+        || msg.contains("An established connection was aborted")
+        || msg.contains("forcibly closed by the remote host")
         || msg.contains("timed out")
 }
 
@@ -242,10 +238,6 @@ async fn copy_bidirectional(
     let (client_read, client_write) = tokio::io::split(client);
     let (target_read, target_write) = tokio::io::split(target);
 
-    // Pure passthrough (no HTTP rewriting, e.g. Minecraft/TLS) takes the fast
-    // path: borrowed-slice writes with zero per-chunk allocation. Only when a
-    // target needs request/response rewriting do we fall back to the buffering
-    // path.
     let (client_to_target, target_to_client) = if target_config.url_protocol.is_none() {
         let c2t = tokio::spawn(pump(
             client_read,

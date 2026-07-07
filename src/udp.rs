@@ -20,8 +20,6 @@ use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
 use crate::runtime::AppRuntime;
 
-// UDP session idle timeout はランタイム経由で解決する（`highLatency.enabled` が
-// true のときは 10 分などに拡張される）。
 const MAX_DATAGRAM_SIZE: usize = 65_535;
 
 type SessionMap = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSession>>>>;
@@ -77,17 +75,7 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
         let packet = buf[..len].to_vec();
 
         // IMPORTANT: シーケンシャル処理にする。
-        //
-        // 以前は tokio::spawn で並列化していたが、RakNet の FrameSet は
-        // sequence number で順序管理されており、プロキシがパケット順序を
-        // 入れ替えると Bedrock クライアント/サーバー側が NACK を返して
-        // 大量のパケット再送が発生し、ワールドロード直後 (パケット密度が
-        // 高い時) に容易にセッションタイムアウトを引き起こしていた。
-        //
-        // handle_datagram は全て非同期 I/O のみ (sessions map lookup と
-        // 上流 send_to) なので、シーケンシャルでも他クライアントの処理は
-        // Tokio が正しく並行にスケジューリングする。バックエンドからの
-        // 受信は各セッションごとの独立タスクで処理される (spawn_backend_recv)。
+
         if let Err(err) = handle_datagram(
             Arc::clone(&server),
             Arc::clone(&sessions),
@@ -147,9 +135,6 @@ async fn handle_datagram(
         debug!("RakNet client packet from {original_client} via {peer}: {description}");
     }
 
-    // A fresh OpenConnectionRequest1 on an already-established session means the
-    // client left and is rejoining: obtain_session tears the old one down and
-    // hands the backend a brand-new upstream socket for an immediate reconnect.
     let is_new_conn = is_open_connection_request_1(&payload);
     let session = obtain_session(&server, &sessions, &rule, &runtime, peer, is_new_conn).await?;
 
@@ -178,8 +163,6 @@ async fn handle_datagram(
 
     try_send_udp(&rule, &runtime, &session, original_client, &payload).await?;
 
-    // Mark the session established once real connected traffic (a FrameSet)
-    // flows, so retransmitted handshake packets don't trigger a reset.
     if matches!(payload.first(), Some(0x80..=0x8d)) {
         session.established.store(true, Ordering::Relaxed);
     }
@@ -189,21 +172,6 @@ async fn handle_datagram(
     }
 
     // NOTE: 以前はここで `contains_disconnect(&payload)` を判定して
-    // client-initiated disconnect を検出し `close_session` していたが、
-    // これが誤検知の温床になっていた。
-    //
-    // RakNet の DisconnectNotification (0x15) は FrameSet (0x80..=0x8d) に
-    // encapsulated されて来るが、Bedrock は暗号化開始後の encapsulated
-    // payload の中身を解析できず、`frame_set_contains_body_id` が
-    // 大きなパケット (ワールドロード等) の中で偶然の 0x15 バイトを
-    // 誤検知して進行中セッションを勝手に閉じていた。
-    //
-    // 正しい方針: client→backend 方向の disconnect はそのまま転送するだけ。
-    // backend (Geyser) がそれを受け取って本当に切断すべきなら backend 側
-    // から DisconnectNotification が返り、`spawn_backend_recv` 内の
-    // `contains_disconnect(&response)` で検出して自然にセッションを畳む。
-    // また、client 側からの新規パケットが来なくなれば idle_timeout で
-    // 自動的にセッションが消える。誤検知ゼロ、正しいシャットダウン維持。
 
     Ok(())
 }
@@ -230,9 +198,6 @@ async fn obtain_session(
     peer: SocketAddr,
     _is_new_conn: bool,
 ) -> Result<Arc<UdpSession>> {
-    // Fast path: 既存セッションがあれば必ず再利用する。
-    // 再送された OpenConnectionRequest1 も upstream にそのまま転送し、
-    // Geyser 側の RakNet が「既に接続済み」応答を返して自然に処理される。
     {
         let guard = sessions.lock().await;
         if let Some(existing) = guard.get(&peer) {
@@ -240,8 +205,6 @@ async fn obtain_session(
         }
     }
 
-    // Slow path: bind the new upstream socket outside the map lock to keep the
-    // hot path (data forwarding for other clients) from stalling.
     let socket = Arc::new(
         UdpSocket::bind(if peer.is_ipv6() {
             "[::]:0"
@@ -253,8 +216,6 @@ async fn obtain_session(
 
     let mut guard = sessions.lock().await;
     if let Some(existing) = guard.get(&peer) {
-        // 別のデータグラム処理が先にセッションを作った。自分の new socket は
-        // 捨てて既存を返す。
         return Ok(Arc::clone(existing));
     }
 
@@ -343,9 +304,6 @@ fn spawn_backend_recv(
                         }
                     }
 
-                    // Strip quotes the backend wraps around the server name so
-                    // clients see a clean MOTD. Done before caching so the
-                    // immediate-pong path serves the cleaned value too.
                     if let Some(cleaned) = strip_unconnected_pong_name_quotes(&response) {
                         response = cleaned;
                     }
@@ -371,17 +329,6 @@ fn spawn_backend_recv(
                     debug!("UDP {backend_addr} -> {peer} {}B", response.len());
 
                     // NOTE: 以前はここで `contains_disconnect(&response)` を判定して
-                    // backend からの kick / shutdown を検出し break していたが、
-                    // これは client 側の同じ誤検知と同じ理由で有害だった:
-                    // Bedrock RakNet の FrameSet は backend → client 方向でも
-                    // encapsulated payload が (Bedrock プロトコル層で) 暗号化されて
-                    // いるため、大きなパケット (world load 等) の中の偶然の 0x15
-                    // バイトを DisconnectNotification と誤検知して進行中セッションを
-                    // 破棄していた。ログでは upstream socket が数秒で別 port に
-                    // 切り替わり、Geyser 側は PROXY header 不整合 (over 1172 bytes)
-                    // で切断していた。
-                    //
-                    // 真の切断は idle timeout (10s) が代わりに拾う。
                 }
                 Ok(Err(err)) => {
                     error!("UDP backend socket for {peer} failed: {err}");
@@ -395,9 +342,6 @@ fn spawn_backend_recv(
             }
         }
 
-        // Natural exit. `remove` returning the session means we own the metric
-        // decrement; if teardown already removed it we stay silent (no abort of
-        // ourselves is needed here — we are the task that is ending).
         let removed = sessions.lock().await.remove(&peer).is_some();
         if removed {
             runtime.metrics.udp_session_closed();

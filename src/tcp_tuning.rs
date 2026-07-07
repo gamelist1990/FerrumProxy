@@ -51,18 +51,11 @@ pub fn apply_tcp_keepalive(stream: &TcpStream, context: &str) {
 
     let sock = SockRef::from(stream);
 
-    // 15s idle → send probes every 5s → give up after 3 misses.
-    // → dead-path detection window ≈ 15 + 3*5 = 30 s, matching Minecraft's
-    //   own KeepAlive timeout, so we tear the socket down at the same time
-    //   the server would kick the player anyway.
-    // Windows/macOS では `.with_retries()` を呼ばないので mut は不要になる。
     #[allow(unused_mut)]
     let mut ka = TcpKeepalive::new()
         .with_time(Duration::from_secs(15))
         .with_interval(Duration::from_secs(5));
 
-    // retries は Linux/*BSD/Windows で意味が違うが、socket2 が対応 OS で
-    // TCP_KEEPCNT / TCP_KEEPINTVL 相当を正しく設定してくれる。
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))]
     {
         ka = ka.with_retries(3);

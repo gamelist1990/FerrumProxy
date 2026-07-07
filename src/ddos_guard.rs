@@ -67,7 +67,6 @@ impl DdosGuard {
     }
 
     pub fn tcp_connection_opened(&self, ip: IpAddr) -> Result<TcpConnectionPermit, DropReason> {
-        // Guard disabled: hand back an inert permit that does not track state.
         if !self.settings.enabled {
             return Ok(TcpConnectionPermit {
                 ip,
@@ -357,7 +356,7 @@ mod tests {
             ..DdosGuardSettings::default()
         });
         let ip = "192.0.2.30".parse().unwrap();
-        // Far beyond the (tiny) configured limits, but the guard is disabled.
+
         for _ in 0..50 {
             assert!(guard.tcp_connection_opened(ip).is_ok());
         }

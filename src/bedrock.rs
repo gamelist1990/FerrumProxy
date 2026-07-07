@@ -52,7 +52,7 @@ fn frame_set_contains_body_id(payload: &[u8], target_id: u8) -> bool {
         return false;
     }
 
-    let mut offset = 4; // skip datagram id byte + 3-byte sequence number
+    let mut offset = 4;
     while offset + 3 <= payload.len() {
         let flags = payload[offset];
         offset += 1;
@@ -558,27 +558,20 @@ mod tests {
 
     #[test]
     fn detects_disconnect_inside_frame_set() {
-        // FrameSet(0x84) + seq(0,0,0) + one UNRELIABLE frame carrying 0x15.
         let frame_set = [0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x15];
         assert!(contains_disconnect(&frame_set));
     }
 
     #[test]
     fn detects_disconnect_inside_reliable_frame_set() {
-        // Reliability 2 (reliable) => 3-byte reliable message number after header.
         let frame_set = [
-            0x84, 0x00, 0x00, 0x00, // id + sequence
-            0x40, // flags: reliability 2 << 5
-            0x00, 0x08, // bit length = 8
-            0x00, 0x00, 0x00, // reliable message number
-            0x15, // body: DisconnectNotification
+            0x84, 0x00, 0x00, 0x00, 0x40, 0x00, 0x08, 0x00, 0x00, 0x00, 0x15,
         ];
         assert!(contains_disconnect(&frame_set));
     }
 
     #[test]
     fn ignores_frame_set_without_disconnect() {
-        // Same shape but body is a game packet (0xfe).
         let frame_set = [0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0xfe];
         assert!(!contains_disconnect(&frame_set));
     }
@@ -589,7 +582,7 @@ mod tests {
 
         let mut req1 = vec![0x05];
         req1.extend_from_slice(&RAKNET_OFFLINE_MESSAGE_ID);
-        req1.push(0x0b); // protocol version
+        req1.push(0x0b);
         assert!(is_open_connection_request_1(&req1));
         assert!(!is_open_connection_request_1(&[0x05, 0x00]));
     }
