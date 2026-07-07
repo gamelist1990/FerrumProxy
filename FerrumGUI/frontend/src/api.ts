@@ -502,7 +502,6 @@ export async function fetchGuiSelfVersion(): Promise<GuiSelfVersion> {
 export async function performGuiSelfUpdate(): Promise<{
   success: boolean;
   version: string;
-  restartInMs: number;
   message: string;
 }> {
   const res = await fetch(`${API_BASE}/self/update`, { method: 'POST' });

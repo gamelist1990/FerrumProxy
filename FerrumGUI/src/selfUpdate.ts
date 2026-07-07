@@ -1,7 +1,6 @@
 import fs from 'fs/promises';
 import fssync from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import chalk from 'chalk';
 
 // Bun のビルド時に `--define BUILD_VERSION="\"1.0.0\""` で埋め込まれる想定。
@@ -197,18 +196,17 @@ export async function cleanupOldBinary(): Promise<void> {
 export type SelfUpdateProgress = (downloaded: number, total: number) => void;
 
 export type SelfUpdateResult =
-  | { success: true; version: string; restartInMs: number }
+  | { success: true; version: string }
   | { success: false; error: string };
 
 /**
- * 現在の実行バイナリを最新版に差し替えて再起動する。
+ * 現在の実行バイナリを最新版に差し替える。
  *
  * フロー:
  *  1. GitHub Release から現在プラットフォームに合うアセット URL を取得
  *  2. `{execPath}.new` にダウンロード
  *  3. 現在の `{execPath}` を `{execPath}.old` にリネーム
  *  4. `{execPath}.new` を `{execPath}` にリネーム（インストール）
- *  5. detached で新バイナリを起動、現プロセスを終了
  */
 export async function performGuiSelfUpdate(
   isCompiled: boolean,
@@ -339,125 +337,12 @@ export async function performGuiSelfUpdate(
     };
   }
 
-  const restartInMs = 1500;
   console.log(
     chalk.green(
-      `✓ GUI updated to v${latest.version}. Restarting in ${restartInMs} ms...`
+      `✓ GUI updated to v${latest.version}. Restart is not performed automatically.`
     )
   );
 
-  // ------------------------------------------------------------
-  // Restart flow (ソンビ化回避):
-  //
-  //   1. 新バイナリを detached spawn
-  //   2. spawn.error や 早期 exit を監視し、失敗を検知
-  //   3. 子プロセスが 少なくとも 500ms 生き延びたら 親を exit(0)
-  //   4. 失敗したら 親を exit せず、現行バイナリで運行継続
-  //      (バイナリはすでに新版に入れ替わっているので、
-  //       次の手動再起動時に自動的に新版で起動する)
-  // ------------------------------------------------------------
-
-  setTimeout(() => {
-    void spawnAndExit(execPath, restartInMs);
-  }, restartInMs);
-
-  return { success: true, version: latest.version, restartInMs };
+  return { success: true, version: latest.version };
 }
 
-/**
- * 新しいバイナリを安全に spawn し、起動を確認してから親を exit する。
- * 失敗時は親を exit させない (ソンビ化回避)。
- */
-async function spawnAndExit(execPath: string, _restartInMs: number): Promise<void> {
-  const args = readForwardedArgs();
-
-  console.log(
-    chalk.blue(
-      `Restart: spawning "${execPath}" ${args.map((a) => JSON.stringify(a)).join(' ')}`
-    )
-  );
-
-  let child;
-  try {
-    child = launchDetached(execPath, args);
-  } catch (err: any) {
-    console.error(
-      chalk.red(
-        `✗ Failed to spawn new binary: ${err?.message ?? err}. Keeping current process alive so you can restart manually.`
-      )
-    );
-    return;
-  }
-
-  // spawn error や 早期 exit を監視
-  let earlyFailure: string | null = null;
-  child.once('error', (err: Error) => {
-    earlyFailure = `spawn error: ${err.message}`;
-  });
-  child.once('exit', (code, signal) => {
-    if (earlyFailure === null) {
-      earlyFailure = `child exited immediately (code=${code} signal=${signal})`;
-    }
-  });
-
-  // 500ms 待って、子プロセスが生き延びたか確認
-  await new Promise<void>((resolve) => setTimeout(resolve, 500));
-
-  if (earlyFailure) {
-    console.error(
-      chalk.red(
-        `✗ Restart failed: ${earlyFailure}. Current process will keep running with the NEW binary already installed. Please stop this process and start it again manually.`
-      )
-    );
-    return;
-  }
-
-  // 子プロセス が 生き延びた → 安全に親を終了
-  console.log(chalk.green('✓ New process launched; exiting current process.'));
-  child.unref();
-  // ログを確実に flush させるため少し待つ
-  await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  process.exit(0);
-}
-
-/**
- * フォワードする引数を取得する。Bun の single-file executable では
- * `process.argv[0]` がバイナリ自体、`process.argv[1]` 以降がユーザー引数。
- */
-function readForwardedArgs(): string[] {
-  // Bun 上では Bun.argv を優先 (バイナリ実行時の引数が確実)
-  try {
-    if (typeof Bun !== 'undefined' && Array.isArray(Bun.argv)) {
-      return Bun.argv.slice(1);
-    }
-  } catch {}
-  return process.argv.slice(1);
-}
-
-/**
- * OS 別に確実な detach 方法で新プロセスを起動する。
- *
- * Windows: 親コンソールと完全に切り離すため `cmd.exe /c start "" /B "<exe>" [args...]`
- * Linux / macOS: detached: true + stdio: 'ignore' + unref() で nohup 相当
- */
-function launchDetached(execPath: string, args: string[]) {
-  if (process.platform === 'win32') {
-    // cmd の start コマンド経由で、新プロセスを完全に切り離す。
-    // /B: 新しいウィンドウを開かない
-    // "": start の title 引数 (空文字列)
-    const cmdArgs = ['/c', 'start', '""', '/B', execPath, ...args];
-    return spawn('cmd.exe', cmdArgs, {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      cwd: process.cwd(),
-      env: process.env,
-    });
-  }
-  return spawn(execPath, args, {
-    detached: true,
-    stdio: 'ignore',
-    cwd: process.cwd(),
-    env: process.env,
-  });
-}

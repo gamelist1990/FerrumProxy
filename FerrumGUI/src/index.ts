@@ -1166,7 +1166,7 @@ app.get('/api/self/version', async (_req, res) => {
   }
 });
 
-// GUI 本体を最新版に差し替えて再起動する
+// GUI 本体を最新版に差し替える（自動再起動はしない）
 app.post('/api/self/update', async (_req, res) => {
   if (!isSelfUpdateSupported(isCompiled)) {
     return res.status(400).json({
@@ -1189,13 +1189,11 @@ app.post('/api/self/update', async (_req, res) => {
     broadcast({
       type: 'guiUpdateReady',
       version: result.version,
-      restartInMs: result.restartInMs,
     });
     res.json({
       success: true,
       version: result.version,
-      restartInMs: result.restartInMs,
-      message: `Updated to v${result.version}. Restarting in ${result.restartInMs} ms.`,
+      message: `Updated to v${result.version}. Restart is not performed automatically.`,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

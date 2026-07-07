@@ -536,12 +536,14 @@ function App() {
       setIsGuiUpdating(true);
       const result = await performGuiSelfUpdate();
       alert(
-        `${t("guiUpdateSuccess")}\n\nv${result.version}\n\n${t("guiUpdateRestarting")}`
+        `${t("guiUpdateSuccess")}
+
+v${result.version}
+
+${t("guiUpdateManualRestart")}`
       );
-      // 再起動後に自動再接続されるようにリロード
-      setTimeout(() => {
-        window.location.reload();
-      }, result.restartInMs + 3000);
+      setIsGuiUpdating(false);
+      await loadGuiVersion();
     } catch (error) {
       const err = error as Error;
       alert(`${t("errorGuiUpdate")} ${err.message}`);
@@ -1341,3 +1343,4 @@ function App() {
 }
 
 export default App;
+
