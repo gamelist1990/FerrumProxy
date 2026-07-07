@@ -25,6 +25,26 @@ const MAX_DATAGRAM_SIZE: usize = 65_535;
 
 type SessionMap = Arc<Mutex<HashMap<SocketAddr, Arc<UdpSession>>>>;
 
+/// Listener-wide cache of the most recent backend UNCONNECTED_PONG.
+/// Shared across every session on a listener so a fresh pong from one client
+/// can be replayed instantly to future pings from any client without another
+/// backend round-trip.
+type SharedPongCache = Arc<StdMutex<Option<CachedPong>>>;
+
+#[derive(Clone)]
+struct CachedPong {
+    /// Fully rewritten pong (post port-fix + name-quote-strip) ready to relay.
+    /// Only the timestamp field (bytes 1..9) still needs per-ping rewriting.
+    payload: Vec<u8>,
+    /// When this pong was captured from the backend.
+    updated_at: Instant,
+}
+
+/// If the shared pong cache is fresher than this, we skip forwarding the ping
+/// to the backend entirely -- replaying the cached pong is enough for a MOTD
+/// refresh, saving a full backend RTT + one backend send/recv per ping.
+const PONG_CACHE_FRESH_MS: u64 = 3_000;
+
 /// Per-client relay state.
 ///
 /// Sessions are shared via `Arc` and mutated in place through atomics / small
@@ -43,8 +63,6 @@ struct UdpSession {
     /// True once we have seen a connected FrameSet from the client. A fresh
     /// OpenConnectionRequest1 arriving after this point means a real reconnect.
     established: AtomicBool,
-    /// Last backend UNCONNECTED_PONG, replayed instantly to new pings.
-    cached_offline_pong: StdMutex<Option<Vec<u8>>>,
     /// Handle to the backend receive loop, so teardown can abort it promptly.
     recv_task: StdMutex<Option<JoinHandle<()>>>,
     /// Session start monotonic reference. `last_activity_ms` is stored as ms
@@ -88,6 +106,7 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
             .with_context(|| format!("failed to bind UDP listener {bind}"))?,
     );
     let sessions: SessionMap = Arc::new(Mutex::new(HashMap::new()));
+    let shared_pong: SharedPongCache = Arc::new(StdMutex::new(None));
 
     info!("UDP listening on {bind}");
 
@@ -103,6 +122,7 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
             Arc::clone(&sessions),
             Arc::clone(&rule),
             Arc::clone(&runtime),
+            Arc::clone(&shared_pong),
             peer,
             packet,
         )
@@ -118,6 +138,7 @@ async fn handle_datagram(
     sessions: SessionMap,
     rule: Arc<ListenerRule>,
     runtime: Arc<AppRuntime>,
+    shared_pong: SharedPongCache,
     peer: SocketAddr,
     packet: Vec<u8>,
 ) -> Result<()> {
@@ -157,15 +178,21 @@ async fn handle_datagram(
         debug!("RakNet client packet from {original_client} via {peer}: {description}");
     }
 
-    let is_new_conn = is_open_connection_request_1(&payload);
-    let session = obtain_session(&server, &sessions, &rule, &runtime, peer, is_new_conn).await?;
-
+    // Bedrock offline-ping fast path: try the listener-wide shared pong cache
+    // first. If the cache is fresh (<PONG_CACHE_FRESH_MS since last backend
+    // pong), we serve the client immediately AND skip forwarding to the
+    // backend entirely. If the cache is stale/absent, we still serve from it
+    // (if we have anything at all) and then fall through so the backend gets
+    // pinged and the cache is refreshed.
     if is_offline_ping(&payload) {
-        let cached = session.cached_offline_pong.lock().unwrap().clone();
-        if let (Some(cached_pong), Some(timestamp)) = (cached, payload.get(1..9)) {
-            let immediate_pong = rewrite_unconnected_pong_timestamp(&cached_pong, timestamp)
+        let cached = shared_pong.lock().unwrap().clone();
+        let mut cache_is_fresh = false;
+        if let (Some(entry), Some(timestamp)) = (cached.as_ref(), payload.get(1..9)) {
+            let age_ms = entry.updated_at.elapsed().as_millis() as u64;
+            cache_is_fresh = age_ms < PONG_CACHE_FRESH_MS;
+            let immediate_pong = rewrite_unconnected_pong_timestamp(&entry.payload, timestamp)
                 .unwrap_or_else(|| {
-                    let mut out = cached_pong.clone();
+                    let mut out = entry.payload.clone();
                     if out.len() >= 9 {
                         out[1..9].copy_from_slice(timestamp);
                     }
@@ -173,15 +200,35 @@ async fn handle_datagram(
                 });
             if let Err(err) = server.send_to(&immediate_pong, peer).await {
                 debug!("Immediate Bedrock pong send to {peer} failed: {err}");
-            } else {
-                let description = describe_unconnected_pong(&immediate_pong)
-                    .unwrap_or_else(|| format!("len={}", immediate_pong.len()));
+            } else if cache_is_fresh {
                 debug!(
-                    "Sent immediate Bedrock pong to {peer}; refreshing backend in parallel: {description}"
+                    "Served Bedrock pong to {peer} from shared cache (age {age_ms}ms) without touching backend"
+                );
+            } else {
+                debug!(
+                    "Served Bedrock pong to {peer} from shared cache (stale {age_ms}ms); refreshing backend in parallel"
                 );
             }
         }
+        if cache_is_fresh {
+            // Fresh cache: no session/backend traffic needed. All done.
+            return Ok(());
+        }
+        // Empty or stale cache: fall through so the backend is pinged and
+        // spawn_backend_recv publishes the fresh pong to shared_pong.
     }
+
+    let is_new_conn = is_open_connection_request_1(&payload);
+    let session = obtain_session(
+        &server,
+        &sessions,
+        &rule,
+        &runtime,
+        Arc::clone(&shared_pong),
+        peer,
+        is_new_conn,
+    )
+    .await?;
 
     try_send_udp(&rule, &runtime, &session, original_client, &payload).await?;
 
@@ -212,6 +259,7 @@ async fn obtain_session(
     sessions: &SessionMap,
     rule: &Arc<ListenerRule>,
     runtime: &Arc<AppRuntime>,
+    shared_pong: SharedPongCache,
     peer: SocketAddr,
     _is_new_conn: bool,
 ) -> Result<Arc<UdpSession>> {
@@ -242,7 +290,6 @@ async fn obtain_session(
         header_sent: AtomicBool::new(false),
         notified: AtomicBool::new(false),
         established: AtomicBool::new(false),
-        cached_offline_pong: StdMutex::new(None),
         recv_task: StdMutex::new(None),
         session_start: Instant::now(),
         last_activity_ms: AtomicU64::new(0),
@@ -255,6 +302,7 @@ async fn obtain_session(
         Arc::clone(sessions),
         Arc::clone(rule),
         Arc::clone(runtime),
+        shared_pong,
         peer,
     );
     *session.recv_task.lock().unwrap() = Some(handle);
@@ -284,6 +332,7 @@ fn spawn_backend_recv(
     sessions: SessionMap,
     rule: Arc<ListenerRule>,
     runtime: Arc<AppRuntime>,
+    shared_pong: SharedPongCache,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
     // NOTE: 以前は `timeout(udp_session_idle, recv_from)` を回して 1 回でも
@@ -340,7 +389,13 @@ fn spawn_backend_recv(
                                 "Bedrock pong from backend {backend_addr} to {peer}: {description}"
                             );
                         }
-                        *session.cached_offline_pong.lock().unwrap() = Some(response.clone());
+                        // Publish the freshly-rewritten pong to the
+                        // listener-wide cache so future pings from any peer
+                        // can be served without another backend round-trip.
+                        *shared_pong.lock().unwrap() = Some(CachedPong {
+                            payload: response.clone(),
+                            updated_at: Instant::now(),
+                        });
                     } else if let Some(description) = describe_raknet_packet(&response) {
                         debug!(
                             "RakNet backend packet from {backend_addr} to {peer}: {description}"
