@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::ddos_guard::DdosGuardSettings;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Protocol {
     Tcp,
@@ -24,7 +26,61 @@ pub struct ProxyConfig {
     pub debug: bool,
     #[serde(default)]
     pub shared_service: Option<SharedServiceConfig>,
+    #[serde(default)]
+    pub ddos_guard: DdosGuardConfig,
     pub listeners: Vec<ListenerRule>,
+}
+
+/// Serializable DDoS-guard thresholds. Missing fields fall back to the relaxed,
+/// HTTP-friendly defaults (see [`DdosGuardSettings::default`]).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DdosGuardConfig {
+    pub enabled: bool,
+    pub tcp_max_active_per_ip: usize,
+    pub tcp_new_connections_per_second: f64,
+    pub tcp_new_connection_burst: f64,
+    pub udp_packets_per_second: f64,
+    pub udp_packet_burst: f64,
+    pub udp_bytes_per_second: f64,
+    pub udp_byte_burst: f64,
+    pub udp_max_datagram_bytes: usize,
+}
+
+impl Default for DdosGuardConfig {
+    fn default() -> Self {
+        Self::from_settings(&DdosGuardSettings::default())
+    }
+}
+
+impl DdosGuardConfig {
+    fn from_settings(s: &DdosGuardSettings) -> Self {
+        Self {
+            enabled: s.enabled,
+            tcp_max_active_per_ip: s.tcp_max_active_per_ip,
+            tcp_new_connections_per_second: s.tcp_new_connections_per_second,
+            tcp_new_connection_burst: s.tcp_new_connection_burst,
+            udp_packets_per_second: s.udp_packets_per_second,
+            udp_packet_burst: s.udp_packet_burst,
+            udp_bytes_per_second: s.udp_bytes_per_second,
+            udp_byte_burst: s.udp_byte_burst,
+            udp_max_datagram_bytes: s.udp_max_datagram_bytes,
+        }
+    }
+
+    pub fn to_settings(&self) -> DdosGuardSettings {
+        DdosGuardSettings {
+            enabled: self.enabled,
+            tcp_max_active_per_ip: self.tcp_max_active_per_ip,
+            tcp_new_connections_per_second: self.tcp_new_connections_per_second,
+            tcp_new_connection_burst: self.tcp_new_connection_burst,
+            udp_packets_per_second: self.udp_packets_per_second,
+            udp_packet_burst: self.udp_packet_burst,
+            udp_bytes_per_second: self.udp_bytes_per_second,
+            udp_byte_burst: self.udp_byte_burst,
+            udp_max_datagram_bytes: self.udp_max_datagram_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

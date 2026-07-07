@@ -5,41 +5,90 @@ use std::time::{Duration, Instant};
 
 use tracing::warn;
 
-const TCP_MAX_ACTIVE_PER_IP: usize = 64;
-const TCP_NEW_CONNECTIONS_PER_SECOND: f64 = 12.0;
-const TCP_NEW_CONNECTION_BURST: f64 = 96.0;
-
-const UDP_PACKETS_PER_SECOND: f64 = 240.0;
-const UDP_PACKET_BURST: f64 = 480.0;
-const UDP_BYTES_PER_SECOND: f64 = 2.0 * 1024.0 * 1024.0;
-const UDP_BYTE_BURST: f64 = 4.0 * 1024.0 * 1024.0;
-const UDP_MAX_DATAGRAM_BYTES: usize = 8 * 1024;
-
 const VIOLATION_DECAY_AFTER: Duration = Duration::from_secs(30);
 const TEMP_BLOCK_AFTER_VIOLATIONS: u32 = 24;
 const TEMP_BLOCK_BASE: Duration = Duration::from_secs(20);
 const TEMP_BLOCK_MAX: Duration = Duration::from_secs(10 * 60);
 const IDLE_STATE_RETENTION: Duration = Duration::from_secs(10 * 60);
 
-#[derive(Clone, Default)]
+/// Tunable DDoS-guard thresholds.
+///
+/// Defaults are relaxed enough for HTTP/HTTPS reverse-proxy use — a browser
+/// opens many parallel connections to load a single page, so the previous
+/// 12 conn/s limit dropped legitimate asset/XHR connections and left pages
+/// rendering without their body. UDP defaults stay sized for real-time gaming.
+#[derive(Debug, Clone)]
+pub struct DdosGuardSettings {
+    pub enabled: bool,
+    pub tcp_max_active_per_ip: usize,
+    pub tcp_new_connections_per_second: f64,
+    pub tcp_new_connection_burst: f64,
+    pub udp_packets_per_second: f64,
+    pub udp_packet_burst: f64,
+    pub udp_bytes_per_second: f64,
+    pub udp_byte_burst: f64,
+    pub udp_max_datagram_bytes: usize,
+}
+
+impl Default for DdosGuardSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tcp_max_active_per_ip: 256,
+            tcp_new_connections_per_second: 100.0,
+            tcp_new_connection_burst: 500.0,
+            udp_packets_per_second: 240.0,
+            udp_packet_burst: 480.0,
+            udp_bytes_per_second: 2.0 * 1024.0 * 1024.0,
+            udp_byte_burst: 4.0 * 1024.0 * 1024.0,
+            udp_max_datagram_bytes: 8 * 1024,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct DdosGuard {
     inner: Arc<Mutex<HashMap<IpAddr, IpProtectionState>>>,
+    settings: Arc<DdosGuardSettings>,
+}
+
+impl Default for DdosGuard {
+    fn default() -> Self {
+        Self::new(DdosGuardSettings::default())
+    }
 }
 
 impl DdosGuard {
+    pub fn new(settings: DdosGuardSettings) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            settings: Arc::new(settings),
+        }
+    }
+
     pub fn tcp_connection_opened(&self, ip: IpAddr) -> Result<TcpConnectionPermit, DropReason> {
+        // Guard disabled: hand back an inert permit that does not track state.
+        if !self.settings.enabled {
+            return Ok(TcpConnectionPermit {
+                ip,
+                guard: self.clone(),
+                released: true,
+            });
+        }
+
         let now = Instant::now();
         let mut guard = self.inner.lock().expect("ddos guard mutex poisoned");
         prune_idle_states(&mut guard, now);
 
+        let settings = &self.settings;
         let state = guard
             .entry(ip)
-            .or_insert_with(|| IpProtectionState::new(now));
+            .or_insert_with(|| IpProtectionState::new(now, settings));
         if let Some(reason) = state.block_reason(now) {
             return Err(reason);
         }
 
-        if state.active_tcp_connections >= TCP_MAX_ACTIVE_PER_IP {
+        if state.active_tcp_connections >= settings.tcp_max_active_per_ip {
             return Err(state.record_violation(now, DropReason::TcpActiveConnectionLimit));
         }
 
@@ -57,18 +106,23 @@ impl DdosGuard {
     }
 
     pub fn udp_datagram_allowed(&self, ip: IpAddr, bytes: usize) -> Result<(), DropReason> {
+        if !self.settings.enabled {
+            return Ok(());
+        }
+
         let now = Instant::now();
         let mut guard = self.inner.lock().expect("ddos guard mutex poisoned");
         prune_idle_states(&mut guard, now);
 
+        let settings = &self.settings;
         let state = guard
             .entry(ip)
-            .or_insert_with(|| IpProtectionState::new(now));
+            .or_insert_with(|| IpProtectionState::new(now, settings));
         if let Some(reason) = state.block_reason(now) {
             return Err(reason);
         }
 
-        if bytes > UDP_MAX_DATAGRAM_BYTES {
+        if bytes > settings.udp_max_datagram_bytes {
             return Err(state.record_violation(now, DropReason::UdpDatagramTooLarge));
         }
 
@@ -144,16 +198,24 @@ struct IpProtectionState {
 }
 
 impl IpProtectionState {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, settings: &DdosGuardSettings) -> Self {
         Self {
             active_tcp_connections: 0,
             tcp_new_connections: TokenBucket::new(
-                TCP_NEW_CONNECTIONS_PER_SECOND,
-                TCP_NEW_CONNECTION_BURST,
+                settings.tcp_new_connections_per_second,
+                settings.tcp_new_connection_burst,
                 now,
             ),
-            udp_packets: TokenBucket::new(UDP_PACKETS_PER_SECOND, UDP_PACKET_BURST, now),
-            udp_bytes: TokenBucket::new(UDP_BYTES_PER_SECOND, UDP_BYTE_BURST, now),
+            udp_packets: TokenBucket::new(
+                settings.udp_packets_per_second,
+                settings.udp_packet_burst,
+                now,
+            ),
+            udp_bytes: TokenBucket::new(
+                settings.udp_bytes_per_second,
+                settings.udp_byte_burst,
+                now,
+            ),
             violations: 0,
             last_violation: None,
             temporary_block_until: None,
@@ -253,11 +315,12 @@ mod tests {
 
     #[test]
     fn tcp_active_connections_are_limited_per_ip() {
+        let limit = DdosGuardSettings::default().tcp_max_active_per_ip;
         let guard = DdosGuard::default();
         let ip = "192.0.2.10".parse().unwrap();
         let mut permits = Vec::new();
 
-        for _ in 0..TCP_MAX_ACTIVE_PER_IP {
+        for _ in 0..limit {
             permits.push(guard.tcp_connection_opened(ip).unwrap());
         }
 
@@ -273,13 +336,31 @@ mod tests {
 
     #[test]
     fn oversized_udp_datagrams_are_dropped() {
+        let max = DdosGuardSettings::default().udp_max_datagram_bytes;
         let guard = DdosGuard::default();
         let ip = "192.0.2.20".parse().unwrap();
 
-        let denied = match guard.udp_datagram_allowed(ip, UDP_MAX_DATAGRAM_BYTES + 1) {
+        let denied = match guard.udp_datagram_allowed(ip, max + 1) {
             Ok(()) => panic!("oversized UDP datagram was allowed"),
             Err(reason) => reason,
         };
         assert!(matches!(denied, DropReason::UdpDatagramTooLarge));
+    }
+
+    #[test]
+    fn disabled_guard_allows_everything() {
+        let guard = DdosGuard::new(DdosGuardSettings {
+            enabled: false,
+            tcp_max_active_per_ip: 1,
+            tcp_new_connections_per_second: 1.0,
+            tcp_new_connection_burst: 1.0,
+            ..DdosGuardSettings::default()
+        });
+        let ip = "192.0.2.30".parse().unwrap();
+        // Far beyond the (tiny) configured limits, but the guard is disabled.
+        for _ in 0..50 {
+            assert!(guard.tcp_connection_opened(ip).is_ok());
+        }
+        assert!(guard.udp_datagram_allowed(ip, 10 * 1024 * 1024).is_ok());
     }
 }

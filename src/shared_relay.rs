@@ -807,7 +807,7 @@ mod tests {
         write_shared_relay_config(&config_path, control_port, public_port, "old-token")?;
 
         let config = ProxyConfig::load(&config_path)?.shared_service.unwrap();
-        let runtime = Arc::new(AppRuntime::new(false, false, Vec::new()));
+        let runtime = Arc::new(AppRuntime::new(false, false, Vec::new(), crate::ddos_guard::DdosGuardSettings::default()));
         let relay = tokio::spawn({
             let config_path = config_path.clone();
             async move {
@@ -1106,7 +1106,7 @@ mod tests {
             defaults: SharedServiceLimits::default(),
             maximums: SharedServiceLimits::default(),
         };
-        let runtime = Arc::new(AppRuntime::new(false, false, Vec::new()));
+        let runtime = Arc::new(AppRuntime::new(false, false, Vec::new(), crate::ddos_guard::DdosGuardSettings::default()));
         tokio::spawn(async move {
             let _ = start_shared_relay(config, None, runtime).await;
         })

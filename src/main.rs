@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
         cfg.use_rest_api,
         cfg.save_player_ip,
         webhooks,
+        cfg.ddos_guard.to_settings(),
     ));
     let mut tasks = JoinSet::new();
 

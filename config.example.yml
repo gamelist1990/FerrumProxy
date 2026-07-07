@@ -25,6 +25,20 @@ sharedService:
     maxBytesPerSecond: 104857600
     idleTimeoutSeconds: 3600
     udpSessionTimeoutSeconds: 600
+
+# Per-IP DDoS protection. Defaults are relaxed for HTTP/HTTPS reverse-proxy use
+# (a browser opens many parallel connections per page). Lower them to harden, or
+# set enabled: false if a trusted upstream load balancer already protects you.
+ddosGuard:
+  enabled: true
+  tcpMaxActivePerIp: 256
+  tcpNewConnectionsPerSecond: 100
+  tcpNewConnectionBurst: 500
+  udpPacketsPerSecond: 240
+  udpPacketBurst: 480
+  udpBytesPerSecond: 2097152
+  udpByteBurst: 4194304
+  udpMaxDatagramBytes: 8192
 listeners:
   - bind: 0.0.0.0
     tcp: 25565
