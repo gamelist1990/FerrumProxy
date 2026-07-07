@@ -160,19 +160,30 @@ async fn handle_datagram(
     packet: Vec<u8>,
 ) -> Result<()> {
     let mut original_client = peer;
-    let parsed =
-        parse_proxy_chain(&packet).unwrap_or_else(|_| crate::proxy_protocol::ParsedProxyChain {
-            headers: Vec::new(),
-            payload_offset: 0,
+    // Fast path: the overwhelming majority of Bedrock datagrams do NOT carry
+    // a PROXY v2 header prepended by an upstream LB, so avoid the parse
+    // (and its allocation churn) when the leading bytes obviously aren't
+    // the PROXY v2 signature '\r\n\r\n\0\r\nQUIT\n'. This saves both a
+    // function call and a small heap allocation on the hot path -- meaningful
+    // on shared/low-clock VPS boxes where each syscall/malloc costs more.
+    let payload: &[u8] = if packet.len() >= 12 && &packet[..12] == b"\r\n\r\n\0\r\nQUIT\n" {
+        let parsed = parse_proxy_chain(&packet).unwrap_or_else(|_| {
+            crate::proxy_protocol::ParsedProxyChain {
+                headers: Vec::new(),
+                payload_offset: 0,
+            }
         });
-    if let Some(last_header) = parsed.headers.last() {
-        original_client = SocketAddr::new(last_header.source_address, last_header.source_port);
-        debug!(
-            "UDP incoming PROXY header original={} destination={}:{}",
-            original_client, last_header.destination_address, last_header.destination_port
-        );
-    }
-    let payload = packet[parsed.payload_offset..].to_vec();
+        if let Some(last_header) = parsed.headers.last() {
+            original_client = SocketAddr::new(last_header.source_address, last_header.source_port);
+            debug!(
+                "UDP incoming PROXY header original={} destination={}:{}",
+                original_client, last_header.destination_address, last_header.destination_port
+            );
+        }
+        &packet[parsed.payload_offset..]
+    } else {
+        &packet[..]
+    };
 
     if payload.is_empty() {
         return Ok(());
@@ -189,10 +200,15 @@ async fn handle_datagram(
         return Ok(());
     }
 
-    if let Some(description) = describe_offline_ping(&payload) {
-        debug!("Bedrock offline ping from {original_client} via {peer}: {description}");
-    } else if let Some(description) = describe_raknet_packet(&payload) {
-        debug!("RakNet client packet from {original_client} via {peer}: {description}");
+    // Skip the description helpers unless debug logging is actually enabled.
+    // They allocate Strings and walk the RakNet frame set for a log line that
+    // no one reads at release log-level -- a real overhead on 200-pkt bursts.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        if let Some(description) = describe_offline_ping(payload) {
+            debug!("Bedrock offline ping from {original_client} via {peer}: {description}");
+        } else if let Some(description) = describe_raknet_packet(payload) {
+            debug!("RakNet client packet from {original_client} via {peer}: {description}");
+        }
     }
 
     // Bedrock offline-ping fast path: try the listener-wide shared pong cache
@@ -201,7 +217,7 @@ async fn handle_datagram(
     // backend entirely. If the cache is stale/absent, we still serve from it
     // (if we have anything at all) and then fall through so the backend gets
     // pinged and the cache is refreshed.
-    if is_offline_ping(&payload) {
+    if is_offline_ping(payload) {
         let cached = shared_pong.lock().unwrap().clone();
         let mut cache_is_fresh = false;
         if let (Some(entry), Some(timestamp)) = (cached.as_ref(), payload.get(1..9)) {
@@ -247,7 +263,7 @@ async fn handle_datagram(
     )
     .await?;
 
-    try_send_udp(&rule, &runtime, &session, original_client, &payload).await?;
+    try_send_udp(&rule, &runtime, &session, original_client, payload).await?;
 
     // Refresh the bidirectional idle marker: this client is clearly alive.
     session.touch();
@@ -540,12 +556,12 @@ async fn maybe_notify_disconnect(
         .await;
 }
 
-async fn try_send_udp(
+async fn try_send_udp<'a>(
     rule: &ListenerRule,
     runtime: &AppRuntime,
     session: &UdpSession,
     original_client: SocketAddr,
-    payload: &[u8],
+    payload: &'a [u8],
 ) -> Result<()> {
     let targets = rule.targets_for(Protocol::Udp);
     let force_proxy_header = rule.haproxy && is_offline_ping(payload);
@@ -616,9 +632,19 @@ async fn send_to_target(
         }
         resolved
     };
-    let mut out = payload.to_vec();
 
-    if rule.haproxy && (force_proxy_header || !session.header_sent.load(Ordering::Relaxed)) {
+    // Hot-path allocation strategy:
+    //   * No PROXY header needed (most common on internal setups) -> send the
+    //     original payload slice directly, zero allocation.
+    //   * PROXY header needed -> allocate exactly ONE Vec with the final size
+    //     upfront (header + payload) and copy both parts in. Previously this
+    //     did payload.to_vec() and then [header, out].concat(), which is up to
+    //     3 allocations + 2 copies per forwarded packet -- a real burn on
+    //     shared / low-clock VPS boxes where malloc is measured in microseconds.
+    let need_header =
+        rule.haproxy && (force_proxy_header || !session.header_sent.load(Ordering::Relaxed));
+
+    let bytes_sent = if need_header {
         let header = build_proxy_v2_header(
             original_client.ip(),
             original_client.port(),
@@ -626,25 +652,38 @@ async fn send_to_target(
             target_port,
             true,
         );
-        out = [header, out].concat();
+        let mut out = Vec::with_capacity(header.len() + payload.len());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(payload);
 
         if !is_offline_ping(payload) {
             session.header_sent.store(true, Ordering::Relaxed);
         }
 
-        debug!(
-            "Added UDP PROXY v2 header for {original_client} -> {target_addr}: payload={}B total={}B force={force_proxy_header}",
-            payload.len(),
-            out.len()
-        );
-    }
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            debug!(
+                "Added UDP PROXY v2 header for {original_client} -> {target_addr}: payload={}B total={}B force={force_proxy_header}",
+                payload.len(),
+                out.len()
+            );
+        }
 
-    session.socket.send_to(&out, target_addr).await?;
-    runtime.metrics.udp_client_to_target_bytes(out.len());
+        session.socket.send_to(&out, target_addr).await?;
+        out.len()
+    } else {
+        // No allocation, no copy: hand the borrowed payload straight to the
+        // kernel. This is the shape of the vast majority of packets after
+        // the very first one on any given session.
+        session.socket.send_to(payload, target_addr).await?;
+        payload.len()
+    };
+    runtime.metrics.udp_client_to_target_bytes(bytes_sent);
     session
         .active_target_index
         .store(target_index, Ordering::Relaxed);
-    debug!("UDP {original_client} -> {target_addr} {}B", out.len());
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        debug!("UDP {original_client} -> {target_addr} {bytes_sent}B");
+    }
     Ok(())
 }
 
