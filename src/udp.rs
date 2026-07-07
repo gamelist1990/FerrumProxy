@@ -171,54 +171,6 @@ async fn handle_datagram(
         maybe_notify_connect(&runtime, &rule, &session, original_client).await;
     }
 
-    // NOTE: 以前はここで `contains_disconnect(&payload)` を判定して
-
-    Ok(())
-}
-
-/// Returns the session for `peer`, creating one if needed.
-///
-/// 以前は「established なセッションに OpenConnectionRequest1 (0x05) が来たら
-/// 再接続とみなして即リセット」していたが、これは Bedrock クライアントが
-/// パケットロス時に 0x05 を再送するケースで**進行中のセッションを勝手に破棄**
-/// してしまい、Geyser 側 RakNet が古い upstream ソケットに応答を送り続けて
-/// TIMED_OUT を引き起こしていた。
-///
-/// 正しい再接続は「DisconnectNotification (0x15) → 新規 OpenConnectionRequest1」
-/// のシーケンスで、前者は `contains_disconnect` が検出して `close_session` が
-/// セッションを削除するため、次の 0x05 では自然に新規セッションが作られる。
-/// つまり `is_new_conn` に基づくリセットは不要どころか有害。
-///
-/// `is_new_conn` 引数は将来の再拡張余地のために残しているが、現在は使わない。
-async fn obtain_session(
-    server: &Arc<UdpSocket>,
-    sessions: &SessionMap,
-    rule: &Arc<ListenerRule>,
-    runtime: &Arc<AppRuntime>,
-    peer: SocketAddr,
-    _is_new_conn: bool,
-) -> Result<Arc<UdpSession>> {
-    {
-        let guard = sessions.lock().await;
-        if let Some(existing) = guard.get(&peer) {
-            return Ok(Arc::clone(existing));
-        }
-    }
-
-    let socket = Arc::new(
-        UdpSocket::bind(if peer.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
-        })
-        .await?,
-    );
-
-    let mut guard = sessions.lock().await;
-    if let Some(existing) = guard.get(&peer) {
-        return Ok(Arc::clone(existing));
-    }
-
     let session = Arc::new(UdpSession {
         socket: Arc::clone(&socket),
         active_target_index: AtomicUsize::new(0),
