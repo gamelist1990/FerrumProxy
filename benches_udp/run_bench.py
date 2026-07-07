@@ -101,12 +101,19 @@ def run_bench_client(protocol: str, port: int, count: int, size: int, label: str
 def start_process(argv, out_path: Path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     logf = open(out_path, "w", encoding="utf-8")
-    kwargs = dict(stdout=logf, stderr=subprocess.STDOUT)
-    if platform.system() == "Windows":
-        # Windows: prevent Ctrl+C in this shell from also killing the child
-        # before we can send it terminate() cleanly.
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    return subprocess.Popen(argv, **kwargs), logf
+    # Windows: prevent Ctrl+C in this shell from also killing the child
+    # before we can send it terminate() cleanly. On POSIX this flag doesn't
+    # exist, so we pass 0.
+    creationflags = (
+        subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
+    )
+    proc = subprocess.Popen(
+        argv,
+        stdout=logf,
+        stderr=subprocess.STDOUT,
+        creationflags=creationflags,
+    )
+    return proc, logf
 
 
 def stop_process(proc: subprocess.Popen, log_file) -> None:
