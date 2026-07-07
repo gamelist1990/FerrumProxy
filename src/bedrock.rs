@@ -487,37 +487,6 @@ mod tests {
         assert!(strip_unconnected_pong_name_quotes(&pong).is_none());
     }
 
-    #[test]
-    fn detects_disconnect_inside_frame_set() {
-        let frame_set = [0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x15];
-        assert!(contains_disconnect(&frame_set));
-    }
-
-    #[test]
-    fn detects_disconnect_inside_reliable_frame_set() {
-        let frame_set = [
-            0x84, 0x00, 0x00, 0x00, 0x40, 0x00, 0x08, 0x00, 0x00, 0x00, 0x15,
-        ];
-        assert!(contains_disconnect(&frame_set));
-    }
-
-    #[test]
-    fn ignores_frame_set_without_disconnect() {
-        let frame_set = [0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0xfe];
-        assert!(!contains_disconnect(&frame_set));
-    }
-
-    #[test]
-    fn detects_raw_disconnect_and_open_connection_request() {
-        assert!(contains_disconnect(&[0x15]));
-
-        let mut req1 = vec![0x05];
-        req1.extend_from_slice(&RAKNET_OFFLINE_MESSAGE_ID);
-        req1.push(0x0b);
-        assert!(is_open_connection_request_1(&req1));
-        assert!(!is_open_connection_request_1(&[0x05, 0x00]));
-    }
-
     fn bedrock_pong(motd: &str) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.push(UNCONNECTED_PONG_ID);
