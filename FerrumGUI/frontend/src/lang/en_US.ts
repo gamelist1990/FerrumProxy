@@ -189,6 +189,8 @@ export const en_US = {
   udpBytesPerSecond: 'UDP bytes per second',
   udpByteBurst: 'UDP byte burst',
   udpMaxDatagramBytes: 'UDP max datagram size (bytes)',
+  activePreset: 'Active',
+  presetCustom: 'Custom',
   highLatencySettings: 'High-latency mode',
   highLatencyEnabled: 'Allow extremely slow clients',
   highLatencyHint:

@@ -38,6 +38,19 @@ const PRESET_EXTREME: HighLatencyConfig = {
   udpSessionIdleTimeoutMs: 1_800_000,
 };
 
+const HL_KEYS = [
+  'enabled',
+  'initialClientDataTimeoutMs',
+  'connectTimeoutMs',
+  'udpSessionIdleTimeoutMs',
+] as const;
+
+function hlPresetsEqual(a: HighLatencyConfig, b: HighLatencyConfig): boolean {
+  return HL_KEYS.every((k) => a[k] === b[k]);
+}
+
+type ActiveHlPreset = 'off' | 'high' | 'extreme' | 'custom';
+
 export const HighLatencySettingsPanel: React.FC<HighLatencySettingsProps> = ({ config, onChange }) => {
   const cfg: HighLatencyConfig = { ...PRESET_DEFAULT, ...(config ?? {}) };
   const [showAdvanced, setShowAdvanced] = React.useState(false);
@@ -54,6 +67,27 @@ export const HighLatencySettingsPanel: React.FC<HighLatencySettingsProps> = ({ c
 
   const applyPreset = (preset: HighLatencyConfig) => onChange({ ...preset });
 
+  const activePreset: ActiveHlPreset = hlPresetsEqual(cfg, PRESET_DEFAULT)
+    ? 'off'
+    : hlPresetsEqual(cfg, PRESET_HIGH)
+      ? 'high'
+      : hlPresetsEqual(cfg, PRESET_EXTREME)
+        ? 'extreme'
+        : 'custom';
+
+  const presetVariant = (id: ActiveHlPreset) =>
+    activePreset === id ? 'primary' : 'ghost';
+  const mark = (id: ActiveHlPreset) => (activePreset === id ? '✓ ' : '');
+
+  const activeLabel =
+    activePreset === 'off'
+      ? t('highLatencyPresetOff') || 'Off (10s / 10s / 60s)'
+      : activePreset === 'high'
+        ? t('highLatencyPresetHigh') || 'High ping (30s / 30s / 10min)'
+        : activePreset === 'extreme'
+          ? t('highLatencyPresetExtreme') || 'Extreme (60s / 60s / 30min)'
+          : t('presetCustom') || 'Custom';
+
   return (
     <Card title={t('highLatencySettings') || 'High-latency mode'}>
       <div className="flex flex-col gap-4">
@@ -68,15 +102,19 @@ export const HighLatencySettingsPanel: React.FC<HighLatencySettingsProps> = ({ c
             'Stretches the initial handshake, backend connect, and UDP idle timeouts so 1000ms–5000ms clients can stay connected. Turn off if you want the tight defaults.'}
         </p>
 
+        <p className="text-sm" style={{ marginTop: '-4px' }}>
+          <strong>{t('activePreset') || 'Active'}:</strong> {activeLabel}
+        </p>
+
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => applyPreset(PRESET_DEFAULT)}>
-            {t('highLatencyPresetOff') || 'Off (10s / 10s / 60s)'}
+          <Button variant={presetVariant('off')} onClick={() => applyPreset(PRESET_DEFAULT)}>
+            {mark('off')}{t('highLatencyPresetOff') || 'Off (10s / 10s / 60s)'}
           </Button>
-          <Button variant="primary" onClick={() => applyPreset(PRESET_HIGH)}>
-            {t('highLatencyPresetHigh') || 'High ping (30s / 30s / 10min)'}
+          <Button variant={presetVariant('high')} onClick={() => applyPreset(PRESET_HIGH)}>
+            {mark('high')}{t('highLatencyPresetHigh') || 'High ping (30s / 30s / 10min)'}
           </Button>
-          <Button variant="ghost" onClick={() => applyPreset(PRESET_EXTREME)}>
-            {t('highLatencyPresetExtreme') || 'Extreme (60s / 60s / 30min)'}
+          <Button variant={presetVariant('extreme')} onClick={() => applyPreset(PRESET_EXTREME)}>
+            {mark('extreme')}{t('highLatencyPresetExtreme') || 'Extreme (60s / 60s / 30min)'}
           </Button>
         </div>
 

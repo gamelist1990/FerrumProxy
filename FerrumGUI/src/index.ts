@@ -1747,27 +1747,61 @@ app.get('/api/instances/:id/performance', async (req, res) => {
 
     const config = await configManager.read(instance.configPath);
     if (!config.useRestApi) {
-      return res.status(409).json({
-        error: 'FerrumProxy REST API is disabled. Enable useRestApi to collect live performance metrics.',
+      // 200 で「利用不可」を伝える。フロントは Error を投げずに黙って空表示にする。
+      return res.json({
+        available: false,
+        reason: 'rest_api_disabled',
         restApiEnabled: false,
+        instanceId,
+        sampledAt: new Date().toISOString(),
+      });
+    }
+
+    if (!processManager.isRunning(instanceId)) {
+      return res.json({
+        available: false,
+        reason: 'not_running',
+        restApiEnabled: true,
+        instanceId,
+        sampledAt: new Date().toISOString(),
       });
     }
 
     const endpoint = config.endpoint || 6000;
-    const response = await fetch(`http://127.0.0.1:${endpoint}/api/performance`, {
-      signal: AbortSignal.timeout(2000),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`http://127.0.0.1:${endpoint}/api/performance`, {
+        signal: AbortSignal.timeout(2000),
+      });
+    } catch (fetchErr: any) {
+      // ECONNREFUSED / AbortError（起動直後 or 再起動中）はエラーではなく「まだ利用できない」扱い。
+      // 500 で返すとフロントが 2.5 秒ごとに console にスパムするので 200 で穏やかに返す。
+      return res.json({
+        available: false,
+        reason: fetchErr?.name === 'TimeoutError' || fetchErr?.name === 'AbortError'
+          ? 'timeout'
+          : 'unreachable',
+        restApiEnabled: true,
+        instanceId,
+        sampledAt: new Date().toISOString(),
+      });
+    }
 
     if (!response.ok) {
-      return res.status(502).json({
-        error: `FerrumProxy performance endpoint returned ${response.status}`,
+      return res.json({
+        available: false,
+        reason: 'backend_error',
+        backendStatus: response.status,
         restApiEnabled: true,
+        instanceId,
+        sampledAt: new Date().toISOString(),
       });
     }
 
     const performance = await response.json() as Record<string, unknown>;
     res.json({
       ...performance,
+      available: true,
       instanceId,
       pid: processManager.getPid(instanceId),
       processStartedAt: processManager.getStartedAt(instanceId)?.toISOString() || instance.lastStarted,

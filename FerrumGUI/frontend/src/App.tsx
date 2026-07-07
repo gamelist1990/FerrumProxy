@@ -397,11 +397,17 @@ function App() {
   async function loadPerformance(instanceId: string) {
     try {
       const data = await fetchPerformance(instanceId);
-      if (selectedInstanceRef.current === instanceId) {
-        setPerformance(data);
+      if (selectedInstanceRef.current !== instanceId) return;
+      // サーバ側が 200 で `available: false` を返してきた場合はエラーではなく「未接続」扱い。
+      if ((data as unknown as { available?: boolean }).available === false) {
+        setPerformance(null);
         setPerformanceError(null);
+        return;
       }
+      setPerformance(data);
+      setPerformanceError(null);
     } catch (error) {
+      // ここに来るのは本当に GUI 側 API が落ちている時など。console スパムを避けるため logging しない。
       const err = error as Error;
       if (selectedInstanceRef.current === instanceId) {
         setPerformance(null);

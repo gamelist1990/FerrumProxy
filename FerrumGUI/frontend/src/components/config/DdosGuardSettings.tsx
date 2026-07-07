@@ -46,6 +46,24 @@ const PRESET_OFF: DdosGuardConfig = {
   enabled: false,
 };
 
+const DDOS_KEYS = [
+  'enabled',
+  'tcpMaxActivePerIp',
+  'tcpNewConnectionsPerSecond',
+  'tcpNewConnectionBurst',
+  'udpPacketsPerSecond',
+  'udpPacketBurst',
+  'udpBytesPerSecond',
+  'udpByteBurst',
+  'udpMaxDatagramBytes',
+] as const;
+
+function ddosPresetsEqual(a: DdosGuardConfig, b: DdosGuardConfig): boolean {
+  return DDOS_KEYS.every((k) => a[k] === b[k]);
+}
+
+type ActiveDdosPreset = 'balanced' | 'strict' | 'off' | 'custom';
+
 export const DdosGuardSettingsPanel: React.FC<DdosGuardSettingsProps> = ({ config, onChange }) => {
   const cfg: DdosGuardConfig = { ...PRESET_BALANCED, ...(config ?? {}) };
   const [showAdvanced, setShowAdvanced] = React.useState(false);
@@ -62,6 +80,27 @@ export const DdosGuardSettingsPanel: React.FC<DdosGuardSettingsProps> = ({ confi
 
   const applyPreset = (preset: DdosGuardConfig) => onChange({ ...preset });
 
+  const activePreset: ActiveDdosPreset = ddosPresetsEqual(cfg, PRESET_BALANCED)
+    ? 'balanced'
+    : ddosPresetsEqual(cfg, PRESET_STRICT)
+      ? 'strict'
+      : ddosPresetsEqual(cfg, PRESET_OFF)
+        ? 'off'
+        : 'custom';
+
+  const presetVariant = (id: ActiveDdosPreset) =>
+    activePreset === id ? 'primary' : 'ghost';
+  const mark = (id: ActiveDdosPreset) => (activePreset === id ? '✓ ' : '');
+
+  const activeLabel =
+    activePreset === 'balanced'
+      ? t('ddosPresetBalanced') || 'Balanced (default)'
+      : activePreset === 'strict'
+        ? t('ddosPresetStrict') || 'Strict (Bedrock)'
+        : activePreset === 'off'
+          ? t('ddosPresetOff') || 'Off (trusted upstream)'
+          : t('presetCustom') || 'Custom';
+
   return (
     <Card title={t('ddosGuardSettings') || 'DDoS Guard'}>
       <div className="flex flex-col gap-4">
@@ -76,15 +115,19 @@ export const DdosGuardSettingsPanel: React.FC<DdosGuardSettingsProps> = ({ confi
             'Per-IP TCP/UDP rate limiting. Pick a preset, then tweak the details if needed.'}
         </p>
 
+        <p className="text-sm" style={{ marginTop: '-4px' }}>
+          <strong>{t('activePreset') || 'Active'}:</strong> {activeLabel}
+        </p>
+
         <div className="flex flex-wrap gap-2">
-          <Button variant="primary" onClick={() => applyPreset(PRESET_BALANCED)}>
-            {t('ddosPresetBalanced') || 'Balanced (default)'}
+          <Button variant={presetVariant('balanced')} onClick={() => applyPreset(PRESET_BALANCED)}>
+            {mark('balanced')}{t('ddosPresetBalanced') || 'Balanced (default)'}
           </Button>
-          <Button variant="secondary" onClick={() => applyPreset(PRESET_STRICT)}>
-            {t('ddosPresetStrict') || 'Strict (Bedrock)'}
+          <Button variant={presetVariant('strict')} onClick={() => applyPreset(PRESET_STRICT)}>
+            {mark('strict')}{t('ddosPresetStrict') || 'Strict (Bedrock)'}
           </Button>
-          <Button variant="ghost" onClick={() => applyPreset(PRESET_OFF)}>
-            {t('ddosPresetOff') || 'Off (trusted upstream)'}
+          <Button variant={presetVariant('off')} onClick={() => applyPreset(PRESET_OFF)}>
+            {mark('off')}{t('ddosPresetOff') || 'Off (trusted upstream)'}
           </Button>
         </div>
 

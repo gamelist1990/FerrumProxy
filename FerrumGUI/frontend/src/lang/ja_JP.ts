@@ -191,6 +191,8 @@ export const ja_JP: Translation = {
   udpBytesPerSecond: 'UDP バイト / 秒',
   udpByteBurst: 'UDP バイトバースト',
   udpMaxDatagramBytes: 'UDP 最大データグラム（バイト）',
+  activePreset: '現在のプリセット',
+  presetCustom: 'カスタム',
   highLatencySettings: '高遅延モード',
   highLatencyEnabled: '極端に重いユーザーを許容',
   highLatencyHint:
