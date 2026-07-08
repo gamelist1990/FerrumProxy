@@ -47,6 +47,11 @@ struct UdpSession {
 
     established: AtomicBool,
 
+    // established が最初に true になった時刻 (session_start からの経過 ms)。
+    // 0 = まだ established になっていない。再接続判定で「ハンドシェイク直後の
+    // 遅延 OCR1 (アーティファクト)」と「実プレイ後の再接続」を区別するために使う。
+    established_at_ms: AtomicU64,
+
     recv_task: StdMutex<Option<JoinHandle<()>>>,
 
     session_start: Instant,
@@ -65,6 +70,25 @@ impl UdpSession {
     fn ms_since_last_activity(&self) -> u64 {
         let now = self.session_start.elapsed().as_millis() as u64;
         now.saturating_sub(self.last_activity_ms.load(Ordering::Relaxed))
+    }
+
+    /// established になってからの経過 ms。まだ established でなければ None。
+    fn ms_since_established(&self) -> Option<u64> {
+        if !self.established.load(Ordering::Relaxed) {
+            return None;
+        }
+        let at = self.established_at_ms.load(Ordering::Relaxed);
+        let now = self.session_start.elapsed().as_millis() as u64;
+        Some(now.saturating_sub(at))
+    }
+
+    /// 0x80..=0x8d (RakNet FrameSet) を初めて観測したときに established を立て、
+    /// その時刻を記録する。二度目以降は時刻を上書きしない。
+    fn mark_established(&self) {
+        if !self.established.swap(true, Ordering::Relaxed) {
+            let elapsed = self.session_start.elapsed().as_millis() as u64;
+            self.established_at_ms.store(elapsed, Ordering::Relaxed);
+        }
     }
 }
 
@@ -242,7 +266,7 @@ async fn handle_datagram(
     session.touch();
 
     if matches!(payload.first(), Some(0x80..=0x8d)) {
-        session.established.store(true, Ordering::Relaxed);
+        session.mark_established();
     }
 
     if !session.notified.swap(true, Ordering::Relaxed) {
@@ -261,40 +285,52 @@ async fn obtain_session(
     peer: SocketAddr,
     is_new_conn: bool,
 ) -> Result<Arc<UdpSession>> {
-    // ワールドから抜けて即再接続するとき、Bedrock クライアントは同じソースポート
+    // ワールドから抜けて再接続するとき、Bedrock クライアントは同じソースポート
     // から新規 OpenConnectionRequest1 を送ってくる。ここで古いゾンビセッションを
     // 明示的にリセットしないと、idle_timeout (最大 30 分) 経過まで再接続できない。
     //
-    // ロジック:
-    //   - is_new_conn (OCR1) が来て、かつ既存セッションが established (=ゲーム中
-    //     まで進んでいた) で、かつ 3 秒以上無音なら「これは再接続」と判定 →
-    //     古いセッションを破棄。
-    //   - ゲームプレイ中は RakNet の keep-alive が 1 秒に何度も飛ぶので、
-    //     3 秒無音は物理的な切断と判定できる。この閾値により、活発な
-    //     セッション中に何らかの理由で OCR1 が飛んできても誤破棄しない
-    //     (RakNet 状態リセット→インベントリ等の reliable ordered が届かなく
-    //      なる症状を防ぐ)。
-    //   - まだ established になってない状態 (ハンドシェイク途中) の重複 OCR1 は
-    //     単なる再送なので再利用する。
+    // 判定は 2 つの条件の OR:
+    //
+    //   (A) established かつ 3 秒以上無音 (従来の挙動、そのまま維持)。
+    //       ゲームプレイ中は RakNet keep-alive が 1 秒に何度も飛ぶので 3 秒無音は
+    //       物理切断とみなせる。ハンドシェイク直後の遅延 OCR1 (アーティファクト)
+    //       はゲームトラフィックで無音時間が短いため誤発火しない。
+    //
+    //   (B) established になってから十分経過 (>= 5 秒) していて、かつ 1 秒以上無音。
+    //       これは「実際にしばらくプレイした後に抜けて “即” 再参加した」ケース。
+    //       (A) の 3 秒閾値だと 3 秒未満で戻ってきたときに再接続を検出できず、
+    //       30 分プリセットではゾンビが残り続けて参加できない問題があった。
+    //       established からの経過時間 (established_age) を見ることで、ハンドシェイク
+    //       直後の遅延 OCR1 アーティファクト (established_age < 5s) とは明確に区別
+    //       でき、(A) の保護を一切弱めずに高速再接続だけを拾える。1 秒無音を要求
+    //       するので、パケットが途切れず流れている本当にアクティブなセッションを
+    //       誤破棄することはない。
+    //
+    //   - まだ established になっていない (ハンドシェイク途中) の重複 OCR1 は
+    //     単なる再送なので、どちらの条件にも当たらず再利用される。
     const RECONNECT_IDLE_THRESHOLD_MS: u64 = 3_000;
+    const ESTABLISHED_GRACE_MS: u64 = 5_000;
+    const FAST_RECONNECT_IDLE_MS: u64 = 1_000;
     if is_new_conn {
         let reconnect_info = {
             let guard = sessions.lock().unwrap();
-            guard.get(&peer).map(|s| {
-                (
-                    s.established.load(Ordering::Relaxed),
-                    s.ms_since_last_activity(),
-                )
-            })
+            guard
+                .get(&peer)
+                .map(|s| (s.ms_since_last_activity(), s.ms_since_established()))
         };
         let should_reset = matches!(
             reconnect_info,
-            Some((true, idle)) if idle >= RECONNECT_IDLE_THRESHOLD_MS
+            Some((idle, Some(established_age)))
+                if idle >= RECONNECT_IDLE_THRESHOLD_MS
+                    || (established_age >= ESTABLISHED_GRACE_MS && idle >= FAST_RECONNECT_IDLE_MS)
         );
         if should_reset {
-            let idle_ms = reconnect_info.map(|(_, i)| i).unwrap_or(0);
+            let (idle_ms, est_age) = match reconnect_info {
+                Some((idle, est)) => (idle, est.unwrap_or(0)),
+                None => (0, 0),
+            };
             debug!(
-                "UDP reconnect detected from {peer}: dropping stale session (idle {idle_ms}ms) for fresh handshake"
+                "UDP reconnect detected from {peer}: dropping stale session (idle {idle_ms}ms, established_age {est_age}ms) for fresh handshake"
             );
             let removed = { sessions.lock().unwrap().remove(&peer) };
             if let Some(old) = removed {
@@ -334,6 +370,7 @@ async fn obtain_session(
         header_sent: AtomicBool::new(false),
         notified: AtomicBool::new(false),
         established: AtomicBool::new(false),
+        established_at_ms: AtomicU64::new(0),
         recv_task: StdMutex::new(None),
         session_start: Instant::now(),
         last_activity_ms: AtomicU64::new(0),
