@@ -212,6 +212,31 @@ async fn handle_datagram(
     )
     .await?;
 
+    // Geyser (cloudburst RakProxyServerHandler) は PROXY v2 ヘッダを「まだ
+    // キャッシュしていない sender の最初の datagram」でのみ要求し、一度デコード
+    // に成功すると sender→実アドレスをキャッシュして以降はヘッダ無しで転送する。
+    // そして RakNet セッションが切断されるとそのキャッシュを破棄する。
+    //
+    // 「UdpSession 生存中に一度だけヘッダを付ける」という header_sent 実装だと、
+    // ワールドから抜けて同じ送信元ポートで即再接続したとき (obtain_session の
+    // 3 秒 idle 閾値でセッションが破棄されなかった場合) に問題になる:
+    //   - Geyser 側は旧セッション切断でキャッシュを破棄済み → 再びヘッダを要求
+    //   - FerrumProxy 側は header_sent=true のまま → 素の OCR1 を送る
+    //   - Geyser の findVersion が v2 シグネチャ非一致を PROXY v1 テキストと誤認し
+    //     "header length exceeds the allowed maximum (108)" で drop → 再接続不能
+    //
+    // established (=一度ハンドシェイクが成立してゲーム中まで進んだ) セッションに
+    // OCR1 が来た = これは確実に「新しい RakNet 接続の開始」なので、header_sent を
+    // 再アーミングして次の 1 パケットで必ずヘッダを付け直す。established を同時に
+    // 落とすことで OCR1 の再送では再アーミングせず (Geyser がキャッシュ済みの
+    // パケットをヘッダで壊さない)、ハンドシェイク毎にちょうど 1 回だけ送る。
+    if is_new_conn && session.established.swap(false, Ordering::Relaxed) {
+        session.header_sent.store(false, Ordering::Relaxed);
+        debug!(
+            "UDP reconnect handshake from {peer}: re-arming PROXY v2 header for new RakNet session"
+        );
+    }
+
     try_send_udp(&rule, &runtime, &session, original_client, payload).await?;
 
     session.touch();
