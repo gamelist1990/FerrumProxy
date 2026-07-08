@@ -38,22 +38,22 @@ pub fn apply_tcp_nodelay(stream: &TcpStream, context: &str) {
 
 
 pub fn apply_tcp_buffer_sizes(stream: &TcpStream, context: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        use socket2::SockRef;
-        const TARGET_BYTES: usize = 2 * 1024 * 1024;
+    use socket2::SockRef;
 
-        let sock = SockRef::from(stream);
-        if let Err(err) = sock.set_send_buffer_size(TARGET_BYTES) {
-            warn!("Failed to enlarge TCP send buffer for {context}: {err}");
-        }
-        if let Err(err) = sock.set_recv_buffer_size(TARGET_BYTES) {
-            warn!("Failed to enlarge TCP recv buffer for {context}: {err}");
-        }
-    }
+    // Linux は autotuning が積極的なので大きめ (2 MiB)。Windows/その他は
+    // 過剰な SO_*BUF がスケジューラジッタを増やすので 256 KiB に抑える。
+    // どちらも 128 KiB の Windows デフォルト以上のバースト吸収能力を確保。
+    #[cfg(target_os = "linux")]
+    const TARGET_BYTES: usize = 2 * 1024 * 1024;
     #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (stream, context);
+    const TARGET_BYTES: usize = 256 * 1024;
+
+    let sock = SockRef::from(stream);
+    if let Err(err) = sock.set_send_buffer_size(TARGET_BYTES) {
+        warn!("Failed to enlarge TCP send buffer for {context}: {err}");
+    }
+    if let Err(err) = sock.set_recv_buffer_size(TARGET_BYTES) {
+        warn!("Failed to enlarge TCP recv buffer for {context}: {err}");
     }
 }
 

@@ -95,16 +95,18 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
     loop {
         let (len, peer) = server.recv_from(&mut buf).await?;
-        let packet = buf[..len].to_vec();
 
+        // P99 最適化: `buf[..len].to_vec()` によるパケット毎のヒープ確保を削除。
+        // handle_datagram は await されるだけで spawn しないので、buf の借用は
+        // 次の recv_from が呼ばれるまで生存し続けるため安全。
         if let Err(err) = handle_datagram(
-            Arc::clone(&server),
-            Arc::clone(&sessions),
-            Arc::clone(&rule),
-            Arc::clone(&runtime),
-            Arc::clone(&shared_pong),
+            &server,
+            &sessions,
+            &rule,
+            &runtime,
+            &shared_pong,
             peer,
-            packet,
+            &buf[..len],
         )
         .await
         {
@@ -114,18 +116,20 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
 }
 
 async fn handle_datagram(
-    server: Arc<UdpSocket>,
-    sessions: SessionMap,
-    rule: Arc<ListenerRule>,
-    runtime: Arc<AppRuntime>,
-    shared_pong: SharedPongCache,
+    server: &Arc<UdpSocket>,
+    sessions: &SessionMap,
+    rule: &Arc<ListenerRule>,
+    runtime: &Arc<AppRuntime>,
+    shared_pong: &SharedPongCache,
     peer: SocketAddr,
-    packet: Vec<u8>,
+    packet: &[u8],
 ) -> Result<()> {
     let mut original_client = peer;
 
+    // ファストパス: PROXY v2 シグネチャを最初の 12 バイトで判定。
+    // 通常のゲームパケットはこの分岐を通らず parse_proxy_chain を呼ばない。
     let payload: &[u8] = if packet.len() >= 12 && &packet[..12] == b"\r\n\r\n\0\r\nQUIT\n" {
-        let parsed = parse_proxy_chain(&packet).unwrap_or_else(|_| {
+        let parsed = parse_proxy_chain(packet).unwrap_or_else(|_| {
             crate::proxy_protocol::ParsedProxyChain {
                 headers: Vec::new(),
                 payload_offset: 0,
@@ -140,7 +144,7 @@ async fn handle_datagram(
         }
         &packet[parsed.payload_offset..]
     } else {
-        &packet[..]
+        packet
     };
 
     if payload.is_empty() {
@@ -309,60 +313,89 @@ fn spawn_backend_recv(
         loop {
             match timeout(poll_interval, session.socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, backend_addr))) => {
-                    let mut response = buf[..len].to_vec();
-                    if let Ok(parsed) = parse_proxy_chain(&response) {
-                        if !parsed.headers.is_empty() {
-                            response = response[parsed.payload_offset..].to_vec();
-                        }
-                    }
+                    // P99 最適化: バックエンド応答パスもファストパス化。
+                    // 通常のゲームパケットは PROXY ヘッダを持たず、Pong 書換も
+                    // 発生しないので、その場合は借用スライスのまま直接転送する。
+                    let raw = &buf[..len];
 
-                    if rule.rewrite_bedrock_pong_ports {
-                        let before_rewrite = describe_unconnected_pong(&response);
-                        if let Some(rewritten) =
-                            rewrite_unconnected_pong_ports(&response, rule.udp.unwrap_or_default())
-                        {
-                            if let Some(before_rewrite) = before_rewrite {
-                                let after_rewrite = describe_unconnected_pong(&rewritten)
-                                    .unwrap_or_else(|| format!("len={}", rewritten.len()));
+                    // 1) PROXY v2 ヘッダは 12 バイトシグネチャで判定 (parse_proxy_chain は Zone 判定が重い)。
+                    let stripped: &[u8] = if raw.len() >= 12
+                        && &raw[..12] == b"\r\n\r\n\0\r\nQUIT\n"
+                    {
+                        match parse_proxy_chain(raw) {
+                            Ok(parsed) if !parsed.headers.is_empty() => &raw[parsed.payload_offset..],
+                            _ => raw,
+                        }
+                    } else {
+                        raw
+                    };
+
+                    // 2) Pong 判定/書換は Pong opcode (0x1c) の場合だけ行う。
+                    //    通常フレームでは owned Vec を確保しない。
+                    let is_pong = matches!(stripped.first(), Some(&0x1c));
+                    let response_owned: Option<Vec<u8>> = if is_pong {
+                        let mut buf_out: Vec<u8> = stripped.to_vec();
+
+                        if rule.rewrite_bedrock_pong_ports {
+                            let before_rewrite = describe_unconnected_pong(&buf_out);
+                            if let Some(rewritten) = rewrite_unconnected_pong_ports(
+                                &buf_out,
+                                rule.udp.unwrap_or_default(),
+                            ) {
+                                if let Some(before_rewrite) = before_rewrite {
+                                    let after_rewrite = describe_unconnected_pong(&rewritten)
+                                        .unwrap_or_else(|| format!("len={}", rewritten.len()));
+                                    debug!(
+                                        "Rewrote Bedrock pong ports for {peer}: before {before_rewrite}; after {after_rewrite}"
+                                    );
+                                }
+                                buf_out = rewritten;
+                            } else if let Some(description) = before_rewrite {
                                 debug!(
-                                    "Rewrote Bedrock pong ports for {peer}: before {before_rewrite}; after {after_rewrite}"
+                                    "Bedrock pong did not need port rewrite for {peer}: {description}"
                                 );
                             }
-                            response = rewritten;
-                        } else if let Some(description) = before_rewrite {
-                            debug!(
-                                "Bedrock pong did not need port rewrite for {peer}: {description}"
-                            );
-                        }
-                    }
-
-                    if let Some(cleaned) = strip_unconnected_pong_name_quotes(&response) {
-                        response = cleaned;
-                    }
-
-                    if is_unconnected_pong(&response) {
-                        if let Some(description) = describe_unconnected_pong(&response) {
-                            debug!(
-                                "Bedrock pong from backend {backend_addr} to {peer}: {description}"
-                            );
                         }
 
-                        *shared_pong.lock().unwrap() = Some(CachedPong {
-                            payload: response.clone(),
-                            updated_at: Instant::now(),
-                        });
-                    } else if let Some(description) = describe_raknet_packet(&response) {
-                        debug!(
-                            "RakNet backend packet from {backend_addr} to {peer}: {description}"
-                        );
-                    }
+                        if let Some(cleaned) = strip_unconnected_pong_name_quotes(&buf_out) {
+                            buf_out = cleaned;
+                        }
 
-                    if let Err(err) = server.send_to(&response, peer).await {
+                        if is_unconnected_pong(&buf_out) {
+                            if tracing::enabled!(tracing::Level::DEBUG) {
+                                if let Some(description) = describe_unconnected_pong(&buf_out) {
+                                    debug!(
+                                        "Bedrock pong from backend {backend_addr} to {peer}: {description}"
+                                    );
+                                }
+                            }
+                            *shared_pong.lock().unwrap() = Some(CachedPong {
+                                payload: buf_out.clone(),
+                                updated_at: Instant::now(),
+                            });
+                        }
+                        Some(buf_out)
+                    } else {
+                        if tracing::enabled!(tracing::Level::DEBUG) {
+                            if let Some(description) = describe_raknet_packet(stripped) {
+                                debug!(
+                                    "RakNet backend packet from {backend_addr} to {peer}: {description}"
+                                );
+                            }
+                        }
+                        None
+                    };
+
+                    let out: &[u8] = response_owned.as_deref().unwrap_or(stripped);
+
+                    if let Err(err) = server.send_to(out, peer).await {
                         error!("UDP response send to {peer} failed: {err}");
                         break;
                     }
-                    runtime.metrics.udp_target_to_client_bytes(response.len());
-                    debug!("UDP {backend_addr} -> {peer} {}B", response.len());
+                    runtime.metrics.udp_target_to_client_bytes(out.len());
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        debug!("UDP {backend_addr} -> {peer} {}B", out.len());
+                    }
 
                     session.touch();
                 }
