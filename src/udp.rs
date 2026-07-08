@@ -235,8 +235,37 @@ async fn obtain_session(
     runtime: &Arc<AppRuntime>,
     shared_pong: SharedPongCache,
     peer: SocketAddr,
-    _is_new_conn: bool,
+    is_new_conn: bool,
 ) -> Result<Arc<UdpSession>> {
+    // ワールドから抜けて即再接続するとき、Bedrock クライアントは同じソースポート
+    // から新規 OpenConnectionRequest1 を送ってくる。ここで古いゾンビセッションを
+    // 明示的にリセットしないと、idle_timeout (最大 30 分) 経過まで再接続できない。
+    //
+    // ロジック:
+    //   - is_new_conn (OCR1) が来て、かつ既存セッションが established (=ゲーム中
+    //     まで進んでいた) なら「これは再接続」と判定 → 古いセッションを破棄。
+    //   - まだ established になってない状態 (ハンドシェイク途中) の重複 OCR1 は
+    //     単なる再送なので再利用する。
+    if is_new_conn {
+        let existing_established = {
+            let guard = sessions.lock().unwrap();
+            guard
+                .get(&peer)
+                .map(|s| s.established.load(Ordering::Relaxed))
+                .unwrap_or(false)
+        };
+        if existing_established {
+            debug!(
+                "UDP reconnect detected from {peer}: dropping stale session for fresh handshake"
+            );
+            let removed = { sessions.lock().unwrap().remove(&peer) };
+            if let Some(old) = removed {
+                old.abort_recv_task();
+                runtime.metrics.udp_session_closed();
+            }
+        }
+    }
+
     {
         let guard = sessions.lock().unwrap();
         if let Some(existing) = guard.get(&peer) {
