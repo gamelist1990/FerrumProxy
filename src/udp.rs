@@ -616,14 +616,8 @@ async fn send_to_target(
         resolved
     };
 
-    // PROXY protocol 仕様上、UDP は connectionless なので
-    // 各 datagram に PROXY v2 ヘッダを付ける必要がある
-    // (TCP のように「接続開始時のみ」の設計は不可)。
-    // Geyser 等の受信側は毎パケット PROXY v2 ヘッダを期待している。
-    // `force_proxy_header` と `header_sent` の分岐は互換性のため残すが、
-    // `rule.haproxy` が true なら常にヘッダを付ける。
-    let _ = force_proxy_header;
-    let need_header = rule.haproxy;
+    let need_header =
+        rule.haproxy && (force_proxy_header || !session.header_sent.load(Ordering::Relaxed));
 
     let bytes_sent = if need_header {
         let header = build_proxy_v2_header(
@@ -637,13 +631,13 @@ async fn send_to_target(
         out.extend_from_slice(&header);
         out.extend_from_slice(payload);
 
-        // header_sent フラグはもはや使わないが、既存の状態遷移との互換性のため
-        // (再接続検出などのために) 一度でもヘッダを送ったことを記録しておく。
-        session.header_sent.store(true, Ordering::Relaxed);
+        if !is_offline_ping(payload) {
+            session.header_sent.store(true, Ordering::Relaxed);
+        }
 
         if tracing::enabled!(tracing::Level::DEBUG) {
             debug!(
-                "Added UDP PROXY v2 header for {original_client} -> {target_addr}: payload={}B total={}B",
+                "Added UDP PROXY v2 header for {original_client} -> {target_addr}: payload={}B total={}B force={force_proxy_header}",
                 payload.len(),
                 out.len()
             );
