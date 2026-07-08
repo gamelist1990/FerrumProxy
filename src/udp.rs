@@ -129,12 +129,11 @@ async fn handle_datagram(
     // ファストパス: PROXY v2 シグネチャを最初の 12 バイトで判定。
     // 通常のゲームパケットはこの分岐を通らず parse_proxy_chain を呼ばない。
     let payload: &[u8] = if packet.len() >= 12 && &packet[..12] == b"\r\n\r\n\0\r\nQUIT\n" {
-        let parsed = parse_proxy_chain(packet).unwrap_or_else(|_| {
-            crate::proxy_protocol::ParsedProxyChain {
+        let parsed =
+            parse_proxy_chain(packet).unwrap_or_else(|_| crate::proxy_protocol::ParsedProxyChain {
                 headers: Vec::new(),
                 payload_offset: 0,
-            }
-        });
+            });
         if let Some(last_header) = parsed.headers.last() {
             original_client = SocketAddr::new(last_header.source_address, last_header.source_port);
             debug!(
@@ -348,16 +347,17 @@ fn spawn_backend_recv(
                     let raw = &buf[..len];
 
                     // 1) PROXY v2 ヘッダは 12 バイトシグネチャで判定 (parse_proxy_chain は Zone 判定が重い)。
-                    let stripped: &[u8] = if raw.len() >= 12
-                        && &raw[..12] == b"\r\n\r\n\0\r\nQUIT\n"
-                    {
-                        match parse_proxy_chain(raw) {
-                            Ok(parsed) if !parsed.headers.is_empty() => &raw[parsed.payload_offset..],
-                            _ => raw,
-                        }
-                    } else {
-                        raw
-                    };
+                    let stripped: &[u8] =
+                        if raw.len() >= 12 && &raw[..12] == b"\r\n\r\n\0\r\nQUIT\n" {
+                            match parse_proxy_chain(raw) {
+                                Ok(parsed) if !parsed.headers.is_empty() => {
+                                    &raw[parsed.payload_offset..]
+                                }
+                                _ => raw,
+                            }
+                        } else {
+                            raw
+                        };
 
                     // 2) Pong 判定/書換は Pong opcode (0x1c) の場合だけ行う。
                     //    通常フレームでは owned Vec を確保しない。

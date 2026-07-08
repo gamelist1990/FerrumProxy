@@ -35,8 +35,6 @@ pub fn apply_tcp_nodelay(stream: &TcpStream, context: &str) {
     }
 }
 
-
-
 pub fn apply_tcp_buffer_sizes(stream: &TcpStream, context: &str) {
     use socket2::SockRef;
 
