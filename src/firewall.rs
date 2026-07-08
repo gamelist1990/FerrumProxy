@@ -153,6 +153,17 @@ fn is_root() -> bool {
 }
 
 fn ensure_port(backend: Backend, proto: Protocol, port: u16) {
+    // nftables はホストごとにテーブル/チェーン構成が大きく異なる
+    // (`inet filter input` があるとは限らず、iptables-nft 互換だと
+    //  `ip filter INPUT` だったり、そもそも input フックのチェーンが無いこともある)。
+    // ハードコードせず、実際の ruleset から input フックの base chain を検出して
+    // そこに追加する。
+    #[cfg(target_os = "linux")]
+    if backend == Backend::Nftables {
+        ensure_port_nftables(proto, port);
+        return;
+    }
+
     match rule_exists(backend, proto, port) {
         Ok(true) => {
             info!(
@@ -221,6 +232,144 @@ fn is_nftables_active() -> bool {
     match Command::new("nft").args(["list", "ruleset"]).output() {
         Ok(out) => out.status.success() && !out.stdout.is_empty(),
         Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+struct NftChain {
+    family: String,
+    table: String,
+    chain: String,
+}
+
+/// 実行中の nftables ruleset から、input フックを持つ L3 base chain
+/// (family が ip / ip6 / inet のもの) を列挙する。
+///
+/// これにより `inet filter input` をハードコードせず、ホストが実際に
+/// 持っているチェーン (例: iptables-nft 互換の `ip filter INPUT`) を
+/// 対象にできる。IPv4 と IPv6 でチェーンが分かれている場合は両方に追加する。
+#[cfg(target_os = "linux")]
+fn nft_input_chains() -> Vec<NftChain> {
+    let out = match Command::new("nft").args(["-j", "list", "ruleset"]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let json: serde_json::Value = match serde_json::from_slice(&out.stdout) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut chains = Vec::new();
+    let Some(items) = json.get("nftables").and_then(|v| v.as_array()) else {
+        return chains;
+    };
+    for item in items {
+        let Some(chain) = item.get("chain") else {
+            continue;
+        };
+        // base chain のみ "hook" フィールドを持つ (regular chain には無い)。
+        if chain.get("hook").and_then(|h| h.as_str()) != Some("input") {
+            continue;
+        }
+        let (Some(family), Some(table), Some(name)) = (
+            chain.get("family").and_then(|v| v.as_str()),
+            chain.get("table").and_then(|v| v.as_str()),
+            chain.get("name").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        // L3 のみ対象 (netdev/bridge/arp の input フックは対象外)。
+        if !matches!(family, "ip" | "ip6" | "inet") {
+            continue;
+        }
+        chains.push(NftChain {
+            family: family.to_string(),
+            table: table.to_string(),
+            chain: name.to_string(),
+        });
+    }
+    chains
+}
+
+#[cfg(target_os = "linux")]
+fn nft_rule_exists(c: &NftChain, proto: &str, port: u16) -> anyhow::Result<bool> {
+    let out = Command::new("nft")
+        .args(["list", "chain", &c.family, &c.table, &c.chain])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "nft list chain {} {} {} failed: {}",
+            c.family,
+            c.table,
+            c.chain,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let needle = format!("{proto} dport {port} accept");
+    Ok(text.contains(&needle))
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_port_nftables(proto: Protocol, port: u16) {
+    let p = proto_str(proto);
+    let chains = nft_input_chains();
+    if chains.is_empty() {
+        info!(
+            "Firewall: nftables に input フックの base chain が無いため {p}/{port} は \
+             input フィルタ対象外 (既に到達可能)。何もしません。"
+        );
+        return;
+    }
+    for c in &chains {
+        // ドロップポリシー/末尾の drop ルールに負けないよう先頭に insert する。
+        let manual = format!(
+            "sudo nft insert rule {} {} {} {p} dport {port} accept",
+            c.family, c.table, c.chain
+        );
+        match nft_rule_exists(c, p, port) {
+            Ok(true) => info!(
+                "Firewall: {p}/{port} は nftables ({} {} {}) に既に存在。そのまま。",
+                c.family, c.table, c.chain
+            ),
+            Ok(false) => {
+                let out = Command::new("nft")
+                    .args([
+                        "insert",
+                        "rule",
+                        &c.family,
+                        &c.table,
+                        &c.chain,
+                        p,
+                        "dport",
+                        &port.to_string(),
+                        "accept",
+                    ])
+                    .output();
+                match out {
+                    Ok(o) if o.status.success() => info!(
+                        "Firewall: opened {p}/{port} via nftables ({} {} {})",
+                        c.family, c.table, c.chain
+                    ),
+                    Ok(o) => warn!(
+                        "Firewall: failed to open {p}/{port} in nftables ({} {} {}): {}. Run manually:\n    {manual}",
+                        c.family,
+                        c.table,
+                        c.chain,
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    ),
+                    Err(err) => warn!(
+                        "Firewall: failed to run nft for {p}/{port} ({} {} {}): {err}. Run manually:\n    {manual}",
+                        c.family, c.table, c.chain
+                    ),
+                }
+            }
+            Err(err) => warn!(
+                "Firewall: could not verify nftables rule for {p}/{port} in ({} {} {}): {err}. \
+                 Skipping to avoid duplicates. Add manually if needed:\n    {manual}",
+                c.family, c.table, c.chain
+            ),
+        }
     }
 }
 
