@@ -242,20 +242,34 @@ async fn obtain_session(
     //
     // ロジック:
     //   - is_new_conn (OCR1) が来て、かつ既存セッションが established (=ゲーム中
-    //     まで進んでいた) なら「これは再接続」と判定 → 古いセッションを破棄。
+    //     まで進んでいた) で、かつ 3 秒以上無音なら「これは再接続」と判定 →
+    //     古いセッションを破棄。
+    //   - ゲームプレイ中は RakNet の keep-alive が 1 秒に何度も飛ぶので、
+    //     3 秒無音は物理的な切断と判定できる。この閾値により、活発な
+    //     セッション中に何らかの理由で OCR1 が飛んできても誤破棄しない
+    //     (RakNet 状態リセット→インベントリ等の reliable ordered が届かなく
+    //      なる症状を防ぐ)。
     //   - まだ established になってない状態 (ハンドシェイク途中) の重複 OCR1 は
     //     単なる再送なので再利用する。
+    const RECONNECT_IDLE_THRESHOLD_MS: u64 = 3_000;
     if is_new_conn {
-        let existing_established = {
+        let reconnect_info = {
             let guard = sessions.lock().unwrap();
-            guard
-                .get(&peer)
-                .map(|s| s.established.load(Ordering::Relaxed))
-                .unwrap_or(false)
+            guard.get(&peer).map(|s| {
+                (
+                    s.established.load(Ordering::Relaxed),
+                    s.ms_since_last_activity(),
+                )
+            })
         };
-        if existing_established {
+        let should_reset = matches!(
+            reconnect_info,
+            Some((true, idle)) if idle >= RECONNECT_IDLE_THRESHOLD_MS
+        );
+        if should_reset {
+            let idle_ms = reconnect_info.map(|(_, i)| i).unwrap_or(0);
             debug!(
-                "UDP reconnect detected from {peer}: dropping stale session for fresh handshake"
+                "UDP reconnect detected from {peer}: dropping stale session (idle {idle_ms}ms) for fresh handshake"
             );
             let removed = { sessions.lock().unwrap().remove(&peer) };
             if let Some(old) = removed {
