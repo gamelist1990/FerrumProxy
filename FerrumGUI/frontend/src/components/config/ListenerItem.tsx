@@ -44,6 +44,21 @@ const parseOptionalPort = (value: string): number | undefined => {
   return Number.isNaN(parsed) ? undefined : parsed;
 };
 
+const DEFAULT_TARGET_PORT = 19132;
+
+type TargetProtocol = 'both' | 'tcp' | 'udp';
+
+const hasPort = (value: number | undefined | null): value is number =>
+  value !== undefined && value !== null;
+
+const getTargetProtocol = (target: { tcp?: number; udp?: number }): TargetProtocol => {
+  const tcp = hasPort(target.tcp);
+  const udp = hasPort(target.udp);
+  if (tcp && !udp) return 'tcp';
+  if (udp && !tcp) return 'udp';
+  return 'both';
+};
+
 export const ListenerItem: React.FC<ListenerItemProps> = ({
   instanceId,
   index,
@@ -63,11 +78,35 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
       : [];
   const httpMappings = listener.httpMappings ?? [];
   const hasHttpMappings = httpMappings.length > 0;
+  const tcpEnabled = hasPort(listener.tcp);
+  const udpEnabled = hasPort(listener.udp);
 
   const handleTargetChange = (targetIndex: number, field: 'host' | 'tcp' | 'udp', value: string | number | undefined) => {
     const nextTargets = targets.map((target, currentIndex) => (
       currentIndex === targetIndex ? { ...target, [field]: value } : target
     ));
+    onTargetsChange(nextTargets);
+  };
+
+  const handleTargetProtocolChange = (targetIndex: number, protocol: TargetProtocol) => {
+    const nextTargets = targets.map((target, currentIndex) => {
+      if (currentIndex !== targetIndex) {
+        return target;
+      }
+      let tcp = target.tcp;
+      let udp = target.udp;
+      if (protocol === 'tcp') {
+        tcp = hasPort(tcp) ? tcp : DEFAULT_TARGET_PORT;
+        udp = undefined;
+      } else if (protocol === 'udp') {
+        udp = hasPort(udp) ? udp : DEFAULT_TARGET_PORT;
+        tcp = undefined;
+      } else {
+        tcp = hasPort(tcp) ? tcp : (hasPort(udp) ? udp : DEFAULT_TARGET_PORT);
+        udp = hasPort(udp) ? udp : (hasPort(target.tcp) ? target.tcp : DEFAULT_TARGET_PORT);
+      }
+      return { ...target, tcp, udp };
+    });
     onTargetsChange(nextTargets);
   };
 
@@ -152,19 +191,42 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           onChange={(e) => onChange('bind', e.target.value)}
           placeholder="0.0.0.0"
         />
-        <Input
-          label="TCP Port"
-          type="number"
-          value={listener.tcp || ''}
-          onChange={(e) => onChange('tcp', parseOptionalPort(e.target.value))}
-        />
-        <Input
-          label="UDP Port"
-          type="number"
-          value={listener.udp || ''}
-          onChange={(e) => onChange('udp', parseOptionalPort(e.target.value))}
-        />
+        <div>
+          <Switch
+            label={t('enableTcpListener') || 'Enable TCP'}
+            checked={tcpEnabled}
+            onChange={(checked) => onChange('tcp', checked ? (listener.tcp ?? 25565) : undefined)}
+          />
+          {tcpEnabled && (
+            <Input
+              label="TCP Port"
+              type="number"
+              value={listener.tcp || ''}
+              onChange={(e) => onChange('tcp', parseOptionalPort(e.target.value))}
+            />
+          )}
+        </div>
+        <div>
+          <Switch
+            label={t('enableUdpListener') || 'Enable UDP'}
+            checked={udpEnabled}
+            onChange={(checked) => onChange('udp', checked ? (listener.udp ?? 25565) : undefined)}
+          />
+          {udpEnabled && (
+            <Input
+              label="UDP Port"
+              type="number"
+              value={listener.udp || ''}
+              onChange={(e) => onChange('udp', parseOptionalPort(e.target.value))}
+            />
+          )}
+        </div>
       </div>
+      {!tcpEnabled && !udpEnabled && (
+        <p className="text-sm text-secondary mb-4" style={{ color: 'var(--color-danger, #e5534b)' }}>
+          {t('protocolBothDisabled') || 'Both TCP and UDP are disabled. This listener will not accept any traffic.'}
+        </p>
+      )}
 
       <div className="mt-4 mb-4">
         <Switch
@@ -294,51 +356,85 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           : (t('fallbackOrder') || 'Targets are tried in order. If the first target fails, the next target is used.')}
       </p>
 
+      <p className="text-sm text-secondary mb-4">
+        {t('splitTargetHint') || 'To route TCP and UDP to different hosts, add a "TCP only" target and a "UDP only" target with separate hosts.'}
+      </p>
+
       {targets.length === 0 && (
         <p className="text-sm text-secondary mb-4">
           {t('noFallbackTargets') || 'No fallback target is configured. HTTP/HTTPS traffic will use the path mappings below.'}
         </p>
       )}
 
-      {targets.map((target, targetIndex) => (
-        <div key={targetIndex} className="mb-4">
-          <div className="flex justify-between items-center mb-2">
-            <strong className="text-primary">
-              {(t('targetServer') || 'Target Server')} #{targetIndex + 1}
-            </strong>
-            {(targets.length > 1 || hasHttpMappings) && (
-              <Button
-                variant="danger"
-                onClick={() => removeTarget(targetIndex)}
-                style={{ padding: '0.3rem 0.7rem', fontSize: '0.8rem' }}
-              >
-                {t('removeTargetServer') || 'Remove Target'}
-              </Button>
-            )}
-          </div>
+      {targets.map((target, targetIndex) => {
+        const protocol = getTargetProtocol(target);
+        const protocolOptions: Array<{ value: TargetProtocol; label: string }> = [
+          { value: 'both', label: t('protoBoth') || 'TCP + UDP' },
+          { value: 'tcp', label: t('protoTcpOnly') || 'TCP only' },
+          { value: 'udp', label: t('protoUdpOnly') || 'UDP only' },
+        ];
+        return (
+          <div key={targetIndex} className="mb-4">
+            <div className="flex justify-between items-center mb-2">
+              <strong className="text-primary">
+                {(t('targetServer') || 'Target Server')} #{targetIndex + 1}
+              </strong>
+              {(targets.length > 1 || hasHttpMappings) && (
+                <Button
+                  variant="danger"
+                  onClick={() => removeTarget(targetIndex)}
+                  style={{ padding: '0.3rem 0.7rem', fontSize: '0.8rem' }}
+                >
+                  {t('removeTargetServer') || 'Remove Target'}
+                </Button>
+              )}
+            </div>
 
-          <div className="ui-grid">
-            <Input
-              label={t('targetHost') || 'Target Host'}
-              value={target.host || ''}
-              onChange={(e) => handleTargetChange(targetIndex, 'host', e.target.value)}
-              placeholder="localhost"
-            />
-            <Input
-              label="Target TCP Port"
-              type="number"
-              value={target.tcp || ''}
-              onChange={(e) => handleTargetChange(targetIndex, 'tcp', parseOptionalPort(e.target.value))}
-            />
-            <Input
-              label="Target UDP Port"
-              type="number"
-              value={target.udp || ''}
-              onChange={(e) => handleTargetChange(targetIndex, 'udp', parseOptionalPort(e.target.value))}
-            />
+            <div className="mb-2">
+              <label className="ui-label" style={{ display: 'block', marginBottom: '0.35rem' }}>
+                {t('protocolScope') || 'Protocol'}
+              </label>
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                {protocolOptions.map((option) => (
+                  <Button
+                    key={option.value}
+                    variant={protocol === option.value ? 'primary' : 'ghost'}
+                    onClick={() => handleTargetProtocolChange(targetIndex, option.value)}
+                    style={{ padding: '0.35rem 0.85rem', fontSize: '0.8rem' }}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="ui-grid">
+              <Input
+                label={t('targetHost') || 'Target Host'}
+                value={target.host || ''}
+                onChange={(e) => handleTargetChange(targetIndex, 'host', e.target.value)}
+                placeholder="localhost"
+              />
+              {protocol !== 'udp' && (
+                <Input
+                  label="Target TCP Port"
+                  type="number"
+                  value={target.tcp || ''}
+                  onChange={(e) => handleTargetChange(targetIndex, 'tcp', parseOptionalPort(e.target.value))}
+                />
+              )}
+              {protocol !== 'tcp' && (
+                <Input
+                  label="Target UDP Port"
+                  type="number"
+                  value={target.udp || ''}
+                  onChange={(e) => handleTargetChange(targetIndex, 'udp', parseOptionalPort(e.target.value))}
+                />
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       <Button variant="ghost" onClick={addTarget}>
         + {t('addTargetServer') || 'Add Target Server'}

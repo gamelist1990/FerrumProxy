@@ -61,6 +61,8 @@ ddosGuard:
   udpByteBurst: 4194304
   udpMaxDatagramBytes: 8192
 listeners:
+  # A listener accepts TCP and/or UDP. To disable a protocol entirely, omit its
+  # port (remove the `tcp:` or `udp:` line) -- that side simply won't be started.
   - bind: 0.0.0.0
     tcp: 25565
     udp: 25565
@@ -73,6 +75,15 @@ listeners:
       keyPath: ./certs/privkey.pem
     webhook: ""
     rewriteBedrockPongPorts: true
+    # Each target carries its own host plus per-protocol ports. A target is only
+    # used for a protocol when it defines that protocol's port, so TCP and UDP can
+    # be sent to completely different hosts:
+    #   targets:
+    #     - host: 10.0.0.1      # TCP-only target (no `udp:`)
+    #       tcp: 19132
+    #     - host: 10.0.0.2      # UDP-only target (no `tcp:`)
+    #       udp: 19132
+    # A target with both `tcp:` and `udp:` sends both protocols to the same host.
     targets:
       - host: 127.0.0.1
         tcp: 19132
