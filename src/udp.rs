@@ -13,8 +13,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::bedrock::{
     describe_offline_ping, describe_raknet_packet, describe_unconnected_pong, is_offline_ping,
-    is_open_connection_request_1, is_unconnected_pong, rewrite_unconnected_pong_ports,
-    rewrite_unconnected_pong_timestamp, strip_unconnected_pong_name_quotes,
+    is_open_connection_request_1, is_unconnected_pong, normalize_unconnected_pong_motd,
+    rewrite_unconnected_pong_ports, rewrite_unconnected_pong_timestamp,
 };
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
@@ -540,8 +540,17 @@ fn spawn_backend_recv(
                             }
                         }
 
-                        if let Some(cleaned) = strip_unconnected_pong_name_quotes(&buf_out) {
-                            buf_out = cleaned;
+                        if let Some(normalized) = normalize_unconnected_pong_motd(&buf_out) {
+                            if tracing::enabled!(tracing::Level::DEBUG) {
+                                let before = describe_unconnected_pong(&buf_out)
+                                    .unwrap_or_else(|| format!("len={}", buf_out.len()));
+                                let after = describe_unconnected_pong(&normalized)
+                                    .unwrap_or_else(|| format!("len={}", normalized.len()));
+                                debug!(
+                                    "Normalized Bedrock pong MOTD for {peer}: before {before}; after {after}"
+                                );
+                            }
+                            buf_out = normalized;
                         }
 
                         if is_unconnected_pong(&buf_out) {

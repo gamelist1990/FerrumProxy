@@ -92,7 +92,7 @@ pub fn describe_unconnected_pong(payload: &[u8]) -> Option<String> {
     if parts.len() >= 12 {
         let _ = write!(
             description,
-            " edition={} protocol={} version={} players={}/{} port_v4={} port_v6={} name={}",
+            " edition={} protocol={} version={} players={}/{} port_v4={} port_v6={} primary_motd={} secondary_motd={}",
             parts[0],
             parts[2],
             parts[3],
@@ -100,7 +100,8 @@ pub fn describe_unconnected_pong(payload: &[u8]) -> Option<String> {
             parts[5],
             parts[10],
             parts[11],
-            truncate_for_log(parts[1], 96)
+            truncate_for_log(parts[1], 96),
+            truncate_for_log(parts.get(7).copied().unwrap_or(""), 96)
         );
     } else {
         let _ = write!(description, " motd={}", truncate_for_log(&parsed.motd, 160));
@@ -358,6 +359,74 @@ pub fn strip_unconnected_pong_name_quotes(payload: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Normalizes the two MOTD fields used by Bedrock's server list.
+///
+/// Bedrock advertisements store the primary MOTD at field 1 and the
+/// secondary MOTD at field 7. Some clients display either field depending on
+/// context. Keep valid non-empty values intact, remove characters that can
+/// break a single-line server-list entry, and copy the available value when
+/// the other field is empty.
+pub fn normalize_unconnected_pong_motd(payload: &[u8]) -> Option<Vec<u8>> {
+    let parsed = parse_unconnected_pong(payload)?;
+    let mut parts = parsed
+        .motd
+        .split(';')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if parts.len() < 8 {
+        return None;
+    }
+
+    let original_primary = parts[1].clone();
+    let original_secondary = parts[7].clone();
+    let mut primary = sanitize_motd_field(&original_primary);
+    let mut secondary = sanitize_motd_field(&original_secondary);
+
+    if primary.is_empty() && !secondary.is_empty() {
+        primary = secondary.clone();
+    } else if secondary.is_empty() && !primary.is_empty() {
+        secondary = primary.clone();
+    }
+
+    if primary == original_primary && secondary == original_secondary {
+        return None;
+    }
+
+    parts[1] = primary;
+    parts[7] = secondary;
+    rebuild_unconnected_pong(payload, &parsed, &parts.join(";"))
+}
+
+fn sanitize_motd_field(value: &str) -> String {
+    let trimmed = value.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(trimmed);
+
+    unquoted
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn rebuild_unconnected_pong(payload: &[u8], parsed: &ParsedPong, motd: &str) -> Option<Vec<u8>> {
+    let motd_bytes = motd.as_bytes();
+    if motd_bytes.len() > u16::MAX as usize {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(payload.len() + motd_bytes.len());
+    out.extend_from_slice(&payload[..33]);
+    out.extend_from_slice(&(motd_bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(motd_bytes);
+    out.extend_from_slice(&payload[parsed.string_end..]);
+    Some(out)
+}
+
 struct ParsedPong {
     motd: String,
     string_end: usize,
@@ -477,6 +546,38 @@ mod tests {
     fn leaves_unquoted_pong_name_untouched() {
         let pong = bedrock_pong("MCPE;PEX Survival Server;1001;26.30;0;20;123;W;S;1;19132;19132;");
         assert!(strip_unconnected_pong_name_quotes(&pong).is_none());
+    }
+
+    #[test]
+    fn fills_empty_secondary_motd_from_primary() {
+        let pong = bedrock_pong("MCPE;PEX Survival;2169;26.45;0;20;123;;Survival;1;19132;19132;");
+        let normalized = normalize_unconnected_pong_motd(&pong).expect("MOTD normalized");
+        let parsed = parse_unconnected_pong(&normalized).expect("pong parsed");
+        let parts = parsed.motd.split(';').collect::<Vec<_>>();
+        assert_eq!(parts[1], "PEX Survival");
+        assert_eq!(parts[7], "PEX Survival");
+    }
+
+    #[test]
+    fn fills_empty_primary_motd_from_secondary() {
+        let pong = bedrock_pong("MCPE;;2169;26.45;0;20;123;ようこそ;Survival;1;19132;19132;");
+        let normalized = normalize_unconnected_pong_motd(&pong).expect("MOTD normalized");
+        let parsed = parse_unconnected_pong(&normalized).expect("pong parsed");
+        let parts = parsed.motd.split(';').collect::<Vec<_>>();
+        assert_eq!(parts[1], "ようこそ");
+        assert_eq!(parts[7], "ようこそ");
+    }
+
+    #[test]
+    fn sanitizes_both_motd_fields_without_changing_nonempty_content() {
+        let pong = bedrock_pong(
+            "MCPE;\"PEX Survival\";2169;26.45;0;20;123;さぁ、\n冒険を続けよう;Survival;1;19132;19132;",
+        );
+        let normalized = normalize_unconnected_pong_motd(&pong).expect("MOTD normalized");
+        let parsed = parse_unconnected_pong(&normalized).expect("pong parsed");
+        let parts = parsed.motd.split(';').collect::<Vec<_>>();
+        assert_eq!(parts[1], "PEX Survival");
+        assert_eq!(parts[7], "さぁ、 冒険を続けよう");
     }
 
     fn bedrock_pong(motd: &str) -> Vec<u8> {
