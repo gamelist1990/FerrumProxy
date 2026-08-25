@@ -36,6 +36,53 @@ struct CachedPong {
 
 const PONG_CACHE_FRESH_MS: u64 = 3_000;
 
+const RAKNET_STAGE_NEW: usize = 0;
+const RAKNET_STAGE_PING: usize = 1;
+const RAKNET_STAGE_PONG: usize = 2;
+const RAKNET_STAGE_OCR1: usize = 3;
+const RAKNET_STAGE_REPLY1: usize = 4;
+const RAKNET_STAGE_OCR2: usize = 5;
+const RAKNET_STAGE_REPLY2: usize = 6;
+const RAKNET_STAGE_FRAME_SET: usize = 7;
+const RAKNET_STAGE_CONNECTION_REQUEST: usize = 8;
+const RAKNET_STAGE_CONNECTION_ACCEPTED: usize = 9;
+const RAKNET_STAGE_NEW_INCOMING: usize = 10;
+const RAKNET_STAGE_DISCONNECTED: usize = 11;
+
+fn raknet_stage_name(stage: usize) -> &'static str {
+    match stage {
+        RAKNET_STAGE_PING => "Unconnected Ping",
+        RAKNET_STAGE_PONG => "Unconnected Pong",
+        RAKNET_STAGE_OCR1 => "Open Connection Request 1",
+        RAKNET_STAGE_REPLY1 => "Open Connection Reply 1",
+        RAKNET_STAGE_OCR2 => "Open Connection Request 2",
+        RAKNET_STAGE_REPLY2 => "Open Connection Reply 2",
+        RAKNET_STAGE_FRAME_SET => "Frame Set",
+        RAKNET_STAGE_CONNECTION_REQUEST => "Connection Request",
+        RAKNET_STAGE_CONNECTION_ACCEPTED => "Connection Request Accepted",
+        RAKNET_STAGE_NEW_INCOMING => "New Incoming Connection",
+        RAKNET_STAGE_DISCONNECTED => "Disconnect Notification",
+        _ => "New endpoint",
+    }
+}
+
+fn raknet_packet_stage(payload: &[u8]) -> Option<usize> {
+    match payload.first().copied()? {
+        0x01 | 0x02 => Some(RAKNET_STAGE_PING),
+        0x1c => Some(RAKNET_STAGE_PONG),
+        0x05 => Some(RAKNET_STAGE_OCR1),
+        0x06 => Some(RAKNET_STAGE_REPLY1),
+        0x07 => Some(RAKNET_STAGE_OCR2),
+        0x08 => Some(RAKNET_STAGE_REPLY2),
+        0x09 => Some(RAKNET_STAGE_CONNECTION_REQUEST),
+        0x10 => Some(RAKNET_STAGE_CONNECTION_ACCEPTED),
+        0x13 => Some(RAKNET_STAGE_NEW_INCOMING),
+        0x15 => Some(RAKNET_STAGE_DISCONNECTED),
+        0x80..=0x8d => Some(RAKNET_STAGE_FRAME_SET),
+        _ => None,
+    }
+}
+
 struct UdpSession {
     socket: Arc<UdpSocket>,
 
@@ -51,6 +98,9 @@ struct UdpSession {
     // 0 = まだ established になっていない。再接続判定で「ハンドシェイク直後の
     // 遅延 OCR1 (アーティファクト)」と「実プレイ後の再接続」を区別するために使う。
     established_at_ms: AtomicU64,
+
+    /// Last observed RakNet handshake stage for endpoint-correlated debug logs.
+    raknet_stage: AtomicUsize,
 
     recv_task: StdMutex<Option<JoinHandle<()>>>,
 
@@ -89,6 +139,30 @@ impl UdpSession {
             let elapsed = self.session_start.elapsed().as_millis() as u64;
             self.established_at_ms.store(elapsed, Ordering::Relaxed);
         }
+    }
+
+    fn record_raknet_stage(
+        &self,
+        peer: SocketAddr,
+        direction: &str,
+        payload: &[u8],
+        detail: Option<&str>,
+    ) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+        let Some(next) = raknet_packet_stage(payload) else {
+            return;
+        };
+        let previous = self.raknet_stage.swap(next, Ordering::Relaxed);
+        let description = describe_raknet_packet(payload)
+            .unwrap_or_else(|| format!("id=0x{:02x} len={}", payload[0], payload.len()));
+        debug!(
+            "[RakNet FLOW] client={peer} direction={direction} transition=\"{} -> {}\" source={} packet={description}",
+            raknet_stage_name(previous),
+            raknet_stage_name(next),
+            detail.unwrap_or("network")
+        );
     }
 }
 
@@ -211,9 +285,19 @@ async fn handle_datagram(
                 debug!("Immediate Bedrock pong send to {peer} failed: {err}");
             } else if cache_is_fresh {
                 debug!(
+                    "[RakNet FLOW] client={peer} direction=server->client transition=\"Unconnected Ping -> Unconnected Pong\" source=shared-cache packet={}",
+                    describe_unconnected_pong(&immediate_pong)
+                        .unwrap_or_else(|| format!("id=0x1c len={}", immediate_pong.len()))
+                );
+                debug!(
                     "Served Bedrock pong to {peer} from shared cache (age {age_ms}ms) without touching backend"
                 );
             } else {
+                debug!(
+                    "[RakNet FLOW] client={peer} direction=server->client transition=\"Unconnected Ping -> Unconnected Pong\" source=stale-shared-cache packet={}",
+                    describe_unconnected_pong(&immediate_pong)
+                        .unwrap_or_else(|| format!("id=0x1c len={}", immediate_pong.len()))
+                );
                 debug!(
                     "Served Bedrock pong to {peer} from shared cache (stale {age_ms}ms); refreshing backend in parallel"
                 );
@@ -235,6 +319,8 @@ async fn handle_datagram(
         is_new_conn,
     )
     .await?;
+
+    session.record_raknet_stage(peer, "client->server", payload, Some("client"));
 
     // Geyser (cloudburst RakProxyServerHandler) は PROXY v2 ヘッダを「まだ
     // キャッシュしていない sender の最初の datagram」でのみ要求し、一度デコード
@@ -371,6 +457,7 @@ async fn obtain_session(
         notified: AtomicBool::new(false),
         established: AtomicBool::new(false),
         established_at_ms: AtomicU64::new(0),
+        raknet_stage: AtomicUsize::new(RAKNET_STAGE_NEW),
         recv_task: StdMutex::new(None),
         session_start: Instant::now(),
         last_activity_ms: AtomicU64::new(0),
@@ -492,6 +579,17 @@ fn spawn_backend_recv(
                     };
 
                     let out: &[u8] = response_owned.as_deref().unwrap_or(stripped);
+
+                    session.record_raknet_stage(
+                        peer,
+                        "server->client",
+                        out,
+                        Some(if response_owned.is_some() {
+                            "backend-rewritten"
+                        } else {
+                            "backend"
+                        }),
+                    );
 
                     if let Err(err) = server.send_to(out, peer).await {
                         error!("UDP response send to {peer} failed: {err}");
