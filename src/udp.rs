@@ -275,42 +275,35 @@ async fn handle_datagram(
 
     if is_offline_ping(payload) {
         let cached = shared_pong.lock().unwrap().clone();
-        let mut cache_is_fresh = false;
         if let (Some(entry), Some(timestamp)) = (cached.as_ref(), payload.get(1..9)) {
             let age_ms = entry.updated_at.elapsed().as_millis() as u64;
-            cache_is_fresh = age_ms < PONG_CACHE_FRESH_MS;
-            let immediate_pong = rewrite_unconnected_pong_timestamp(&entry.payload, timestamp)
-                .unwrap_or_else(|| {
-                    let mut out = entry.payload.clone();
-                    if out.len() >= 9 {
-                        out[1..9].copy_from_slice(timestamp);
-                    }
-                    out
-                });
-            if let Err(err) = server.send_to(&immediate_pong, peer).await {
-                debug!("Immediate Bedrock pong send to {peer} failed: {err}");
-            } else if cache_is_fresh {
-                debug!(
-                    "[RakNet FLOW] client={peer} direction=server->client transition=\"Unconnected Ping -> Unconnected Pong\" source=shared-cache packet={}",
-                    describe_unconnected_pong(&immediate_pong)
-                        .unwrap_or_else(|| format!("id=0x1c len={}", immediate_pong.len()))
-                );
-                debug!(
-                    "Served Bedrock pong to {peer} from shared cache (age {age_ms}ms) without touching backend"
-                );
+            if age_ms < PONG_CACHE_FRESH_MS {
+                let immediate_pong = rewrite_unconnected_pong_timestamp(&entry.payload, timestamp)
+                    .unwrap_or_else(|| {
+                        let mut out = entry.payload.clone();
+                        if out.len() >= 9 {
+                            out[1..9].copy_from_slice(timestamp);
+                        }
+                        out
+                    });
+                if let Err(err) = server.send_to(&immediate_pong, peer).await {
+                    debug!("Immediate Bedrock pong send to {peer} failed: {err}");
+                } else {
+                    debug!(
+                        "[RakNet FLOW] client={peer} direction=server->client transition=\"Unconnected Ping -> Unconnected Pong\" source=shared-cache packet={}",
+                        describe_unconnected_pong(&immediate_pong)
+                            .unwrap_or_else(|| format!("id=0x1c len={}", immediate_pong.len()))
+                    );
+                    debug!(
+                        "Served Bedrock pong to {peer} from shared cache (age {age_ms}ms) without touching backend"
+                    );
+                }
+                return Ok(());
             } else {
                 debug!(
-                    "[RakNet FLOW] client={peer} direction=server->client transition=\"Unconnected Ping -> Unconnected Pong\" source=stale-shared-cache packet={}",
-                    describe_unconnected_pong(&immediate_pong)
-                        .unwrap_or_else(|| format!("id=0x1c len={}", immediate_pong.len()))
-                );
-                debug!(
-                    "Served Bedrock pong to {peer} from shared cache (stale {age_ms}ms); refreshing backend in parallel"
+                    "Skipped stale Bedrock pong cache for {peer} (age {age_ms}ms); requesting one fresh backend pong"
                 );
             }
-        }
-        if cache_is_fresh {
-            return Ok(());
         }
     }
 
