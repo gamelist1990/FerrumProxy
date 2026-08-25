@@ -36,6 +36,12 @@ struct CachedPong {
 
 const PONG_CACHE_FRESH_MS: u64 = 3_000;
 
+// Cloudburst RakServerChannel stores sender -> forwarded-client mappings in an
+// ExpiringMap with RakConstants.SESSION_TIMEOUT_MS (10 seconds) and ACCESSED
+// expiration. FerrumProxy may retain an upstream socket longer than that, so
+// it must send a fresh PROXY header after the same amount of inactivity.
+const CLOUDBURST_PROXY_MAPPING_TIMEOUT_MS: u64 = 10_000;
+
 const RAKNET_STAGE_NEW: usize = 0;
 const RAKNET_STAGE_PING: usize = 1;
 const RAKNET_STAGE_PONG: usize = 2;
@@ -322,28 +328,20 @@ async fn handle_datagram(
 
     session.record_raknet_stage(peer, "client->server", payload, Some("client"));
 
-    // Geyser (cloudburst RakProxyServerHandler) は PROXY v2 ヘッダを「まだ
-    // キャッシュしていない sender の最初の datagram」でのみ要求し、一度デコード
-    // に成功すると sender→実アドレスをキャッシュして以降はヘッダ無しで転送する。
-    // そして RakNet セッションが切断されるとそのキャッシュを破棄する。
-    //
-    // 「UdpSession 生存中に一度だけヘッダを付ける」という header_sent 実装だと、
-    // ワールドから抜けて同じ送信元ポートで即再接続したとき (obtain_session の
-    // 3 秒 idle 閾値でセッションが破棄されなかった場合) に問題になる:
-    //   - Geyser 側は旧セッション切断でキャッシュを破棄済み → 再びヘッダを要求
-    //   - FerrumProxy 側は header_sent=true のまま → 素の OCR1 を送る
-    //   - Geyser の findVersion が v2 シグネチャ非一致を PROXY v1 テキストと誤認し
-    //     "header length exceeds the allowed maximum (108)" で drop → 再接続不能
-    //
-    // established (=一度ハンドシェイクが成立してゲーム中まで進んだ) セッションに
-    // OCR1 が来た = これは確実に「新しい RakNet 接続の開始」なので、header_sent を
-    // 再アーミングして次の 1 パケットで必ずヘッダを付け直す。established を同時に
-    // 落とすことで OCR1 の再送では再アーミングせず (Geyser がキャッシュ済みの
-    // パケットをヘッダで壊さない)、ハンドシェイク毎にちょうど 1 回だけ送る。
-    if is_new_conn && session.established.swap(false, Ordering::Relaxed) {
-        session.header_sent.store(false, Ordering::Relaxed);
+    // Cloudburst does not remove the sender mapping when a RakNet child session
+    // closes. RakProxyServerHandler reuses it until the ExpiringMap entry has
+    // been idle for SESSION_TIMEOUT_MS (10 seconds). Therefore an OCR1 must not
+    // unconditionally re-arm the header: doing so while the mapping is present
+    // forwards the binary PROXY header into the RakNet decoder as packet data.
+    // Re-arm only when Cloudburst's mapping has actually had enough idle time
+    // to expire while FerrumProxy's longer-lived upstream socket still exists.
+    let upstream_idle_ms = session.ms_since_last_activity();
+    if rule.haproxy
+        && upstream_idle_ms >= CLOUDBURST_PROXY_MAPPING_TIMEOUT_MS
+        && session.header_sent.swap(false, Ordering::Relaxed)
+    {
         debug!(
-            "UDP reconnect handshake from {peer}: re-arming PROXY v2 header for new RakNet session"
+            "UDP PROXY mapping for {peer} expired after {upstream_idle_ms}ms idle; re-arming initial header"
         );
     }
 
@@ -773,10 +771,11 @@ async fn send_to_target(
         resolved
     };
 
-    // Geyser reads the PROXY v2 header only from the first datagram received
-    // from an unknown UDP sender, then caches sender -> original client.
-    // Sending another PROXY header on every offline ping makes the cached
-    // sender treat that header as RakNet payload and drop the request.
+    // Cloudburst RakProxyServerHandler requires a PROXY header when the
+    // physical UDP sender has no cached mapping. It then advances the ByteBuf
+    // past that header, caches sender -> original client, and passes the same
+    // datagram's RakNet payload onward. While cached, subsequent datagrams must
+    // contain RakNet only. The expiry-aligned re-arm is handled above.
     let need_header = rule.haproxy && !session.header_sent.load(Ordering::Relaxed);
 
     let bytes_sent = if need_header {

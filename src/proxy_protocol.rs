@@ -149,3 +149,82 @@ impl IpAddrExt for IpAddr {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn builds_cloudburst_compatible_udp4_proxy_v2_header() {
+        let header = build_proxy_v2_header(
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            12_345,
+            IpAddr::V4(Ipv4Addr::new(100, 83, 127, 8)),
+            5_000,
+            true,
+        );
+
+        assert_eq!(header.len(), 28);
+        assert_eq!(&header[..12], SIGNATURE);
+        assert_eq!(header[12], VERSION_COMMAND_PROXY);
+        assert_eq!(header[13], FAMILY_INET_DGRAM);
+        assert_eq!(&header[14..16], &12u16.to_be_bytes());
+
+        let parsed = parse_proxy_chain(&header).expect("valid UDP4 PROXY v2 header");
+        assert_eq!(parsed.payload_offset, 28);
+        assert_eq!(parsed.headers.len(), 1);
+        let decoded = &parsed.headers[0];
+        assert_eq!(
+            decoded.source_address,
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
+        );
+        assert_eq!(decoded.source_port, 12_345);
+        assert_eq!(
+            decoded.destination_address,
+            IpAddr::V4(Ipv4Addr::new(100, 83, 127, 8))
+        );
+        assert_eq!(decoded.destination_port, 5_000);
+    }
+
+    #[test]
+    fn builds_cloudburst_compatible_udp6_proxy_v2_header() {
+        let source = Ipv6Addr::LOCALHOST;
+        let destination = "fd00::8".parse::<Ipv6Addr>().expect("IPv6 address");
+        let header = build_proxy_v2_header(
+            IpAddr::V6(source),
+            19_132,
+            IpAddr::V6(destination),
+            5_000,
+            true,
+        );
+
+        assert_eq!(header.len(), 52);
+        assert_eq!(header[13], FAMILY_INET6_DGRAM);
+        assert_eq!(&header[14..16], &36u16.to_be_bytes());
+
+        let parsed = parse_proxy_chain(&header).expect("valid UDP6 PROXY v2 header");
+        let decoded = &parsed.headers[0];
+        assert_eq!(decoded.source_address, IpAddr::V6(source));
+        assert_eq!(decoded.destination_address, IpAddr::V6(destination));
+        assert_eq!(decoded.source_port, 19_132);
+        assert_eq!(decoded.destination_port, 5_000);
+    }
+
+    #[test]
+    fn keeps_raknet_payload_after_proxy_header() {
+        let payload = [0x01, 0, 0, 0, 0, 0, 0, 0, 1];
+        let header = build_proxy_v2_header(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            40_000,
+            IpAddr::V4(Ipv4Addr::new(100, 83, 127, 8)),
+            5_000,
+            true,
+        );
+        let mut datagram = header;
+        datagram.extend_from_slice(&payload);
+
+        let parsed = parse_proxy_chain(&datagram).expect("header followed by RakNet payload");
+        assert_eq!(&datagram[parsed.payload_offset..], &payload);
+    }
+}
