@@ -712,7 +712,6 @@ async fn try_send_udp<'a>(
     payload: &'a [u8],
 ) -> Result<()> {
     let targets = rule.targets_for(Protocol::Udp);
-    let force_proxy_header = rule.haproxy && is_offline_ping(payload);
     let mut last_error = None;
 
     let start = session.active_target_index.load(Ordering::Relaxed);
@@ -731,7 +730,6 @@ async fn try_send_udp<'a>(
             target,
             target_port,
             index,
-            force_proxy_header,
         )
         .await
         {
@@ -759,7 +757,6 @@ async fn send_to_target(
     target: &ProxyTarget,
     target_port: u16,
     target_index: usize,
-    force_proxy_header: bool,
 ) -> Result<()> {
     let cached = {
         let slots = session.resolved_targets.lock().unwrap();
@@ -776,8 +773,11 @@ async fn send_to_target(
         resolved
     };
 
-    let need_header =
-        rule.haproxy && (force_proxy_header || !session.header_sent.load(Ordering::Relaxed));
+    // Geyser reads the PROXY v2 header only from the first datagram received
+    // from an unknown UDP sender, then caches sender -> original client.
+    // Sending another PROXY header on every offline ping makes the cached
+    // sender treat that header as RakNet payload and drop the request.
+    let need_header = rule.haproxy && !session.header_sent.load(Ordering::Relaxed);
 
     let bytes_sent = if need_header {
         let header = build_proxy_v2_header(
@@ -791,13 +791,11 @@ async fn send_to_target(
         out.extend_from_slice(&header);
         out.extend_from_slice(payload);
 
-        if !is_offline_ping(payload) {
-            session.header_sent.store(true, Ordering::Relaxed);
-        }
+        session.header_sent.store(true, Ordering::Relaxed);
 
         if tracing::enabled!(tracing::Level::DEBUG) {
             debug!(
-                "Added UDP PROXY v2 header for {original_client} -> {target_addr}: payload={}B total={}B force={force_proxy_header}",
+                "Added initial UDP PROXY v2 header for {original_client} -> {target_addr}: payload={}B total={}B",
                 payload.len(),
                 out.len()
             );
