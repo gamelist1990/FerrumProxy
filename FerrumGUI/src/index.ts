@@ -130,7 +130,12 @@ async function isFile(filePath: string): Promise<boolean> {
   }
 }
 
-function runChildProcess(command: string, args: string[]): Promise<void> {
+type ChildProcessResult = {
+  stdout: string;
+  stderr: string;
+};
+
+function runChildProcess(command: string, args: string[]): Promise<ChildProcessResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       windowsHide: true,
@@ -148,7 +153,7 @@ function runChildProcess(command: string, args: string[]): Promise<void> {
     child.once('error', reject);
     child.once('close', (code) => {
       if (code === 0) {
-        resolve();
+        resolve({ stdout, stderr });
         return;
       }
       const details = [stdout.trim(), stderr.trim()]
@@ -159,6 +164,162 @@ function runChildProcess(command: string, args: string[]): Promise<void> {
       ));
     });
   });
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  try {
+    await runChildProcess('which', [command]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isRunningAsRoot(): boolean {
+  return typeof process.geteuid === 'function' && process.geteuid() === 0;
+}
+
+async function runPrivileged(
+  command: string,
+  args: string[]
+): Promise<ChildProcessResult> {
+  if (isRunningAsRoot()) {
+    return runChildProcess(command, args);
+  }
+
+  try {
+    return await runChildProcess('sudo', ['-n', command, ...args]);
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.includes('password is required') ||
+      message.includes('a password is required') ||
+      message.includes('not allowed to execute')
+    ) {
+      throw new Error(
+        `Root permission is required to run ${command}. ` +
+        `Run FerrumProxyGUI as root or configure passwordless sudo for certbot and firewall commands.`
+      );
+    }
+    throw error;
+  }
+}
+
+type FirewallPreparation = {
+  provider: string;
+  changed: boolean;
+  cleanup: () => Promise<void>;
+};
+
+async function prepareHttp01Firewall(): Promise<FirewallPreparation> {
+  const noCleanup = async () => {};
+
+  if (await commandExists('ufw')) {
+    try {
+      const status = await runPrivileged('ufw', ['status']);
+      if (/Status:\s+active/i.test(status.stdout)) {
+        const ruleAlreadyExists =
+          /(^|\n)\s*80\/tcp\s+ALLOW\b/im.test(status.stdout) ||
+          /(^|\n)\s*80\s+ALLOW\b/im.test(status.stdout);
+
+        if (ruleAlreadyExists) {
+          return { provider: 'ufw', changed: false, cleanup: noCleanup };
+        }
+
+        await runPrivileged('ufw', ['allow', '80/tcp']);
+        return {
+          provider: 'ufw',
+          changed: true,
+          cleanup: async () => {
+            try {
+              await runPrivileged('ufw', ['--force', 'delete', 'allow', '80/tcp']);
+            } catch (error: any) {
+              console.warn(chalk.yellow(
+                `Failed to remove temporary UFW port 80 rule: ${error.message}`
+              ));
+            }
+          },
+        };
+      }
+    } catch (error: any) {
+      console.warn(chalk.yellow(`UFW inspection failed: ${error.message}`));
+    }
+  }
+
+  if (await commandExists('firewall-cmd')) {
+    try {
+      await runPrivileged('firewall-cmd', ['--state']);
+      const query = await runPrivileged('firewall-cmd', ['--query-port=80/tcp'])
+        .then(() => true)
+        .catch(() => false);
+
+      if (query) {
+        return { provider: 'firewalld', changed: false, cleanup: noCleanup };
+      }
+
+      await runPrivileged('firewall-cmd', ['--add-port=80/tcp']);
+      return {
+        provider: 'firewalld',
+        changed: true,
+        cleanup: async () => {
+          try {
+            await runPrivileged('firewall-cmd', ['--remove-port=80/tcp']);
+          } catch (error: any) {
+            console.warn(chalk.yellow(
+              `Failed to remove temporary firewalld port 80 rule: ${error.message}`
+            ));
+          }
+        },
+      };
+    } catch (error: any) {
+      console.warn(chalk.yellow(`firewalld inspection failed: ${error.message}`));
+    }
+  }
+
+  if (await commandExists('iptables')) {
+    const acceptArgs = [
+      'INPUT',
+      '-p',
+      'tcp',
+      '--dport',
+      '80',
+      '-m',
+      'conntrack',
+      '--ctstate',
+      'NEW',
+      '-j',
+      'ACCEPT',
+    ];
+
+    const ruleAlreadyExists = await runPrivileged('iptables', ['-C', ...acceptArgs])
+      .then(() => true)
+      .catch(() => false);
+
+    if (ruleAlreadyExists) {
+      return { provider: 'iptables', changed: false, cleanup: noCleanup };
+    }
+
+    await runPrivileged('iptables', ['-I', ...acceptArgs]);
+    return {
+      provider: 'iptables',
+      changed: true,
+      cleanup: async () => {
+        try {
+          await runPrivileged('iptables', ['-D', ...acceptArgs]);
+        } catch (error: any) {
+          console.warn(chalk.yellow(
+            `Failed to remove temporary iptables port 80 rule: ${error.message}`
+          ));
+        }
+      },
+    };
+  }
+
+  return {
+    provider: 'none',
+    changed: false,
+    cleanup: noCleanup,
+  };
 }
 
 async function ensureLetsEncryptCertificate(
@@ -217,8 +378,16 @@ async function ensureLetsEncryptCertificate(
     args.push('--domain', domain);
   }
 
+  let firewall: FirewallPreparation | undefined;
   try {
-    await runChildProcess('certbot', args);
+    firewall = await prepareHttp01Firewall();
+    console.log(chalk.blue(
+      firewall.changed
+        ? `Temporarily opened TCP port 80 using ${firewall.provider}`
+        : `TCP port 80 firewall preflight completed using ${firewall.provider}`
+    ));
+
+    await runPrivileged('certbot', args);
   } catch (error: any) {
     if (error?.code === 'ENOENT') {
       throw new Error('certbot is not installed or is not available in PATH');
@@ -229,6 +398,13 @@ async function ensureLetsEncryptCertificate(
       `Confirm that every configured domain resolves to this server, ` +
       `TCP port 80 is reachable from the Internet, and no other process is using port 80.\n${message}`
     );
+  } finally {
+    if (firewall?.changed) {
+      await firewall.cleanup();
+      console.log(chalk.gray(
+        `Removed temporary TCP port 80 rule from ${firewall.provider}`
+      ));
+    }
   }
 
   if (!await isFile(certPath) || !await isFile(keyPath)) {
