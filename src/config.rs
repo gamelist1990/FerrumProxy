@@ -290,7 +290,13 @@ pub struct ListenerHttpsConfig {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub auto_detect: bool,
+    #[serde(default)]
+    pub auto_provision: bool,
     pub lets_encrypt_domain: Option<String>,
+    #[serde(default)]
+    pub lets_encrypt_domains: Vec<String>,
+    #[serde(default)]
+    pub lets_encrypt_email: Option<String>,
     pub cert_path: Option<PathBuf>,
     pub key_path: Option<PathBuf>,
 }

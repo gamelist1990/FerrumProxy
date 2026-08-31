@@ -70,9 +70,15 @@ listeners:
     https:
       enabled: false
       autoDetect: true
+      # Linux GUIで、証明書がなければcertbotを使って自動取得します。
+      # 同じIPで複数ドメインを扱う場合は、SAN証明書へまとめて指定できます。
+      autoProvision: false
       letsEncryptDomain: example.com
-      certPath: ./certs/fullchain.pem
-      keyPath: ./certs/privkey.pem
+      letsEncryptDomains:
+        - example.com
+      letsEncryptEmail: ""
+      certPath:
+      keyPath:
     webhook: ""
     rewriteBedrockPongPorts: true
     # Each target carries its own host plus per-protocol ports. A target is only

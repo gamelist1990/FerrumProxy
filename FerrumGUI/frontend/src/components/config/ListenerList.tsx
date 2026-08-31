@@ -65,7 +65,10 @@ export const ListenerList: React.FC<ListenerListProps> = ({ instanceId, listener
       https: {
         enabled: false,
         autoDetect: true,
-        letsEncryptDomain: '',
+        autoProvision: false,
+        letsEncryptDomain: 'play.pexserver.com',
+        letsEncryptDomains: ['play.pexserver.com'],
+        letsEncryptEmail: '',
         certPath: '',
         keyPath: '',
       },

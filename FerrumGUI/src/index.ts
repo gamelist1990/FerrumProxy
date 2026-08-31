@@ -8,6 +8,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import os from 'node:os';
 import { randomBytes, randomUUID } from 'crypto';
+import { spawn } from 'node:child_process';
 import chalk from 'chalk';
 import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './services.js';
 import { ProcessManager } from './processManager.js';
@@ -92,6 +93,163 @@ const configManager = new ConfigManager();
 const authManager = new AuthManager(serviceManager);
 const MANAGER_PORT_START = readPositiveIntegerEnv('FERRUMPROXYGUI_MANAGER_PORT_START', 37000);
 const MANAGER_PORT_END = readPositiveIntegerEnv('FERRUMPROXYGUI_MANAGER_PORT_END', 37999);
+
+const LETS_ENCRYPT_DOMAIN_PATTERN =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+function normalizeLetsEncryptDomains(domains: unknown): string[] {
+  if (!Array.isArray(domains)) {
+    return [];
+  }
+
+  return Array.from(new Set(
+    domains
+      .filter((domain): domain is string => typeof domain === 'string')
+      .map((domain) => domain.trim().toLowerCase().replace(/\.$/, ''))
+      .filter(Boolean)
+  ));
+}
+
+function validateLetsEncryptDomains(domains: string[]): void {
+  if (domains.length === 0) {
+    throw new Error('At least one Let\'s Encrypt domain is required');
+  }
+
+  for (const domain of domains) {
+    if (!LETS_ENCRYPT_DOMAIN_PATTERN.test(domain)) {
+      throw new Error(`Invalid Let\'s Encrypt domain: ${domain}`);
+    }
+  }
+}
+
+async function isFile(filePath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function runChildProcess(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(
+        `${command} exited with code ${code}: ${(stderr || stdout).trim()}`
+      ));
+    });
+  });
+}
+
+async function ensureLetsEncryptCertificate(
+  domains: string[],
+  email?: string
+): Promise<{
+  certPath: string;
+  keyPath: string;
+  domains: string[];
+  alreadyPresent: boolean;
+}> {
+  if (process.platform !== 'linux') {
+    throw new Error('Automatic Let\'s Encrypt provisioning is supported only on Linux');
+  }
+
+  const normalizedDomains = normalizeLetsEncryptDomains(domains);
+  validateLetsEncryptDomains(normalizedDomains);
+
+  const certificateName = normalizedDomains[0];
+  const liveDir = path.join('/etc/letsencrypt/live', certificateName);
+  const certPath = path.join(liveDir, 'fullchain.pem');
+  const keyPath = path.join(liveDir, 'privkey.pem');
+
+  if (await isFile(certPath) && await isFile(keyPath)) {
+    return {
+      certPath,
+      keyPath,
+      domains: normalizedDomains,
+      alreadyPresent: true,
+    };
+  }
+
+  const args = [
+    'certonly',
+    '--standalone',
+    '--non-interactive',
+    '--agree-tos',
+    '--keep-until-expiring',
+    '--cert-name',
+    certificateName,
+  ];
+
+  const normalizedEmail = typeof email === 'string' ? email.trim() : '';
+  if (normalizedEmail) {
+    args.push('--email', normalizedEmail);
+  } else {
+    args.push('--register-unsafely-without-email');
+  }
+
+  for (const domain of normalizedDomains) {
+    args.push('--domain', domain);
+  }
+
+  try {
+    await runChildProcess('certbot', args);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      throw new Error('certbot is not installed or is not available in PATH');
+    }
+    throw error;
+  }
+
+  if (!await isFile(certPath) || !await isFile(keyPath)) {
+    throw new Error(`certbot completed but certificate files were not found in ${liveDir}`);
+  }
+
+  return {
+    certPath,
+    keyPath,
+    domains: normalizedDomains,
+    alreadyPresent: false,
+  };
+}
+
+async function provisionConfiguredCertificates(config: FerrumProxyConfig): Promise<void> {
+  for (const listener of config.listeners || []) {
+    const https = listener.https;
+    if (!https?.enabled || !https.autoProvision) {
+      continue;
+    }
+
+    const domains = normalizeLetsEncryptDomains(
+      https.letsEncryptDomains?.length
+        ? https.letsEncryptDomains
+        : [https.letsEncryptDomain]
+    );
+    const result = await ensureLetsEncryptCertificate(domains, https.letsEncryptEmail);
+    https.autoDetect = true;
+    https.letsEncryptDomain = result.domains[0];
+    https.letsEncryptDomains = result.domains;
+    https.certPath = result.certPath;
+    https.keyPath = result.keyPath;
+  }
+}
 
 function isRequestHttps(req: express.Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https';
@@ -2031,6 +2189,7 @@ app.put('/api/instances/:id/config', async (req, res) => {
       return res.status(400).json({ errors: validation.errors });
     }
 
+    await provisionConfiguredCertificates(config);
     await configManager.write(instance.configPath, config);
 
     broadcast({
@@ -2160,6 +2319,62 @@ app.post('/api/instances/:id/listeners/:index/tls-assets', async (req, res) => {
       success: true,
       certPath,
       keyPath,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/instances/:id/listeners/:index/letsencrypt', async (req, res) => {
+  try {
+    const instanceId = req.params.id;
+    const listenerIndex = parseInt(req.params.index, 10);
+    const instance = serviceManager.getById(instanceId);
+
+    if (!instance) {
+      return res.status(404).json({ error: 'Instance not found' });
+    }
+    if (!Number.isInteger(listenerIndex) || listenerIndex < 0) {
+      return res.status(400).json({ error: 'Invalid listener index' });
+    }
+
+    const { domains, email } = req.body as { domains?: unknown; email?: unknown };
+    const normalizedDomains = normalizeLetsEncryptDomains(domains);
+    validateLetsEncryptDomains(normalizedDomains);
+
+    const result = await ensureLetsEncryptCertificate(
+      normalizedDomains,
+      typeof email === 'string' ? email : undefined
+    );
+
+    const config = await configManager.read(instance.configPath);
+    const listener = config.listeners?.[listenerIndex];
+    if (!listener) {
+      return res.status(404).json({ error: 'Listener not found' });
+    }
+
+    listener.https = {
+      ...listener.https,
+      enabled: true,
+      autoDetect: true,
+      autoProvision: true,
+      letsEncryptDomain: result.domains[0],
+      letsEncryptDomains: result.domains,
+      letsEncryptEmail: typeof email === 'string' ? email.trim() || undefined : undefined,
+      certPath: result.certPath,
+      keyPath: result.keyPath,
+    };
+    await configManager.write(instance.configPath, config);
+
+    broadcast({
+      type: 'configUpdated',
+      instanceId,
+      config,
+    });
+
+    res.json({
+      success: true,
+      ...result,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

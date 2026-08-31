@@ -56,15 +56,22 @@ fn resolve_paths(config: &ListenerHttpsConfig) -> Result<(PathBuf, PathBuf)> {
         );
     }
 
-    let Some(domain) = config
-        .lets_encrypt_domain
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-    else {
+    let domain = config
+        .lets_encrypt_domains
+        .iter()
+        .find(|domain| !domain.trim().is_empty())
+        .map(String::as_str)
+        .or_else(|| {
+            config
+                .lets_encrypt_domain
+                .as_deref()
+                .filter(|domain| !domain.trim().is_empty())
+        });
+    let Some(domain) = domain else {
         bail!("HTTPS auto-detection requires letsEncryptDomain");
     };
 
-    let live_dir = PathBuf::from("/etc/letsencrypt/live").join(domain);
+    let live_dir = PathBuf::from("/etc/letsencrypt/live").join(domain.trim());
     Ok((live_dir.join("fullchain.pem"), live_dir.join("privkey.pem")))
 }
 

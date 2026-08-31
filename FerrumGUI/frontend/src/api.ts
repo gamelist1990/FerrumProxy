@@ -33,7 +33,10 @@ export interface ListenerConfig {
   https?: {
     enabled?: boolean;
     autoDetect?: boolean;
+    autoProvision?: boolean;
     letsEncryptDomain?: string;
+    letsEncryptDomains?: string[];
+    letsEncryptEmail?: string;
     certPath?: string;
     keyPath?: string;
   };
@@ -318,6 +321,30 @@ export async function uploadListenerTlsAssets(
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: 'Failed to upload TLS assets' }));
     throw new Error(error.error || 'Failed to upload TLS assets');
+  }
+  return res.json();
+}
+
+export async function provisionListenerLetsEncrypt(
+  id: string,
+  listenerIndex: number,
+  payload: { domains: string[]; email?: string }
+): Promise<{
+  certPath: string;
+  keyPath: string;
+  domains: string[];
+  alreadyPresent: boolean;
+}> {
+  const res = await fetch(`${API_BASE}/instances/${id}/listeners/${listenerIndex}/letsencrypt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({
+      error: 'Failed to provision Let\'s Encrypt certificate',
+    }));
+    throw new Error(error.error || 'Failed to provision Let\'s Encrypt certificate');
   }
   return res.json();
 }

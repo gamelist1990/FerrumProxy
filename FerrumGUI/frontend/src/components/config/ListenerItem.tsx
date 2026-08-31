@@ -3,7 +3,11 @@ import { Card } from '../ui/Card';
 import { Input } from '../ui/Input';
 import { Switch } from '../ui/Switch';
 import { Button } from '../ui/Button';
-import { uploadListenerTlsAssets, type ListenerConfig } from '../../api';
+import {
+  provisionListenerLetsEncrypt,
+  uploadListenerTlsAssets,
+  type ListenerConfig,
+} from '../../api';
 import { t } from '../../lang';
 
 interface ListenerItemProps {
@@ -70,6 +74,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
 }) => {
   const [certFile, setCertFile] = useState<File | null>(null);
   const [keyFile, setKeyFile] = useState<File | null>(null);
+  const [provisioningCertificate, setProvisioningCertificate] = useState(false);
 
   const targets = listener.targets && listener.targets.length > 0
     ? listener.targets
@@ -173,6 +178,53 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
     }
   };
 
+  const configuredDomains = listener.https?.letsEncryptDomains?.length
+    ? listener.https.letsEncryptDomains
+    : listener.https?.letsEncryptDomain
+      ? [listener.https.letsEncryptDomain]
+      : [];
+
+  const handleLetsEncryptProvision = async () => {
+    const domains = Array.from(new Set(
+      configuredDomains
+        .map((domain) => domain.trim().toLowerCase())
+        .filter(Boolean)
+    ));
+
+    if (domains.length === 0) {
+      alert(t('letsEncryptDomainRequired') || 'Enter at least one domain.');
+      return;
+    }
+
+    setProvisioningCertificate(true);
+    try {
+      const result = await provisionListenerLetsEncrypt(instanceId, index, {
+        domains,
+        email: listener.https?.letsEncryptEmail,
+      });
+      onChange('https', {
+        ...listener.https,
+        enabled: true,
+        autoDetect: true,
+        autoProvision: true,
+        letsEncryptDomain: result.domains[0],
+        letsEncryptDomains: result.domains,
+        certPath: result.certPath,
+        keyPath: result.keyPath,
+      });
+      alert(
+        result.alreadyPresent
+          ? (t('letsEncryptAlreadyPresent') || 'Certificate already exists.')
+          : (t('letsEncryptProvisionSuccess') || 'Certificate issued successfully.')
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`${t('letsEncryptProvisionFailed') || 'Certificate issuance failed:'} ${message}`);
+    } finally {
+      setProvisioningCertificate(false);
+    }
+  };
+
   return (
     <Card
       title={`Listener #${index + 1}`}
@@ -251,7 +303,10 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           onChange={(checked) => onChange('https', {
             enabled: checked,
             autoDetect: listener.https?.autoDetect ?? true,
-            letsEncryptDomain: listener.https?.letsEncryptDomain || '',
+            autoProvision: listener.https?.autoProvision ?? false,
+            letsEncryptDomain: listener.https?.letsEncryptDomain || 'play.pexserver.com',
+            letsEncryptDomains: listener.https?.letsEncryptDomains || ['play.pexserver.com'],
+            letsEncryptEmail: listener.https?.letsEncryptEmail || '',
             certPath: listener.https?.certPath || '',
             keyPath: listener.https?.keyPath || '',
           })}
@@ -271,15 +326,54 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
               })}
             />
             <Input
-              label={t('letsEncryptDomain') || 'Let\'s Encrypt Domain'}
-              value={listener.https?.letsEncryptDomain || ''}
+              label={t('letsEncryptDomains') || 'Let\'s Encrypt Domains'}
+              value={configuredDomains.join(', ')}
               onChange={(e) => onChange('https', {
                 ...listener.https,
                 enabled: true,
-                letsEncryptDomain: e.target.value,
+                letsEncryptDomain: e.target.value.split(',')[0]?.trim() || '',
+                letsEncryptDomains: e.target.value
+                  .split(',')
+                  .map((domain) => domain.trim()),
               })}
-              placeholder="example.com"
+              placeholder="play.pexserver.com, api.pexserver.com"
             />
+            <Input
+              label={t('letsEncryptEmail') || 'Let\'s Encrypt Email'}
+              type="email"
+              value={listener.https?.letsEncryptEmail || ''}
+              onChange={(e) => onChange('https', {
+                ...listener.https,
+                enabled: true,
+                letsEncryptEmail: e.target.value,
+              })}
+              placeholder="admin@example.com"
+            />
+          </div>
+
+          <div className="mt-4 mb-4">
+            <Switch
+              label={t('autoProvisionLetsEncrypt') || 'Automatically issue missing certificate'}
+              checked={listener.https?.autoProvision ?? false}
+              onChange={(checked) => onChange('https', {
+                ...listener.https,
+                enabled: true,
+                autoDetect: true,
+                autoProvision: checked,
+              })}
+            />
+            <Button
+              variant="secondary"
+              disabled={provisioningCertificate}
+              onClick={() => { void handleLetsEncryptProvision(); }}
+            >
+              {provisioningCertificate
+                ? (t('letsEncryptProvisioning') || 'Checking...')
+                : (t('checkAndProvisionLetsEncrypt') || 'Check and issue certificate')}
+            </Button>
+            <p className="ui-help-text">
+              {t('letsEncryptProvisionHint') || 'All comma-separated domains are included in one SAN certificate for the same IP address.'}
+            </p>
           </div>
 
           <div className="ui-grid">

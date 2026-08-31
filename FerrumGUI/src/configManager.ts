@@ -62,7 +62,10 @@ export interface FerrumProxyConfig {
     https?: {
       enabled?: boolean;
       autoDetect?: boolean;
+      autoProvision?: boolean;
       letsEncryptDomain?: string;
+      letsEncryptDomains?: string[];
+      letsEncryptEmail?: string;
       certPath?: string;
       keyPath?: string;
     };
@@ -165,6 +168,12 @@ export class ConfigManager extends EventEmitter {
         ? {
             ...listener.https,
             letsEncryptDomain: listener.https.letsEncryptDomain?.trim() || undefined,
+            letsEncryptDomains: Array.from(new Set(
+              (listener.https.letsEncryptDomains || [])
+                .map((domain) => domain.trim().toLowerCase())
+                .filter(Boolean)
+            )),
+            letsEncryptEmail: listener.https.letsEncryptEmail?.trim() || undefined,
             certPath: listener.https.certPath?.trim() || undefined,
             keyPath: listener.https.keyPath?.trim() || undefined,
           }
@@ -308,6 +317,26 @@ export class ConfigManager extends EventEmitter {
             } else {
               if (listener.https.letsEncryptDomain !== undefined && typeof listener.https.letsEncryptDomain !== 'string') {
                 errors.push(`listeners[${index}].https.letsEncryptDomain must be a string`);
+              }
+              if (
+                listener.https.letsEncryptDomains !== undefined &&
+                (!Array.isArray(listener.https.letsEncryptDomains) ||
+                  listener.https.letsEncryptDomains.some((domain) => typeof domain !== 'string'))
+              ) {
+                errors.push(`listeners[${index}].https.letsEncryptDomains must be a string array`);
+              }
+              if (
+                listener.https.letsEncryptEmail !== undefined &&
+                typeof listener.https.letsEncryptEmail !== 'string'
+              ) {
+                errors.push(`listeners[${index}].https.letsEncryptEmail must be a string`);
+              }
+              if (
+                listener.https.autoProvision &&
+                !listener.https.letsEncryptDomain?.trim() &&
+                !listener.https.letsEncryptDomains?.some((domain) => domain.trim())
+              ) {
+                errors.push(`listeners[${index}].https requires at least one domain when autoProvision is enabled`);
               }
               if (listener.https.certPath !== undefined && typeof listener.https.certPath !== 'string') {
                 errors.push(`listeners[${index}].https.certPath must be a string`);
