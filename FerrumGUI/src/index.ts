@@ -151,8 +151,11 @@ function runChildProcess(command: string, args: string[]): Promise<void> {
         resolve();
         return;
       }
+      const details = [stdout.trim(), stderr.trim()]
+        .filter(Boolean)
+        .join('\n');
       reject(new Error(
-        `${command} exited with code ${code}: ${(stderr || stdout).trim()}`
+        `${command} exited with code ${code}${details ? `:\n${details}` : ''}`
       ));
     });
   });
@@ -191,9 +194,14 @@ async function ensureLetsEncryptCertificate(
   const args = [
     'certonly',
     '--standalone',
+    '--preferred-challenges',
+    'http-01',
+    '--http-01-port',
+    '80',
     '--non-interactive',
     '--agree-tos',
     '--keep-until-expiring',
+    '--verbose',
     '--cert-name',
     certificateName,
   ];
@@ -215,7 +223,12 @@ async function ensureLetsEncryptCertificate(
     if (error?.code === 'ENOENT') {
       throw new Error('certbot is not installed or is not available in PATH');
     }
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Standalone HTTP-01 certificate request failed. ` +
+      `Confirm that every configured domain resolves to this server, ` +
+      `TCP port 80 is reachable from the Internet, and no other process is using port 80.\n${message}`
+    );
   }
 
   if (!await isFile(certPath) || !await isFile(keyPath)) {
