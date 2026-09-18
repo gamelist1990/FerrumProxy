@@ -1611,7 +1611,8 @@ fn pipe_bidirectional(
     let _ = copy_counting(&mut right, &mut left, |bytes| {
         stats.bytes_out.fetch_add(bytes, Ordering::Relaxed);
     });
-    let _ = left.shutdown(Shutdown::Write);
+    let _ = left.shutdown(Shutdown::Both);
+    let _ = right.shutdown(Shutdown::Both);
     let _ = forward.join();
     Ok(())
 }

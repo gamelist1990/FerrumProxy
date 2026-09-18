@@ -599,8 +599,12 @@ mod tests {
             }));
         }
 
-        let response = tcp_roundtrip(public_port, b"hello over tcp").await?;
-        assert_eq!(response, b"hello over tcp");
+        let (first, second) = tokio::try_join!(
+            tcp_roundtrip(public_port, b"hello over tcp 1"),
+            tcp_roundtrip(public_port, b"hello over tcp 2"),
+        )?;
+        assert_eq!(first, b"hello over tcp 1");
+        assert_eq!(second, b"hello over tcp 2");
 
         relay.abort();
         for task in tunnel_tasks {
@@ -633,15 +637,21 @@ mod tests {
             let local = UdpSocket::bind("127.0.0.1:0").await?;
             let mut buf = vec![0u8; 65_507];
 
-            let (remote_addr, payload) = read_udp_frame(&mut tunnel).await?;
-            local.send_to(&payload, ("127.0.0.1", echo_port)).await?;
-            let (len, _) = local.recv_from(&mut buf).await?;
-            write_udp_frame(&mut tunnel, remote_addr, &buf[..len]).await?;
+            for _ in 0..2 {
+                let (remote_addr, payload) = read_udp_frame(&mut tunnel).await?;
+                local.send_to(&payload, ("127.0.0.1", echo_port)).await?;
+                let (len, _) = local.recv_from(&mut buf).await?;
+                write_udp_frame(&mut tunnel, remote_addr, &buf[..len]).await?;
+            }
             Ok::<_, anyhow::Error>(())
         });
 
-        let response = udp_roundtrip(public_port, b"hello over udp").await?;
-        assert_eq!(response, b"hello over udp");
+        let (first, second) = tokio::try_join!(
+            udp_roundtrip(public_port, b"hello over udp 1"),
+            udp_roundtrip(public_port, b"hello over udp 2"),
+        )?;
+        assert_eq!(first, b"hello over udp 1");
+        assert_eq!(second, b"hello over udp 2");
 
         relay.abort();
         tunnel_task.abort();
@@ -1433,6 +1443,7 @@ async fn handle_udp_tunnel(
     };
 
     let (tx, mut rx) = mpsc::channel::<UdpRelayPacket>(512);
+    let registered_tunnel = tx.clone();
     state.udp_tunnels.lock().await.insert(port, tx);
 
     stream.write_all(b"READY\n").await?;
@@ -1532,7 +1543,13 @@ async fn handle_udp_tunnel(
     });
 
     let _ = tokio::join!(write_task, read_task);
-    state.udp_tunnels.lock().await.remove(&port);
+    let mut udp_tunnels = state.udp_tunnels.lock().await;
+    if udp_tunnels
+        .get(&port)
+        .is_some_and(|current| current.same_channel(&registered_tunnel))
+    {
+        udp_tunnels.remove(&port);
+    }
     Ok(())
 }
 
