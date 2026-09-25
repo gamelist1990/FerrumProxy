@@ -165,6 +165,8 @@ async fn handle_control_connection(
         Ok("PONG\n".to_string())
     } else if request == "STATS" {
         handle_stats(&state).await
+    } else if request == "HOST_METRICS" {
+        handle_host_metrics(&state).await
     } else if request == "LIST" {
         handle_list_allocations(&state).await
     } else if request.starts_with("RELEASE ") {
@@ -176,6 +178,125 @@ async fn handle_control_connection(
     let response = response?;
     stream.write_all(response.as_bytes()).await?;
     Ok(())
+}
+
+async fn handle_host_metrics(state: &Arc<SharedRelayState>) -> Result<String> {
+    let active_sessions = state.port_allocations.read().await.len();
+    tokio::task::spawn_blocking(move || {
+        let first = read_cpu_times();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let second = read_cpu_times();
+        let idle_delta = second.0.saturating_sub(first.0) as f64;
+        let total_delta = second.1.saturating_sub(first.1).max(1) as f64;
+        let cpu_percent = ((1.0 - idle_delta / total_delta) * 100.0).clamp(0.0, 100.0);
+        let (memory_total, memory_free) = read_memory_bytes();
+        let memory_used = memory_total.saturating_sub(memory_free);
+        let memory_percent = if memory_total == 0 {
+            0.0
+        } else {
+            memory_used as f64 / memory_total as f64 * 100.0
+        };
+        let load_percent = (cpu_percent * 0.75 + memory_percent * 0.25).clamp(0.0, 100.0);
+        let load = read_load_average();
+        let uptime = read_uptime_seconds();
+        format!(
+            "HOST_METRICS cpu={cpu_percent:.1} memory={memory_percent:.1} load_percent={load_percent:.1} load1={:.2} load5={:.2} load15={:.2} mem_total={memory_total} mem_used={memory_used} mem_free={memory_free} uptime={uptime} sessions={active_sessions}\n",
+            load.0, load.1, load.2,
+        )
+    })
+    .await
+    .context("failed to collect host metrics")
+}
+
+#[cfg(target_os = "linux")]
+fn read_cpu_times() -> (u64, u64) {
+    let Ok(contents) = std::fs::read_to_string("/proc/stat") else {
+        return (0, 0);
+    };
+    let Some(line) = contents.lines().next() else {
+        return (0, 0);
+    };
+    let values: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    let total = values.iter().copied().sum();
+    let idle = values.get(3).copied().unwrap_or(0) + values.get(4).copied().unwrap_or(0);
+    (idle, total)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_cpu_times() -> (u64, u64) {
+    (0, 0)
+}
+
+#[cfg(target_os = "linux")]
+fn read_memory_bytes() -> (u64, u64) {
+    let Ok(contents) = std::fs::read_to_string("/proc/meminfo") else {
+        return (0, 0);
+    };
+    let mut total = 0;
+    let mut available = 0;
+    for line in contents.lines() {
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("MemTotal:") => {
+                total = fields
+                    .next()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    * 1024
+            }
+            Some("MemAvailable:") => {
+                available = fields
+                    .next()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    * 1024
+            }
+            _ => {}
+        }
+    }
+    (total, available)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_memory_bytes() -> (u64, u64) {
+    (0, 0)
+}
+
+#[cfg(target_os = "linux")]
+fn read_load_average() -> (f64, f64, f64) {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|text| {
+            let mut values = text
+                .split_whitespace()
+                .take(3)
+                .filter_map(|v| v.parse().ok());
+            Some((values.next()?, values.next()?, values.next()?))
+        })
+        .unwrap_or((0.0, 0.0, 0.0))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_load_average() -> (f64, f64, f64) {
+    (0.0, 0.0, 0.0)
+}
+
+#[cfg(target_os = "linux")]
+fn read_uptime_seconds() -> u64 {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok())
+        .map(|value| value as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_uptime_seconds() -> u64 {
+    0
 }
 
 async fn shared_service_auth_config(
@@ -568,6 +689,25 @@ mod tests {
     use tokio::time::timeout;
 
     const PROXY_V2_SIGNATURE: &[u8; 12] = b"\r\n\r\n\0\r\nQUIT\n";
+
+    #[tokio::test]
+    async fn shared_relay_reports_host_metrics_over_control_port() -> Result<()> {
+        let control_port = free_tcp_port().await?;
+        let public_port = free_dual_stack_port().await?;
+        let relay = spawn_test_relay(control_port, public_port);
+
+        let response = send_control(control_port, "HOST_METRICS\n").await?;
+        assert!(response.starts_with("HOST_METRICS cpu="));
+        assert!(response.contains(" memory="));
+        assert!(response.contains(" load1="));
+        assert!(response.contains(" load5="));
+        assert!(response.contains(" load15="));
+        assert!(response.contains(" uptime="));
+        assert!(response.contains(" sessions="));
+
+        relay.abort();
+        Ok(())
+    }
 
     #[tokio::test]
     async fn shared_relay_forwards_tcp_through_client_tunnel() -> Result<()> {

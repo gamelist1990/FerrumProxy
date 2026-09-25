@@ -432,7 +432,9 @@ fn resolve_official_server_locations_blocking(
             .map(|(value, _)| value.to_string())
             .unwrap_or_else(|| manager_address.clone());
 
-        let manager_status = fetch_manager_status(&manager_address, &relay_address).ok();
+        let manager_status = fetch_manager_status(&manager_address, &relay_address)
+            .or_else(|_| fetch_relay_host_metrics(&relay_address))
+            .ok();
         let mut region = String::new();
         let mut country_code = String::new();
         let mut latitude = None;
@@ -738,6 +740,42 @@ fn fetch_manager_status(
             .location
             .as_ref()
             .and_then(|location| location.longitude),
+    })
+}
+
+fn fetch_relay_host_metrics(relay_address: &str) -> Result<RelayStatusSample, String> {
+    let response = send_relay_command(relay_address, "HOST_METRICS\n")?;
+    let line = response.trim();
+    let Some(fields) = line.strip_prefix("HOST_METRICS ") else {
+        return Err(format!("unexpected relay host metrics response: {line}"));
+    };
+    let values: HashMap<&str, &str> = fields
+        .split_whitespace()
+        .filter_map(|field| field.split_once('='))
+        .collect();
+    let parse_f64 = |key: &str| values.get(key).and_then(|value| value.parse().ok());
+    let parse_u64 = |key: &str| values.get(key).and_then(|value| value.parse().ok());
+
+    Ok(RelayStatusSample {
+        ping_ms: None,
+        load_rate: parse_f64("load_percent").map(|value| value / 100.0),
+        load_percent: parse_f64("load_percent"),
+        host_cpu_percent: parse_f64("cpu"),
+        host_memory_percent: parse_f64("memory"),
+        host_cpu_cores: None,
+        host_load_average1m: parse_f64("load1"),
+        host_load_average5m: parse_f64("load5"),
+        host_load_average15m: parse_f64("load15"),
+        host_memory_total_bytes: parse_u64("mem_total"),
+        host_memory_used_bytes: parse_u64("mem_used"),
+        host_memory_free_bytes: parse_u64("mem_free"),
+        host_uptime_seconds: parse_u64("uptime"),
+        active_sessions: parse_u64("sessions"),
+        max_sessions: None,
+        region: None,
+        country_code: None,
+        latitude: None,
+        longitude: None,
     })
 }
 
