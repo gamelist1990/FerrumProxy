@@ -29,10 +29,13 @@ jobs:
         include:
           - platform: linux-x64
             os: ubuntu-latest
+            cli_name: ferrumproxy-client-cli-linux-x64
           - platform: windows-x64
             os: windows-latest
+            cli_name: ferrumproxy-client-cli-windows-x64.exe
           - platform: macos-arm64
             os: macos-14
+            cli_name: ferrumproxy-client-cli-macos-arm64
 
     steps:
       - name: Check out repository
@@ -75,6 +78,17 @@ jobs:
         working-directory: FerrumClient/frontend
         run: bun install --frozen-lockfile
 
+      - name: Validate CLI
+        working-directory: FerrumClient
+        run: |
+          bun run typecheck
+          bun test
+          bun run cli -- --help
+
+      - name: Build standalone CLI
+        working-directory: FerrumClient
+        run: bun build src/clientCli.ts --compile --outfile "dist/${{ matrix.cli_name }}"
+
       - name: Build Tauri client
         working-directory: FerrumClient
         run: bun run tauri:build -- --verbose
@@ -85,8 +99,9 @@ jobs:
           set -euo pipefail
           mkdir -p "FerrumClient/src-tauri/target/client-artifacts/${{ matrix.platform }}"
           find FerrumClient/src-tauri/target/release/bundle -type f \
-            \( -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.app.tar.gz" \) \
+            \( -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" \) \
             -exec cp {} "FerrumClient/src-tauri/target/client-artifacts/${{ matrix.platform }}/" \;
+          cp "FerrumClient/dist/${{ matrix.cli_name }}" "FerrumClient/src-tauri/target/client-artifacts/${{ matrix.platform }}/"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -115,6 +130,12 @@ jobs:
 
       - name: Generate version.json
         run: node repo/scripts/gen-version-json.mjs client FerrumProxyClient release-assets
+
+      - name: Remove legacy macOS app archive
+        working-directory: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete-asset FerrumProxyClient "FerrumProxy.Client.app.tar.gz" --yes || true
 
       - name: Publish fixed FerrumProxyClient release
         uses: softprops/action-gh-release@v2
