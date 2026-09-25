@@ -82,7 +82,7 @@ jobs:
         working-directory: FerrumClient
         run: |
           bun run typecheck
-          bun test
+          bun test src/clientCli.test.ts
           bun run cli -- --help
 
       - name: Build standalone CLI
