@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "cli": "bun src/clientCli.ts",
+    "cli:build": "bun build src/clientCli.ts --compile --outfile dist/ferrumproxy-client-cli",
+    "typecheck": "tsc --noEmit",
     "test": "bun test",
     "build:frontend": "cd frontend && bun run build",
     "dev:frontend": "cd frontend && bun run dev",
