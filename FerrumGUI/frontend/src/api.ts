@@ -108,7 +108,33 @@ export interface PlayerIPEntry {
     ip: string;
     protocol: string;
     lastSeen: number;
+    connections?: number;
   }>;
+}
+
+export interface PerformanceGeoLocation {
+  ip: string;
+  country?: string;
+  countryCode?: string;
+  region?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  connections?: number;
+}
+
+export interface PerformanceIpAnalytics {
+  enabled: boolean;
+  totalRecordedConnections: number;
+  uniqueIps: number;
+  topIps: Array<{
+    ip: string;
+    connections: number;
+    players: number;
+    lastSeen: number;
+    location?: PerformanceGeoLocation;
+  }>;
+  locations: PerformanceGeoLocation[];
 }
 
 export interface ProtocolPerformanceMetrics {
@@ -132,6 +158,8 @@ export interface PerformanceMetrics {
   udp: ProtocolPerformanceMetrics;
   restApiEnabled: boolean;
   sampledAt: string;
+  persisted?: boolean;
+  ipAnalytics?: PerformanceIpAnalytics;
 }
 
 export interface SharedServiceLimits {
@@ -362,6 +390,16 @@ export async function fetchPerformance(id: string): Promise<PerformanceMetrics> 
     throw new Error(error.error || 'Failed to fetch performance metrics');
   }
   return res.json();
+}
+
+export async function clearPerformanceCache(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/instances/${id}/performance-cache`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ error: 'Failed to clear performance cache' }));
+    throw new Error(error.error || 'Failed to clear performance cache');
+  }
 }
 
 export async function updateInstance(id: string, version: string, forceReinstall = false): Promise<void> {

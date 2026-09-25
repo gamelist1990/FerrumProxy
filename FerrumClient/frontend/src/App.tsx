@@ -386,7 +386,7 @@ function App() {
       let loadedLocal = false;
       try {
         const localText = await invoke<string>("load_official_servers");
-        const localServers = parseOfficialServers(localText);
+        const localServers = parseOfficialServers(localText).filter((server) => server.id !== "official-server-oregon-1");
         if (localServers.length) {
           loadedLocal = true;
           officialServersRef.current = localServers;
@@ -403,7 +403,7 @@ function App() {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
-        const remoteServers = parseOfficialServers(await response.text());
+        const remoteServers = parseOfficialServers(await response.text()).filter((server) => server.id !== "official-server-oregon-1");
         if (remoteServers.length) {
           officialServersRef.current = remoteServers;
           setOfficialServers(remoteServers);
@@ -454,7 +454,7 @@ function App() {
   }, [text.failedProbe]);
 
   const refreshOfficialServerLocations = useCallback(() => {
-    if (!mapFeatureEnabled || !officialServers.length) {
+    if (!officialServers.length) {
       setOfficialServerLocations({});
       setMapError(null);
       setMapLoading(false);
@@ -483,7 +483,7 @@ function App() {
         setMapError(errorMessage(error, text.mapUnavailable));
       })
       .finally(() => setMapLoading(false));
-  }, [mapFeatureEnabled, officialServers, text.mapUnavailable]);
+  }, [officialServers, text.mapUnavailable]);
 
   useEffect(() => {
     if (!officialServers.length) {
@@ -496,13 +496,10 @@ function App() {
   }, [mapSelectedServerId, officialServers]);
 
   useEffect(() => {
-    if (!mapFeatureEnabled) {
-      setMapLoading(false);
-      setMapError(null);
-      return;
-    }
     refreshOfficialServerLocations();
-  }, [mapFeatureEnabled, refreshOfficialServerLocations]);
+    const timer = window.setInterval(refreshOfficialServerLocations, 15_000);
+    return () => window.clearInterval(timer);
+  }, [refreshOfficialServerLocations]);
 
   useEffect(() => {
     if (!configReady || (shareSession?.status !== "waiting" && shareSession?.status !== "running")) return;
@@ -1481,6 +1478,7 @@ function parseOfficialServers(text: string): OfficialServer[] {
   if (!Array.isArray(parsed.servers)) return [];
 
   return parsed.servers
+    .filter((server) => server.id !== "official-server-oregon-1")
     .filter((server) => server.enabled !== false && server.id && server.name && server.address)
     .map((server) => ({
       id: String(server.id),

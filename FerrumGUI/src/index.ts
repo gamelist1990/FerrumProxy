@@ -503,9 +503,223 @@ function toPositiveIntegerOrNull(value: unknown): number | null {
 
 type ManagerPerformanceSnapshot = {
   total_active_sessions?: number;
+  total_sessions?: number;
+  total_bytes?: number;
+  uptime_seconds?: number;
   tcp?: { active_sessions?: number };
   udp?: { active_sessions?: number };
 };
+
+type ProtocolPerformanceSnapshot = {
+  activeSessions: number;
+  totalSessions: number;
+  bytesClientToTarget: number;
+  bytesTargetToClient: number;
+  totalBytes: number;
+};
+
+type PerformanceGeoLocation = {
+  ip: string;
+  country?: string;
+  countryCode?: string;
+  region?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  resolvedAt: string;
+};
+
+type PerformanceCache = {
+  version: 1;
+  processStartedAt?: string;
+  lastRaw?: {
+    totalSessions: number;
+    totalBytes: number;
+    tcp: ProtocolPerformanceSnapshot;
+    udp: ProtocolPerformanceSnapshot;
+  };
+  accumulated: {
+    totalSessions: number;
+    totalBytes: number;
+    tcp: Omit<ProtocolPerformanceSnapshot, 'activeSessions'>;
+    udp: Omit<ProtocolPerformanceSnapshot, 'activeSessions'>;
+  };
+  geo: Record<string, PerformanceGeoLocation>;
+  updatedAt: string;
+};
+
+type PlayerIpRecord = {
+  username?: string;
+  ips?: Array<{
+    ip?: string;
+    lastSeen?: number;
+    connections?: number;
+  }>;
+};
+
+const emptyAccumulatedProtocol = () => ({
+  totalSessions: 0,
+  bytesClientToTarget: 0,
+  bytesTargetToClient: 0,
+  totalBytes: 0,
+});
+
+function performanceCachePath(instance: FerrumProxyInstance): string {
+  return path.join(instance.dataDir, 'performance-cache.json');
+}
+
+async function readPerformanceCache(instance: FerrumProxyInstance): Promise<PerformanceCache> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(performanceCachePath(instance), 'utf-8')) as PerformanceCache;
+    if (parsed?.version === 1 && parsed.accumulated) return parsed;
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      console.warn(`Failed to read performance cache for ${instance.id}:`, error);
+    }
+  }
+  return {
+    version: 1,
+    accumulated: {
+      totalSessions: 0,
+      totalBytes: 0,
+      tcp: emptyAccumulatedProtocol(),
+      udp: emptyAccumulatedProtocol(),
+    },
+    geo: {},
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
+async function writePerformanceCache(instance: FerrumProxyInstance, cache: PerformanceCache) {
+  await fs.mkdir(instance.dataDir, { recursive: true });
+  const cachePath = performanceCachePath(instance);
+  const temporaryPath = `${cachePath}.tmp`;
+  await fs.writeFile(temporaryPath, JSON.stringify(cache, null, 2), 'utf-8');
+  await fs.rename(temporaryPath, cachePath);
+}
+
+function normalizeProtocolMetrics(value: unknown): ProtocolPerformanceSnapshot {
+  const metrics = (value || {}) as Record<string, unknown>;
+  const number = (key: string) => Math.max(0, Number(metrics[key]) || 0);
+  return {
+    activeSessions: number('activeSessions'),
+    totalSessions: number('totalSessions'),
+    bytesClientToTarget: number('bytesClientToTarget'),
+    bytesTargetToClient: number('bytesTargetToClient'),
+    totalBytes: number('totalBytes'),
+  };
+}
+
+function addProtocolTotals(
+  accumulated: Omit<ProtocolPerformanceSnapshot, 'activeSessions'>,
+  raw: ProtocolPerformanceSnapshot,
+  previous?: ProtocolPerformanceSnapshot
+) {
+  const delta = (current: number, prior: number | undefined) =>
+    previous && current >= (prior || 0) ? current - (prior || 0) : current;
+  accumulated.totalSessions += delta(raw.totalSessions, previous?.totalSessions);
+  accumulated.bytesClientToTarget += delta(raw.bytesClientToTarget, previous?.bytesClientToTarget);
+  accumulated.bytesTargetToClient += delta(raw.bytesTargetToClient, previous?.bytesTargetToClient);
+  accumulated.totalBytes += delta(raw.totalBytes, previous?.totalBytes);
+}
+
+function isPublicIp(ip: string): boolean {
+  const normalized = ip.trim().replace(/^::ffff:/, '');
+  if (!normalized || normalized === '::1' || normalized === 'localhost') return false;
+  if (/^(10\.|127\.|169\.254\.|192\.168\.)/.test(normalized)) return false;
+  const match = normalized.match(/^172\.(\d+)\./);
+  return !(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
+}
+
+async function resolveIpLocation(ip: string): Promise<PerformanceGeoLocation | null> {
+  if (!isPublicIp(ip)) return null;
+  try {
+    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as Record<string, unknown>;
+    if (data.success === false) return null;
+    const latitude = Number(data.latitude);
+    const longitude = Number(data.longitude);
+    return {
+      ip,
+      country: typeof data.country === 'string' ? data.country : undefined,
+      countryCode: typeof data.country_code === 'string' ? data.country_code : undefined,
+      region: typeof data.region === 'string' ? data.region : undefined,
+      city: typeof data.city === 'string' ? data.city : undefined,
+      latitude: Number.isFinite(latitude) ? latitude : undefined,
+      longitude: Number.isFinite(longitude) ? longitude : undefined,
+      resolvedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readPlayerIpRecords(instance: FerrumProxyInstance): Promise<PlayerIpRecord[]> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(instance.dataDir, 'playerIP.json'), 'utf-8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function buildIpAnalytics(instance: FerrumProxyInstance, cache: PerformanceCache, enabled: boolean) {
+  if (!enabled) {
+    return { enabled: false, totalRecordedConnections: 0, uniqueIps: 0, topIps: [], locations: [] };
+  }
+  const records = await readPlayerIpRecords(instance);
+  const byIp = new Map<string, { ip: string; connections: number; players: Set<string>; lastSeen: number }>();
+  for (const record of records) {
+    for (const entry of record.ips || []) {
+      if (!entry.ip) continue;
+      const current = byIp.get(entry.ip) || {
+        ip: entry.ip,
+        connections: 0,
+        players: new Set<string>(),
+        lastSeen: 0,
+      };
+      current.connections += Math.max(1, Number(entry.connections) || 1);
+      if (record.username) current.players.add(record.username);
+      current.lastSeen = Math.max(current.lastSeen, Number(entry.lastSeen) || 0);
+      byIp.set(entry.ip, current);
+    }
+  }
+
+  const unresolved = Array.from(byIp.keys()).filter((ip) => !cache.geo[ip]).slice(0, 3);
+  const resolved = await Promise.all(
+    unresolved.map(async (ip) => ({ ip, location: await resolveIpLocation(ip) }))
+  );
+  for (const result of resolved) {
+    cache.geo[result.ip] = result.location || {
+      ip: result.ip,
+      resolvedAt: new Date().toISOString(),
+    };
+  }
+
+  const topIps = Array.from(byIp.values())
+    .sort((left, right) => right.connections - left.connections || right.lastSeen - left.lastSeen)
+    .slice(0, 10)
+    .map((entry) => ({
+      ip: entry.ip,
+      connections: entry.connections,
+      players: entry.players.size,
+      lastSeen: entry.lastSeen,
+      location: cache.geo[entry.ip],
+    }));
+  const locations = Array.from(byIp.values())
+    .map((entry) => ({ ...cache.geo[entry.ip], connections: entry.connections }))
+    .filter((entry) => !!entry.ip);
+  return {
+    enabled: true,
+    totalRecordedConnections: Array.from(byIp.values()).reduce((sum, entry) => sum + entry.connections, 0),
+    uniqueIps: byIp.size,
+    topIps,
+    locations,
+  };
+}
 
 type HostLoadSnapshot = {
   loadRate: number;
@@ -2145,12 +2359,38 @@ app.get('/api/instances/:id/performance', async (req, res) => {
     }
 
     const performance = await response.json() as Record<string, unknown>;
+    const processStartedAt = processManager.getStartedAt(instanceId)?.toISOString() || instance.lastStarted;
+    const cache = await readPerformanceCache(instance);
+    const tcp = normalizeProtocolMetrics(performance.tcp);
+    const udp = normalizeProtocolMetrics(performance.udp);
+    const totalSessions = Math.max(0, Number(performance.totalSessions) || 0);
+    const totalBytes = Math.max(0, Number(performance.totalBytes) || 0);
+    const previous = processStartedAt && cache.processStartedAt === processStartedAt ? cache.lastRaw : undefined;
+    addProtocolTotals(cache.accumulated.tcp, tcp, previous?.tcp);
+    addProtocolTotals(cache.accumulated.udp, udp, previous?.udp);
+    cache.accumulated.totalSessions += previous && totalSessions >= previous.totalSessions
+      ? totalSessions - previous.totalSessions
+      : totalSessions;
+    cache.accumulated.totalBytes += previous && totalBytes >= previous.totalBytes
+      ? totalBytes - previous.totalBytes
+      : totalBytes;
+    cache.processStartedAt = processStartedAt;
+    cache.lastRaw = { totalSessions, totalBytes, tcp, udp };
+    cache.updatedAt = new Date().toISOString();
+    const ipAnalytics = await buildIpAnalytics(instance, cache, !!config.savePlayerIP);
+    await writePerformanceCache(instance, cache);
     res.json({
       ...performance,
+      totalSessions: cache.accumulated.totalSessions,
+      totalBytes: cache.accumulated.totalBytes,
+      tcp: { ...tcp, ...cache.accumulated.tcp },
+      udp: { ...udp, ...cache.accumulated.udp },
+      ipAnalytics,
+      persisted: true,
       available: true,
       instanceId,
       pid: processManager.getPid(instanceId),
-      processStartedAt: processManager.getStartedAt(instanceId)?.toISOString() || instance.lastStarted,
+      processStartedAt,
       processUptimeSeconds:
         processManager.getUptimeSeconds(instanceId) ??
         (instance.lastStarted
@@ -2161,6 +2401,50 @@ app.get('/api/instances/:id/performance', async (req, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/instances/:id/performance-cache', async (req, res) => {
+  try {
+    const instance = serviceManager.getById(req.params.id);
+    if (!instance) return res.status(404).json({ error: 'Instance not found' });
+    const config = await configManager.read(instance.configPath);
+    const cache = await readPerformanceCache(instance);
+    cache.accumulated = {
+      totalSessions: 0,
+      totalBytes: 0,
+      tcp: emptyAccumulatedProtocol(),
+      udp: emptyAccumulatedProtocol(),
+    };
+    cache.geo = {};
+    cache.updatedAt = new Date().toISOString();
+    if (config.useRestApi && processManager.isRunning(instance.id)) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${config.endpoint || 6000}/api/performance`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        if (response.ok) {
+          const current = await response.json() as Record<string, unknown>;
+          cache.processStartedAt = processManager.getStartedAt(instance.id)?.toISOString() || instance.lastStarted;
+          cache.lastRaw = {
+            totalSessions: Math.max(0, Number(current.totalSessions) || 0),
+            totalBytes: Math.max(0, Number(current.totalBytes) || 0),
+            tcp: normalizeProtocolMetrics(current.tcp),
+            udp: normalizeProtocolMetrics(current.udp),
+          };
+        }
+      } catch {
+        cache.processStartedAt = undefined;
+        cache.lastRaw = undefined;
+      }
+    } else {
+      cache.processStartedAt = undefined;
+      cache.lastRaw = undefined;
+    }
+    await writePerformanceCache(instance, cache);
+    return res.json({ success: true });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 });
 

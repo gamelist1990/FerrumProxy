@@ -28,6 +28,7 @@ import {
   setupAuth,
   fetchPlayerIPs,
   fetchPerformance,
+  clearPerformanceCache,
   updateInstance,
   updateInstanceMetadata,
   fetchSystemInfo,
@@ -42,6 +43,7 @@ import { PlayerIPList } from "./components/PlayerIPList";
 import { UpdateProgress } from "./components/UpdateProgress";
 import { InstanceSettingsModal } from "./components/InstanceSettingsModal";
 import { SharedRelayDashboard } from "./components/SharedRelayDashboard";
+import { PerformanceMonitor } from "./components/PerformanceMonitor";
 import { formatLogMessage } from "./utils/ansi";
 import { DEFAULT_FERRUMPROXY_VERSION } from "./utils/version";
 import type { WebSocketEventMap } from "./api";
@@ -55,6 +57,7 @@ function App() {
   const [playerIPs, setPlayerIPs] = useState<PlayerIPEntry[]>([]);
   const [performance, setPerformance] = useState<PerformanceMetrics | null>(null);
   const [performanceError, setPerformanceError] = useState<string | null>(null);
+  const [clearingPerformance, setClearingPerformance] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [initializingInstances, setInitializingInstances] = useState<
     Set<string>
@@ -733,6 +736,19 @@ ${t("guiUpdateManualRestart")}`
     URL.revokeObjectURL(url);
   };
 
+  const handleClearPerformanceCache = async () => {
+    if (!selectedInstanceData || !window.confirm(t('clearPerformanceConfirm'))) return;
+    try {
+      setClearingPerformance(true);
+      await clearPerformanceCache(selectedInstanceData.id);
+      await loadPerformance(selectedInstanceData.id);
+    } catch (error) {
+      alert((error as Error).message);
+    } finally {
+      setClearingPerformance(false);
+    }
+  };
+
   const getRuntimeState = (
     instance: FerrumProxyInstance
   ): "initializing" | "running" | "stopped" => {
@@ -1092,82 +1108,15 @@ ${t("guiUpdateManualRestart")}`
                 )}
 
                 {!isSharedRelayMode && (
-                <section className="surface-card performance-card">
-                  <div className="section-head">
-                    <h3>{t("performanceMonitor") || "Performance Monitor"}</h3>
-                    <button
-                      type="button"
-                      className="btn tertiary small"
-                      onClick={exportPerformanceJson}
-                      disabled={!performance}
-                    >
-                      {t("exportJson") || "Export JSON"}
-                    </button>
-                  </div>
-
-                  {performance ? (
-                    <>
-                      <div className="performance-grid">
-                        <article className="metric-card">
-                          <span>{t("uptime") || "Uptime"}</span>
-                          <strong>{formatDuration(performance.uptimeSeconds)}</strong>
-                        </article>
-                        <article className="metric-card">
-                          <span>{t("activeSessions") || "Active Sessions"}</span>
-                          <strong>{performance.totalActiveSessions}</strong>
-                        </article>
-                        <article className="metric-card">
-                          <span>{t("totalSessions") || "Total Sessions"}</span>
-                          <strong>{performance.totalSessions}</strong>
-                        </article>
-                        <article className="metric-card">
-                          <span>{t("totalTraffic") || "Total Traffic"}</span>
-                          <strong>{formatBytes(performance.totalBytes)}</strong>
-                        </article>
-                      </div>
-
-                      <div className="protocol-grid">
-                        {(["tcp", "udp"] as const).map((protocol) => {
-                          const metrics = performance[protocol];
-                          return (
-                            <article key={protocol} className="protocol-card">
-                              <h4>{protocol.toUpperCase()}</h4>
-                              <dl>
-                                <div>
-                                  <dt>{t("activeSessions") || "Active Sessions"}</dt>
-                                  <dd>{metrics.activeSessions}</dd>
-                                </div>
-                                <div>
-                                  <dt>{t("totalSessions") || "Total Sessions"}</dt>
-                                  <dd>{metrics.totalSessions}</dd>
-                                </div>
-                                <div>
-                                  <dt>{t("clientToTarget") || "Client -> Target"}</dt>
-                                  <dd>{formatBytes(metrics.bytesClientToTarget)}</dd>
-                                </div>
-                                <div>
-                                  <dt>{t("targetToClient") || "Target -> Client"}</dt>
-                                  <dd>{formatBytes(metrics.bytesTargetToClient)}</dd>
-                                </div>
-                              </dl>
-                            </article>
-                          );
-                        })}
-                      </div>
-
-                      <p className="performance-note">
-                        {t("performanceSampledAt") || "Sampled at"}{" "}
-                        {new Date(performance.sampledAt).toLocaleTimeString()}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="performance-note">
-                      {performanceError ||
-                        t("performanceUnavailable") ||
-                        "Performance metrics are unavailable. Enable useRestApi and start the instance."}
-                    </p>
-                  )}
-                </section>
+                <PerformanceMonitor
+                  performance={performance}
+                  error={performanceError}
+                  clearing={clearingPerformance}
+                  onExport={exportPerformanceJson}
+                  onClear={handleClearPerformanceCache}
+                  formatBytes={formatBytes}
+                  formatDuration={formatDuration}
+                />
                 )}
 
                 <InstanceSettingsModal

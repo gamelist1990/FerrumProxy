@@ -337,6 +337,12 @@ pub struct PlayerIpInfo {
     pub protocol: String,
     #[serde(rename = "lastSeen")]
     pub last_seen: i64,
+    #[serde(default = "default_connection_count")]
+    pub connections: u64,
+}
+
+fn default_connection_count() -> u64 {
+    1
 }
 
 #[derive(Clone)]
@@ -363,17 +369,28 @@ impl PlayerIpMapper {
         }
 
         let mut guard = self.records.lock().await;
-        guard.insert(
-            username.to_string(),
-            PlayerIpRecord {
+        let record = guard
+            .entry(username.to_string())
+            .or_insert_with(|| PlayerIpRecord {
                 username: username.to_string(),
-                ips: vec![PlayerIpInfo {
-                    ip,
-                    protocol: protocol.to_string(),
-                    last_seen: now_ms(),
-                }],
-            },
-        );
+                ips: Vec::new(),
+            });
+        let now = now_ms();
+        if let Some(existing) = record
+            .ips
+            .iter_mut()
+            .find(|entry| entry.ip == ip && entry.protocol == protocol)
+        {
+            existing.last_seen = now;
+            existing.connections = existing.connections.saturating_add(1);
+        } else {
+            record.ips.push(PlayerIpInfo {
+                ip,
+                protocol: protocol.to_string(),
+                last_seen: now,
+                connections: 1,
+            });
+        }
         drop(guard);
         if let Err(err) = self.save().await {
             warn!("failed to save player IPs: {err:#}");

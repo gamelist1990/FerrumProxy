@@ -7,13 +7,6 @@
       "address": "150.230.3.155:7000",
       "enabled": true,
       "description": "大阪サーバーです。日本の人にオススメ！"
-    },
-    {
-      "id": "official-server-oregon-1",
-      "name": "Official Oregon Server1",
-      "address": "136.118.50.13:7000",
-      "enabled": true,
-      "description": "Official overseas server located in Oregon, USA."
     }
   ]
 }

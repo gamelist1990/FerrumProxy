@@ -1307,6 +1307,7 @@ fn start_udp_tunnel(
     stats: Arc<SessionStats>,
 ) {
     thread::spawn(move || {
+        let mut disconnected_at: Option<Instant> = None;
         while !stop.load(Ordering::Relaxed) {
             match run_udp_tunnel(
                 &relay_address,
@@ -1317,10 +1318,17 @@ fn start_udp_tunnel(
                 &stop,
                 &stats,
             ) {
-                Ok(()) => {}
-                Err(_) => thread::sleep(Duration::from_millis(500)),
+                Ok(()) => disconnected_at = None,
+                Err(_) => {
+                    let disconnected = disconnected_at.get_or_insert_with(Instant::now);
+                    if disconnected.elapsed() >= Duration::from_secs(5) {
+                        stats.udp_tunnel.store(false, Ordering::Relaxed);
+                    }
+                    thread::sleep(Duration::from_millis(500));
+                }
             }
         }
+        stats.udp_tunnel.store(false, Ordering::Relaxed);
     });
 }
 
@@ -1333,7 +1341,15 @@ fn run_udp_tunnel(
     stop: &Arc<AtomicBool>,
     stats: &Arc<SessionStats>,
 ) -> Result<(), String> {
+    let local_target = format!("{local_host}:{local_port}");
+    let local_target_addr = resolve_single_addr(&local_target)?;
     let mut tunnel = connect_tcp_endpoint(relay_address, Duration::from_secs(5))?;
+    tunnel
+        .set_read_timeout(None)
+        .map_err(|err| format!("failed to configure UDP tunnel reader: {err}"))?;
+    tunnel
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|err| format!("failed to configure UDP tunnel writer: {err}"))?;
     let command = if haproxy {
         format!("UDP_TUNNEL {public_port} HAPROXY\n")
     } else {
@@ -1351,15 +1367,27 @@ fn run_udp_tunnel(
         return Err("relay rejected UDP tunnel readiness".to_string());
     }
     stats.udp_tunnel.store(true, Ordering::Relaxed);
-
-    let local_target = format!("{local_host}:{local_port}");
-    let local_target_addr = resolve_single_addr(&local_target)?;
     let tunnel_alive = Arc::new(AtomicBool::new(true));
     let _tunnel_alive_guard = FlagOnDrop(Arc::clone(&tunnel_alive));
     let tunnel_writer =
         Arc::new(Mutex::new(tunnel.try_clone().map_err(|err| {
             format!("failed to clone UDP tunnel writer: {err}")
         })?));
+    let stop_tunnel = Arc::clone(stop);
+    let shutdown_tunnel = tunnel.try_clone().map_err(|err| {
+        format!("failed to clone UDP tunnel shutdown handle: {err}")
+    })?;
+    let tunnel_alive_for_shutdown = Arc::clone(&tunnel_alive);
+    thread::spawn(move || {
+        while !stop_tunnel.load(Ordering::Relaxed)
+            && tunnel_alive_for_shutdown.load(Ordering::Relaxed)
+        {
+            thread::sleep(Duration::from_millis(100));
+        }
+        if stop_tunnel.load(Ordering::Relaxed) {
+            let _ = shutdown_tunnel.shutdown(Shutdown::Both);
+        }
+    });
     let mut peers = HashMap::<SocketAddr, Arc<UdpSocket>>::new();
 
     eprintln!("[UDP] Tunnel started: forwarding to {}", local_target);
@@ -1480,7 +1508,6 @@ fn run_udp_tunnel(
 
         Ok(())
     })();
-    stats.udp_tunnel.store(false, Ordering::Relaxed);
     result
 }
 
