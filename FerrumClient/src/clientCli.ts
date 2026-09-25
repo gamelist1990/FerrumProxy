@@ -1,53 +1,75 @@
 import { RelayShareClient, RelayShareStatus } from './relayShareClient';
 
-type ProtocolMode = 'tcp' | 'udp' | 'both';
+export type ProtocolMode = 'tcp' | 'udp' | 'both';
 
-interface ClientCliOptions {
-  relay?: string;
+export interface ClientCliOptions {
+  relay: string;
   token?: string;
   protocol: ProtocolMode;
-  tcpPort?: number;
-  udpPort?: number;
-  localHost?: string;
+  tcpPort: number;
+  udpPort: number;
+  localHost: string;
   haproxy: boolean;
+  showStatus: boolean;
+  help: boolean;
 }
 
-function parseArgs(argv: string[]): ClientCliOptions {
+export function parseArgs(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env
+): ClientCliOptions {
   const options: ClientCliOptions = {
+    relay: env.FERRUMPROXY_RELAY?.trim() || '127.0.0.1:7000',
+    token: env.FERRUMPROXY_TOKEN?.trim() || undefined,
     protocol: 'tcp',
+    tcpPort: 25565,
+    udpPort: 25565,
+    localHost: '127.0.0.1',
     haproxy: false,
+    showStatus: true,
+    help: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    const next = () => argv[++index];
+    const next = (option: string): string => {
+      const value = argv[index + 1];
+      if (value === undefined) {
+        throw new Error(`${option} requires a value`);
+      }
+      index += 1;
+      return value;
+    };
 
     switch (arg) {
       case '--relay':
-        options.relay = next();
+        options.relay = next(arg);
         break;
       case '--token':
-        options.token = next();
+        options.token = next(arg);
         break;
       case '--protocol':
-        options.protocol = next() as ProtocolMode;
+        options.protocol = next(arg) as ProtocolMode;
         break;
       case '--tcp-port':
-        options.tcpPort = Number(next());
+        options.tcpPort = parsePort(next(arg), arg);
         break;
       case '--udp-port':
-        options.udpPort = Number(next());
+        options.udpPort = parsePort(next(arg), arg);
         break;
       case '--local-host':
-        options.localHost = next();
+        options.localHost = next(arg);
         break;
       case '--haproxy':
         options.haproxy = true;
         break;
+      case '--no-status':
+        options.showStatus = false;
+        break;
       case '--help':
       case '-h':
-        printHelp();
-        process.exit(0);
+        options.help = true;
+        break;
       default:
         throw new Error(`Unknown option: ${arg}`);
     }
@@ -56,93 +78,155 @@ function parseArgs(argv: string[]): ClientCliOptions {
   return options;
 }
 
-function validate(options: ClientCliOptions): void {
+export function validateOptions(options: ClientCliOptions): void {
   if (!['tcp', 'udp', 'both'].includes(options.protocol)) {
     throw new Error('--protocol must be tcp, udp, or both');
   }
-  if (!options.relay?.trim()) {
-    throw new Error('--relay <ip:port> is required');
+  if (!options.relay.trim()) {
+    throw new Error('--relay <host:port> must not be empty');
+  }
+  if (!options.localHost.trim()) {
+    throw new Error('--local-host <host> must not be empty');
   }
   if ((options.protocol === 'tcp' || options.protocol === 'both') && !isPort(options.tcpPort)) {
-    throw new Error('--tcp-port <port> is required for TCP sharing');
+    throw new Error('--tcp-port must be between 1 and 65535');
   }
   if ((options.protocol === 'udp' || options.protocol === 'both') && !isPort(options.udpPort)) {
-    throw new Error('--udp-port <port> is required for UDP sharing');
+    throw new Error('--udp-port must be between 1 and 65535');
   }
+}
+
+function parsePort(value: string, option: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${option} must be an integer between 1 and 65535`);
+  }
+  const port = Number(value);
+  if (!isPort(port)) {
+    throw new Error(`${option} must be between 1 and 65535`);
+  }
+  return port;
 }
 
 function isPort(value: number | undefined): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
 }
 
-function printHelp(): void {
-  console.log(`FerrumProxy Client
+export function printHelp(): void {
+  console.log(`FerrumProxy Client CLI
 
 Usage:
-  bun run src/clientCli.ts --protocol <tcp|udp|both> [options]
+  ferrumproxy-client-cli [options]
+  bun run cli -- [options]
 
 Options:
-  --relay <ip:port>     FerrumProxy relay control endpoint (optional)
-  --token <token>       Relay authentication token (optional)
+  --relay <host:port>   FerrumProxy relay control endpoint
+                        (default: FERRUMPROXY_RELAY or 127.0.0.1:7000)
+  --token <token>       Relay authentication token
+                        (default: FERRUMPROXY_TOKEN when set)
   --protocol <mode>     tcp, udp, or both (default: tcp)
   --local-host <host>   Local service host (default: 127.0.0.1)
-  --tcp-port <port>     Local TCP service port
-  --udp-port <port>     Local UDP service port
+  --tcp-port <port>     Local TCP service port (default: 25565)
+  --udp-port <port>     Local UDP service port (default: 25565)
   --haproxy             Use HAProxy PROXY protocol v2
+  --no-status           Disable the live terminal status line
+  -h, --help            Show this help
 `);
 }
 
-async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
-  validate(options);
+export async function main(argv = process.argv.slice(2)): Promise<void> {
+  const options = parseArgs(argv);
+  if (options.help) {
+    printHelp();
+    return;
+  }
+  validateOptions(options);
 
-  console.log('FerrumProxy Client starting...');
+  console.log('FerrumProxy Client CLI starting...');
+  console.log(`  Relay: ${options.relay}`);
   console.log(`  Protocol: ${options.protocol}`);
-  if (options.tcpPort) console.log(`  TCP Port: ${options.tcpPort}`);
-  if (options.udpPort) console.log(`  UDP Port: ${options.udpPort}`);
-  if (options.haproxy) console.log(`  HAProxy: enabled`);
+  console.log(`  Local: ${options.localHost}`);
+  if (options.protocol === 'tcp' || options.protocol === 'both') {
+    console.log(`  TCP Port: ${options.tcpPort}`);
+  }
+  if (options.protocol === 'udp' || options.protocol === 'both') {
+    console.log(`  UDP Port: ${options.udpPort}`);
+  }
+  if (options.haproxy) {
+    console.log('  HAProxy: enabled');
+  }
 
   const client = new RelayShareClient({
-    relayAddress: options.relay!,
+    relayAddress: options.relay,
     token: options.token,
     protocol: options.protocol,
-    localHost: options.localHost || '127.0.0.1',
+    localHost: options.localHost,
     tcpLocalPort: options.tcpPort,
     udpLocalPort: options.udpPort,
+    haproxy: options.haproxy,
   });
 
+  const liveStatus = options.showStatus && !!process.stdout.isTTY;
   client.on('status', (status: RelayShareStatus) => {
+    if (!liveStatus) {
+      return;
+    }
     process.stdout.write(
       `\r  TCP tunnels: ${status.tcpTunnels} | ` +
-      `UDP tunnel: ${status.udpTunnel ? 'ready' : 'down'} | ` +
-      `In: ${formatBytes(status.bytesIn)} Out: ${formatBytes(status.bytesOut)}  `
+        `UDP tunnel: ${status.udpTunnel ? 'ready' : 'down'} | ` +
+        `In: ${formatBytes(status.bytesIn)} Out: ${formatBytes(status.bytesOut)}  `
     );
   });
   client.on('log', (message) => {
-    process.stdout.write(`\n${message}\n`);
+    if (liveStatus) {
+      process.stdout.write('\n');
+    }
+    console.log(message);
   });
 
+  let started = false;
   try {
     const endpoint = await client.start();
-    console.log(`\nShared service started successfully!`);
+    started = true;
+    if (liveStatus) {
+      process.stdout.write('\n');
+    }
+    console.log('Shared service started successfully!');
     console.log(`  Public URL: ${endpoint.display}`);
-    console.log(`  Relay: ${options.relay}`);
-    console.log(`  Local: ${options.localHost || '127.0.0.1'}`);
-    console.log(`\nPress Ctrl+C to stop.\n`);
+    console.log('Press Ctrl+C to stop.');
+
+    await waitForShutdownSignal(async () => {
+      console.log('\nShutting down...');
+      await client.stop();
+      console.log('Stopped.');
+    });
   } catch (error) {
-    console.error(`Failed to start shared service: ${(error as Error).message}`);
-    process.exit(1);
+    if (started) {
+      await client.stop().catch(() => undefined);
+    }
+    throw error;
   }
+}
 
-  const shutdown = async () => {
-    console.log('\nShutting down...');
-    await client.stop();
-    console.log('Stopped.');
-    process.exit(0);
-  };
+async function waitForShutdownSignal(shutdown: () => Promise<void>): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let shuttingDown = false;
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+    const handleSignal = () => {
+      if (shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+      void shutdown()
+        .catch((error) => {
+          console.error(`Shutdown failed: ${(error as Error).message}`);
+          process.exitCode = 1;
+        })
+        .finally(resolve);
+    };
+
+    process.once('SIGINT', handleSignal);
+    process.once('SIGTERM', handleSignal);
+  });
 }
 
 function formatBytes(bytes: number): string {
@@ -152,8 +236,9 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  printHelp();
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error(`FerrumProxy Client CLI failed: ${(error as Error).message}`);
+    process.exitCode = 1;
+  });
+}

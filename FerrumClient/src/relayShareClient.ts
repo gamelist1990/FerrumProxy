@@ -11,6 +11,7 @@ export interface RelayShareClientOptions {
   localHost: string;
   tcpLocalPort?: number;
   udpLocalPort?: number;
+  haproxy?: boolean;
 }
 
 export interface RelayPublicEndpoint {
@@ -70,6 +71,7 @@ export class RelayShareClient extends EventEmitter {
 
   async start(): Promise<RelayPublicEndpoint> {
     this.validate();
+    await this.validateRelayApi();
     const endpoint = await this.allocateRelayEndpoint();
     this.startTunnelLoops(endpoint.port);
     this.startHeartbeat();
@@ -105,6 +107,33 @@ export class RelayShareClient extends EventEmitter {
     this.status.tcpTunnels = 0;
     this.status.udpTunnel = false;
     this.emitStatus();
+  }
+
+  private async validateRelayApi(): Promise<void> {
+    const statsResponse = await this.sendRelayCommand('STATS\n', 5000);
+    const stats = statsResponse.trim();
+    if (!stats.startsWith('STAT ')) {
+      throw new Error(
+        `Shared relay API check failed: ${this.options.relayAddress} is reachable, but it did not respond as a FerrumProxy shared relay API. Response: ${stats || '<empty>'}`
+      );
+    }
+
+    const token = this.options.token?.trim();
+    if (!token) {
+      return;
+    }
+
+    const tokenResponse = await this.sendRelayCommand(`TOKEN ${token}\n`, 5000);
+    const tokenResult = tokenResponse.trim();
+    if (tokenResult.startsWith('OK ')) {
+      return;
+    }
+    if (tokenResult.toLowerCase() === 'error invalid token') {
+      throw new Error('Shared relay token check failed: invalid authentication token.');
+    }
+    throw new Error(
+      `Shared relay token check failed: unexpected response from relay: ${tokenResult || '<empty>'}`
+    );
   }
 
   private async allocateRelayEndpoint(): Promise<RelayPublicEndpoint> {
@@ -236,7 +265,10 @@ export class RelayShareClient extends EventEmitter {
   private async openTcpTunnel(publicPort: number): Promise<void> {
     const tunnel = await connectTcp(this.options.relayAddress, 5000);
     this.trackSocket(tunnel);
-    await writeAll(tunnel, `TUNNEL ${publicPort}\n`);
+    await writeAll(
+      tunnel,
+      buildTunnelRegistrationCommand('tcp', publicPort, !!this.options.haproxy)
+    );
     const start = await readExact(tunnel, 6, TCP_TUNNEL_WAIT_TIMEOUT_MS);
     if (start.toString() !== 'START\n') {
       tunnel.destroy();
@@ -284,7 +316,10 @@ export class RelayShareClient extends EventEmitter {
   private async openUdpTunnel(publicPort: number): Promise<void> {
     const tunnel = await connectTcp(this.options.relayAddress, 5000);
     this.trackSocket(tunnel);
-    await writeAll(tunnel, `UDP_TUNNEL ${publicPort}\n`);
+    await writeAll(
+      tunnel,
+      buildTunnelRegistrationCommand('udp', publicPort, !!this.options.haproxy)
+    );
     const ready = await readExact(tunnel, 6);
     if (ready.toString() !== 'READY\n') {
       tunnel.destroy();
@@ -380,6 +415,15 @@ export class RelayShareClient extends EventEmitter {
   private emitStatus(): void {
     this.emit('status', this.getStatus());
   }
+}
+
+export function buildTunnelRegistrationCommand(
+  protocol: 'tcp' | 'udp',
+  publicPort: number,
+  haproxy: boolean
+): string {
+  const command = protocol === 'tcp' ? 'TUNNEL' : 'UDP_TUNNEL';
+  return `${command} ${publicPort}${haproxy ? ' HAPROXY' : ''}\n`;
 }
 
 function isPort(value: number | undefined): value is number {
