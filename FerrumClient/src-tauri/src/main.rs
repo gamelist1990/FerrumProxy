@@ -1412,8 +1412,12 @@ fn run_udp_tunnel(
             let local = match peers.get(&remote_addr) {
                 Some(local) => Arc::clone(local),
                 None => {
-                    let local =
-                        Arc::new(UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?);
+                    let bind_addr = if local_target_addr.is_ipv6() {
+                        "[::]:0"
+                    } else {
+                        "0.0.0.0:0"
+                    };
+                    let local = Arc::new(UdpSocket::bind(bind_addr).map_err(|err| err.to_string())?);
                     local
                         .set_read_timeout(Some(Duration::from_millis(500)))
                         .map_err(|err| err.to_string())?;
