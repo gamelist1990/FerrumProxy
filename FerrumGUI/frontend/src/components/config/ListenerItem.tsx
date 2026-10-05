@@ -298,6 +298,9 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
         />
         {listener.bedrockTransport === 'nethernet' && (
           <div className="space-y-3">
+            <Switch label={t('netherDiagnosticsToggle')} checked={listener.nethernetDiagnostics || false}
+              onChange={(checked) => onChange('nethernetDiagnostics', checked)} />
+            <p className="text-sm text-secondary">{t('netherDiagnosticsHint')}</p>
             <p className="text-sm text-secondary">{t('nethernetTransportHint')}</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Input label={t('nethernetAdvertiseHost')} placeholder="132.145.118.98"

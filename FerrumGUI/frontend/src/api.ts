@@ -31,6 +31,7 @@ export interface ListenerConfig {
   udp?: number;
   haproxy?: boolean;
   bedrockTransport?: 'raknet' | 'nethernet';
+  nethernetDiagnostics?: boolean;
   nethernetAdvertiseHost?: string;
   nethernetAdvertisePort?: number;
   https?: {

@@ -90,6 +90,9 @@ fn raknet_packet_stage(payload: &[u8]) -> Option<usize> {
 }
 
 struct UdpSession {
+    diagnostic_seen: AtomicUsize,
+    diagnostic_sent: AtomicU64,
+    diagnostic_received: AtomicU64,
     socket: Arc<UdpSocket>,
 
     active_target_index: AtomicUsize,
@@ -118,6 +121,18 @@ struct UdpSession {
 }
 
 impl UdpSession {
+    fn diagnose(&self, peer: SocketAddr, backend: SocketAddr, payload: &[u8], response: bool) {
+        let (kind, index) = crate::nethernet_diagnostics::udp_kind(payload);
+        let flag = 1 << (index + if response { 8 } else { 0 });
+        if response {
+            self.diagnostic_received.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.diagnostic_sent.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.diagnostic_seen.fetch_or(flag, Ordering::Relaxed) & flag == 0 {
+            crate::nethernet_diagnostics::Context { client: peer, backend }.emit("udp_packet",serde_json::json!({"kind":kind,"direction":if response {"backend_to_client"} else {"client_to_backend"},"bytes":payload.len(),"upstream":self.socket.local_addr().ok().map(|a|a.to_string())}));
+        }
+    }
     fn touch(&self) {
         let elapsed = self.session_start.elapsed().as_millis() as u64;
         self.last_activity_ms.store(elapsed, Ordering::Relaxed);
@@ -455,6 +470,9 @@ async fn obtain_session(
         active_target_index: AtomicUsize::new(0),
         header_sent: AtomicBool::new(false),
         notified: AtomicBool::new(false),
+        diagnostic_seen: AtomicUsize::new(0),
+        diagnostic_sent: AtomicU64::new(0),
+        diagnostic_received: AtomicU64::new(0),
         established: AtomicBool::new(false),
         established_at_ms: AtomicU64::new(0),
         raknet_stage: AtomicUsize::new(RAKNET_STAGE_NEW),
@@ -619,6 +637,9 @@ fn spawn_backend_recv(
                         break;
                     }
                     runtime.metrics.udp_target_to_client_bytes(out.len());
+                    if rule.nethernet_diagnostics && !rule.uses_raknet_udp() {
+                        session.diagnose(peer, backend_addr, out, true);
+                    }
                     if tracing::enabled!(tracing::Level::DEBUG) {
                         debug!("UDP {backend_addr} -> {peer} {}B", out.len());
                     }
@@ -632,6 +653,19 @@ fn spawn_backend_recv(
                 Err(_) => {
                     let idle_ms = session.ms_since_last_activity();
                     if idle_ms >= idle_budget.as_millis() as u64 {
+                        if rule.nethernet_diagnostics && !rule.uses_raknet_udp() {
+                            let backend = session
+                                .resolved_targets
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .flatten()
+                                .next()
+                                .copied();
+                            if let Some(backend) = backend {
+                                crate::nethernet_diagnostics::Context { client: peer, backend }.emit("udp_idle",serde_json::json!({"sentPackets":session.diagnostic_sent.load(Ordering::Relaxed),"receivedPackets":session.diagnostic_received.load(Ordering::Relaxed),"idleMs":idle_ms}));
+                            }
+                        }
                         debug!(
                             "UDP session idle timeout {peer} ({}ms >= {}ms)",
                             idle_ms,
@@ -841,6 +875,9 @@ async fn send_to_target(
         .store(target_index, Ordering::Relaxed);
     if tracing::enabled!(tracing::Level::DEBUG) {
         debug!("UDP {original_client} -> {target_addr} {bytes_sent}B");
+    }
+    if rule.nethernet_diagnostics && !rule.uses_raknet_udp() {
+        session.diagnose(original_client, target_addr, payload, false);
     }
     Ok(())
 }

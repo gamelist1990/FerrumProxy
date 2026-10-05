@@ -46,6 +46,7 @@ pub async fn relay_answers<R, W>(
     mut writer: W,
     endpoint: (IpAddr, u16),
     metrics: PerformanceMetrics,
+    diagnostics: Option<crate::nethernet_diagnostics::Context>,
 ) -> io::Result<u64>
 where
     R: AsyncRead + Unpin,
@@ -98,6 +99,12 @@ where
             && header(&lines, "content-encoding")
                 .is_some_and(|s| !s.eq_ignore_ascii_case("identity"))
         {
+            if let Some(context) = diagnostics {
+                context.emit(
+                    "rewrite_error",
+                    serde_json::json!({"status":status,"reason":"encoded_sdp"}),
+                );
+            }
             return Err(invalid(
                 "compressed NetherNet SDP is unsupported; disable signaling compression",
             ));
@@ -174,7 +181,18 @@ where
             wire_body = body.clone();
         }
         let frame = if sdp {
-            let rewritten = advertise_candidates(&body, endpoint)?;
+            let rewritten = advertise_candidates(&body, endpoint).map_err(|error| {
+                if let Some(context) = diagnostics {
+                    context.emit(
+                        "rewrite_error",
+                        serde_json::json!({"status":status,"reason":"invalid_sdp_or_endpoint"}),
+                    );
+                }
+                error
+            })?;
+            if let Some(context) = diagnostics {
+                context.emit("signaling_response",serde_json::json!({"status":status,"rewritten":rewritten != body,"before":crate::nethernet_diagnostics::sdp_summary(&body),"after":crate::nethernet_diagnostics::sdp_summary(&rewritten)}));
+            }
             let mut h: Vec<String> = lines
                 .into_iter()
                 .filter(|l| {
@@ -191,6 +209,12 @@ where
             frame.extend_from_slice(&rewritten);
             frame
         } else {
+            if let Some(context) = diagnostics {
+                context.emit(
+                    "signaling_response",
+                    serde_json::json!({"status":status,"rewritten":false,"bytes":body.len()}),
+                );
+            }
             raw.extend_from_slice(&wire_body);
             raw
         };
@@ -308,6 +332,7 @@ mod tests {
                 crate::ddos_guard::DdosGuardSettings::default(),
             )
             .metrics,
+            None,
         ));
         let mut result = Vec::new();
         client.read_to_end(&mut result).await?;

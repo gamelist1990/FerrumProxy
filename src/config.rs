@@ -247,6 +247,8 @@ pub struct ListenerRule {
     /// NetherNet keeps TCP PROXY forwarding but relays WebRTC UDP unchanged.
     #[serde(default)]
     pub bedrock_transport: BedrockTransport,
+    #[serde(default)]
+    pub nethernet_diagnostics: bool,
     /// Literal public IP used for NetherNet SDP answers (opt-in).
     #[serde(default)]
     pub nethernet_advertise_host: Option<std::net::IpAddr>,

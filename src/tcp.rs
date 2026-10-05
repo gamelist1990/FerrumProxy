@@ -129,7 +129,9 @@ async fn handle_client(
     }
     first_buf.truncate(first_len);
     // Opt-in signaling detection must also work when the request line spans reads.
-    if !rule.uses_raknet_udp() && rule.nethernet_advertise_host.is_some() {
+    if !rule.uses_raknet_udp()
+        && (rule.nethernet_advertise_host.is_some() || rule.nethernet_diagnostics)
+    {
         timeout(runtime.timeouts.initial_client_data, async {
             while !first_buf.windows(4).any(|w| w == b"\r\n\r\n") {
                 if first_buf.len() >= 64 * 1024 {
@@ -228,6 +230,7 @@ async fn handle_client(
                     } else {
                         None
                     },
+                    rule.nethernet_diagnostics && !rule.uses_raknet_udp(),
                 )
                 .await;
             }
@@ -260,28 +263,61 @@ async fn copy_bidirectional(
     forwarded_proto: &'static str,
     initial_client_payload: Vec<u8>,
     advertise: Option<(std::net::IpAddr, u16)>,
+    diagnostics: bool,
 ) -> Result<()> {
     let (client_read, client_write) = tokio::io::split(client);
     let (target_read, target_write) = tokio::io::split(target);
 
-    let signaling = advertise.filter(|_| {
-        http_request_path(&initial_client_payload)
-            .is_some_and(|p| p == "/v1/join" || p.starts_with("/v1/join/"))
-    });
-    let (client_to_target, target_to_client) = if let Some(endpoint) = signaling {
-        let c2t = tokio::spawn(pump(
-            client_read,
-            target_write,
-            initial_client_payload,
-            runtime.metrics.clone(),
-            Direction::ClientToTarget,
-        ));
-        let t2c = tokio::spawn(crate::nethernet_signaling::relay_answers(
-            target_read,
-            client_write,
-            endpoint,
-            runtime.metrics.clone(),
-        ));
+    let signaling = (advertise.is_some() || diagnostics)
+        && http_request_path(&initial_client_payload)
+            .is_some_and(|p| p == "/v1/join" || p.starts_with("/v1/join/"));
+    let context = crate::nethernet_diagnostics::Context {
+        client: client_addr,
+        backend: target_addr,
+    };
+    let (client_to_target, target_to_client) = if signaling {
+        if diagnostics {
+            context.emit(
+                "tcp_start",
+                serde_json::json!({"advertise":advertise.map(|(ip,p)| format!("{ip}:{p}"))}),
+            );
+        }
+        let c2t = if diagnostics {
+            tokio::spawn(crate::nethernet_diagnostics::relay(
+                client_read,
+                target_write,
+                initial_client_payload,
+                false,
+                context,
+                runtime.metrics.clone(),
+            ))
+        } else {
+            tokio::spawn(pump(
+                client_read,
+                target_write,
+                initial_client_payload,
+                runtime.metrics.clone(),
+                Direction::ClientToTarget,
+            ))
+        };
+        let t2c = if let Some(endpoint) = advertise {
+            tokio::spawn(crate::nethernet_signaling::relay_answers(
+                target_read,
+                client_write,
+                endpoint,
+                runtime.metrics.clone(),
+                diagnostics.then_some(context),
+            ))
+        } else {
+            tokio::spawn(crate::nethernet_diagnostics::relay(
+                target_read,
+                client_write,
+                Vec::new(),
+                true,
+                context,
+                runtime.metrics.clone(),
+            ))
+        };
         (c2t, t2c)
     } else if target_config.url_protocol.is_none() {
         let c2t = tokio::spawn(pump(
@@ -314,7 +350,11 @@ async fn copy_bidirectional(
         )
     };
 
-    let (sent, recv) = run_relay(client_to_target, target_to_client).await?;
+    let result = run_relay(client_to_target, target_to_client).await;
+    if signaling && diagnostics {
+        context.emit("tcp_end",serde_json::json!({"success":result.is_ok(),"errorKind":if result.is_err() {"relay_error"} else {"none"}}));
+    }
+    let (sent, recv) = result?;
     debug!("TCP closed {client_addr} => {target_addr} sent={sent} recv={recv}");
     Ok(())
 }

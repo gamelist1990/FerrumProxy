@@ -46,6 +46,7 @@ import { SharedRelayDashboard } from "./components/SharedRelayDashboard";
 import { Activity, ChevronDown, ChevronRight, LogOut, Moon, Play, Plus, RefreshCw, Search, Server, Settings2, Square, Sun, Terminal, Trash2, Users } from 'lucide-react';
 import { WorkspaceTabs } from './components/WorkspaceTabs';
 import { LogConsole } from './components/LogConsole';
+import { NetherNetPanel } from './components/NetherNetPanel';
 import './AppLayout.css';
 const PerformanceMonitor = lazy(() => import('./components/PerformanceMonitor').then((module) => ({ default: module.PerformanceMonitor })));
 import { DEFAULT_FERRUMPROXY_VERSION } from "./utils/version";
@@ -87,7 +88,7 @@ function App() {
   const selectedInstanceRef = useRef<string | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const closeSettingsModal = useCallback(() => setSettingsModalOpen(false), []);
-  const [workspaceTab, setWorkspaceTab] = useState<'overview' | 'logs' | 'config' | 'players'>('overview');
+  const [workspaceTab, setWorkspaceTab] = useState<'overview' | 'logs' | 'config' | 'players' | 'nethernet'>('overview');
   const [instanceSearch, setInstanceSearch] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [savedConfig, setSavedConfig] = useState('');
@@ -1179,10 +1180,11 @@ ${t("guiUpdateManualRestart")}`
                     { id: 'logs', label: t('workspaceLogs'), icon: Terminal },
                     { id: 'config', label: t('workspaceConfig'), icon: Settings2, badge: configDirty ? '•' : undefined },
                     { id: 'players', label: t('workspacePlayers'), icon: Users },
+                    { id: 'nethernet', label: 'NetherNet', icon: Activity },
                   ]} />
                 <div className="workspace-intro">
-                  <h3>{workspaceTab === 'overview' ? t('workspaceOverview') : workspaceTab === 'logs' ? t('workspaceLogs') : workspaceTab === 'config' ? t('workspaceConfig') : t('workspacePlayers')}</h3>
-                  <p>{workspaceTab === 'overview' ? t('overviewHint') : workspaceTab === 'logs' ? t('logsHint') : workspaceTab === 'config' ? t('configHint') : t('playersHint')}</p>
+                  <h3>{workspaceTab === 'nethernet' ? 'NetherNet' : workspaceTab === 'overview' ? t('workspaceOverview') : workspaceTab === 'logs' ? t('workspaceLogs') : workspaceTab === 'config' ? t('workspaceConfig') : t('workspacePlayers')}</h3>
+                  <p>{workspaceTab === 'nethernet' ? t('netherWorkspaceHint') : workspaceTab === 'overview' ? t('overviewHint') : workspaceTab === 'logs' ? t('logsHint') : workspaceTab === 'config' ? t('configHint') : t('playersHint')}</p>
                 </div>
 
                 <InstanceSettingsModal
@@ -1267,6 +1269,10 @@ ${t("guiUpdateManualRestart")}`
                 </div>
                 <div id="workspace-panel-logs" role="tabpanel" aria-labelledby="workspace-tab-logs" hidden={workspaceTab !== 'logs'} tabIndex={0}>
                   <LogConsole key={selectedInstanceData.id} logs={logs} instanceName={selectedInstanceData.name} />
+                </div>
+                <div id="workspace-panel-nethernet" role="tabpanel" aria-labelledby="workspace-tab-nethernet" hidden={workspaceTab !== 'nethernet'} tabIndex={0}>
+                  <NetherNetPanel key={selectedInstanceData.id} logs={logs} instanceName={selectedInstanceData.name}
+                    enabled={config?.listeners?.some(listener => listener.bedrockTransport === 'nethernet' && listener.nethernetDiagnostics) || false} />
                 </div>
                 <div id="workspace-panel-config" role="tabpanel" aria-labelledby="workspace-tab-config" hidden={workspaceTab !== 'config'} tabIndex={0}>
                   {saveFeedback && <div className={`feedback-banner ${saveFeedback.error ? 'error' : 'success'}`} role={saveFeedback.error ? 'alert' : 'status'}>{saveFeedback.text}</div>}

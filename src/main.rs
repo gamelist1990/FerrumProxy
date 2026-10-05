@@ -6,6 +6,7 @@ mod firewall;
 mod http_rewrite;
 mod management_api;
 mod manager_api;
+mod nethernet_diagnostics;
 mod nethernet_signaling;
 mod proxy_protocol;
 mod runtime;

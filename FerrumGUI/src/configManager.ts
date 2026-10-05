@@ -61,6 +61,7 @@ export interface FerrumProxyConfig {
     udp?: number;
     haproxy?: boolean;
     bedrockTransport?: 'raknet' | 'nethernet';
+    nethernetDiagnostics?: boolean;
     nethernetAdvertiseHost?: string;
     nethernetAdvertisePort?: number;
     https?: {
@@ -305,6 +306,9 @@ export class ConfigManager extends EventEmitter {
         errors.push('listeners must be an array');
       } else {
         config.listeners.forEach((listener, index) => {
+          if (listener.nethernetDiagnostics !== undefined && typeof listener.nethernetDiagnostics !== 'boolean') {
+            errors.push(`listeners[${index}].nethernetDiagnostics must be boolean`);
+          }
           if (listener.nethernetAdvertiseHost !== undefined) {
             if (typeof listener.nethernetAdvertiseHost !== 'string' || !isIP(listener.nethernetAdvertiseHost) || ['0.0.0.0', '::'].includes(listener.nethernetAdvertiseHost)) {
               errors.push(`listeners[${index}].nethernetAdvertiseHost must be a usable literal IP address`);

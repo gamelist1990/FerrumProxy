@@ -1,0 +1,19 @@
+.nether-panel { padding: 1.25rem; }
+.nether-panel > p { margin-bottom: 1rem; }
+.nether-search { display:flex; align-items:center; gap:.65rem; border:1px solid var(--border-color); border-radius:10px; padding:.65rem; margin:1rem 0; }
+.nether-search input { flex:1; min-width:0; background:transparent; border:0; color:inherit; outline:none; }
+.nether-search:focus-within { outline:2px solid var(--primary-color); outline-offset:2px; }
+.nether-peer { border:1px solid var(--border-color); border-radius:12px; padding:1rem; margin-top:1rem; }
+.nether-peer h4 { margin:0; overflow-wrap:anywhere; }
+.nether-findings { display:flex; flex-wrap:wrap; gap:.5rem; margin:.75rem 0; }
+.nether-finding { border:1px solid var(--border-color); border-radius:8px; padding:.35rem .55rem; font-size:.85rem; }
+.nether-finding.attention { border-color:var(--color-warning,#b78118); }
+.nether-peer summary { cursor:pointer; padding:.5rem 0; }
+.nether-timeline { padding-left:1.25rem; }
+.nether-timeline > li { padding:.75rem 0; border-bottom:1px solid var(--border-color); }
+.nether-event-head { display:flex; flex-wrap:wrap; gap:.7rem; align-items:center; }
+.nether-timeline code,.nether-candidates { overflow-wrap:anywhere; }
+.nether-candidates { padding:.65rem; margin:.5rem 0; border:1px solid var(--border-color); border-radius:8px; }
+.nether-candidates strong,.nether-candidates > span { display:block; }
+.nether-candidates ul { padding-left:1.25rem; margin:.5rem 0; }
+

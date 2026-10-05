@@ -2,7 +2,7 @@
   "endpoint": 6000,
   "useRestApi": true,
   "savePlayerIP": true,
-  "debug": true,
+  "debug": false,
   "listeners": [
     {
       "bind": "0.0.0.0",
@@ -45,8 +45,6 @@
       "haproxy": true,
       "bedrockTransport": "nethernet",
       "nethernetDiagnostics": true,
-      "nethernetAdvertiseHost": "132.145.118.98",
-      "nethernetAdvertisePort": 19132,
       "rewriteBedrockPongPorts": false,
       "https": {
         "enabled": false,
