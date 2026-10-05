@@ -1268,7 +1268,7 @@ if (isCompiled) {
       staticRoutes['/favicon.png'] = blob;
     }
 
-    if (name.startsWith('index-')) {
+    if (/\.(?:js|css)$/.test(name)) {
       staticRoutes[`/assets/${name}`] = blob;
     }
 
