@@ -4,6 +4,8 @@ target/
 # Runtime state
 config.yml
 playerIP.json
+connectionIP.json
+*IP.json.tmp
 *.log
 
 # FerrumGUI dependencies and build output

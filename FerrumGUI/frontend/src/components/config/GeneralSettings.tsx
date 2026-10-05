@@ -7,7 +7,7 @@ import { t } from '../../lang';
 
 interface GeneralSettingsProps {
   config: FerrumProxyConfig;
-  onChange: (field: keyof FerrumProxyConfig, value: any) => void;
+  onChange: <K extends keyof FerrumProxyConfig>(field: K, value: FerrumProxyConfig[K]) => void;
 }
 
 export const GeneralSettings: React.FC<GeneralSettingsProps> = ({ config, onChange }) => {

@@ -1,0 +1,55 @@
+{
+  "endpoint": 6000,
+  "useRestApi": true,
+  "savePlayerIP": true,
+  "debug": true,
+  "listeners": [
+    {
+      "bind": "0.0.0.0",
+      "tcp": 25565,
+      "target": {
+        "host": "100.83.127.8",
+        "tcp": 5000
+      },
+      "targets": [
+        {
+          "host": "100.83.127.8",
+          "tcp": 5000
+        }
+      ],
+      "haproxy": true,
+      "bedrockTransport": "raknet",
+      "rewriteBedrockPongPorts": true,
+      "https": {
+        "enabled": false,
+        "autoDetect": true
+      },
+      "httpMappings": []
+    },
+    {
+      "bind": "0.0.0.0",
+      "tcp": 19132,
+      "udp": 19132,
+      "target": {
+        "host": "100.83.127.8",
+        "tcp": 5001,
+        "udp": 19132
+      },
+      "targets": [
+        {
+          "host": "100.83.127.8",
+          "tcp": 5001,
+          "udp": 19132
+        }
+      ],
+      "haproxy": true,
+      "bedrockTransport": "nethernet",
+      "rewriteBedrockPongPorts": false,
+      "https": {
+        "enabled": false,
+        "autoDetect": true
+      },
+      "httpMappings": []
+    }
+  ]
+}

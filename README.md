@@ -205,7 +205,7 @@ graph TB
 | **DDoS Guard** | IP 単位のトークンバケット。3 プリセット (Balanced/Strict/Off) |
 | **DNS キャッシュ** | ターゲットホスト名の解決を per-session キャッシュ |
 | **Discord Webhook** | 接続/切断をグループ化して通知 |
-| **プレイヤー IP 保存** | `playerIP.json` に自動保存 |
+| **プレイヤー IP 保存** | `savePlayerIP: true` で接続IP・回数を `connectionIP.json` に保存（Webhook・ログイン通知不要）。ログイン通知で名前を紐付けた履歴は `playerIP.json` に保存 |
 | **YAML 設定** | ホットリロード対応 |
 | **REST API** | `/api/login`, `/api/players` など |
 | **単一バイナリ** | ~9MB、外部ライブラリ依存なし |

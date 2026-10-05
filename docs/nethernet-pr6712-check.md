@@ -144,3 +144,17 @@ GeyserからJava側への伝達は別設定・別経路:
 当初提案した「まず上流修正が必須」「透過UDP転送が必須」という説明は撤回する。
 キャッシュに頼らず元IPを明示的に保持する上流改善には意味があるが、このビルドで実IP取得が不可能という証拠にはならない。
 `-DgeyserAdvertiseAddresses` による公開ICEアドレス指定は到達経路の設定であり、実IPの保持処理を置き換えるものではない。
+
+
+## 追加確認: NetherNet signaling の空の whitelist
+
+2026-10-05 の実接続で、Geyser builtin TCP 5001への通常HTTPは200、PROXY v1/v2付きと公開Proxy TCP 19132経由は400だった。
+preview build 3056の同じStandalone JARを用いた `EmptyTrustProbe` により次を再現した:
+
+- `setProxyProtocol(true)` + `setTrustedProxies(List.of())`: PROXY v2後のHTTPは400、MOTD callbackは呼ばれない。
+- `setProxyProtocol(true)` + `setTrustedProxies(List.of("127.0.0.1"))`: 同じPROXY v2後のHTTPは200、callbackが元IP `203.0.113.42:45678` を受け取る。
+
+`OptionalProxyProtocol.decode()` は実際のTCP送信元が trustedProxies に含まれない場合、自身をpipelineから外す。空集合は全許可ではない。そのためPROXYヘッダーがHTTP parserへ渡り400になる。
+Geyserの `haproxy-protocol-whitelisted-ips: []` の設定コメント「空なら制限なし」は、このNetherNet signaling経路の動作と一致しない。
+Geyser側で、外部Proxyからバックエンドへ接続する際の実際の送信元IPを明示する必要がある。Tailscale経由なら通常はProxyのTailscale IPであり、転送先Geyserの100.83.127.8やBedrockプレイヤーのIPではない。
+送信元IPを追加した本番設定での再起動・再接続、WebRTCゲームログインおよび実IP保持はまだ未確認。

@@ -15,6 +15,7 @@ interface SharedRelayDashboardProps {
   performance: PerformanceMetrics | null;
   performanceError: string | null;
   logs: LogEntry[];
+  overviewOnly?: boolean;
 }
 
 export function SharedRelayDashboard({
@@ -27,6 +28,7 @@ export function SharedRelayDashboard({
   performance,
   performanceError,
   logs,
+  overviewOnly = false,
 }: SharedRelayDashboardProps) {
   const sharedService = config.sharedService || {};
   const defaults = sharedService.defaults || {};
@@ -52,7 +54,7 @@ export function SharedRelayDashboard({
           </div>
         </div>
         <button type="button" className="btn primary" onClick={onSave}>
-          {t('saveConfig')}
+          {overviewOnly ? t('openConfig') : t('saveConfig')}
         </button>
       </section>
 
@@ -127,12 +129,12 @@ export function SharedRelayDashboard({
         </article>
       </section>
 
-      <SharedRelaySettings
+      {!overviewOnly && <SharedRelaySettings
         config={config}
         onChange={(sharedService) => onChange({ ...config, sharedService })}
-      />
+      />}
 
-      <section className="surface-card console-card">
+      {!overviewOnly && <section className="surface-card console-card">
         <div className="section-head">
           <h3>{t('consoleLogs')}</h3>
           <span>{logs.length} lines</span>
@@ -164,7 +166,7 @@ export function SharedRelayDashboard({
             </div>
           ))}
         </div>
-      </section>
+      </section>}
     </div>
   );
 }

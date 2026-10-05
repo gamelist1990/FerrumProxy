@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
 import "./App.css";
 import { useWebSocket } from "./useWebSocket";
 import type {
@@ -43,8 +43,11 @@ import { PlayerIPList } from "./components/PlayerIPList";
 import { UpdateProgress } from "./components/UpdateProgress";
 import { InstanceSettingsModal } from "./components/InstanceSettingsModal";
 import { SharedRelayDashboard } from "./components/SharedRelayDashboard";
-import { PerformanceMonitor } from "./components/PerformanceMonitor";
-import { formatLogMessage } from "./utils/ansi";
+import { Activity, ChevronDown, ChevronRight, LogOut, Moon, Play, Plus, RefreshCw, Search, Server, Settings2, Square, Sun, Terminal, Trash2, Users } from 'lucide-react';
+import { WorkspaceTabs } from './components/WorkspaceTabs';
+import { LogConsole } from './components/LogConsole';
+import './AppLayout.css';
+const PerformanceMonitor = lazy(() => import('./components/PerformanceMonitor').then((module) => ({ default: module.PerformanceMonitor })));
 import { DEFAULT_FERRUMPROXY_VERSION } from "./utils/version";
 import type { WebSocketEventMap } from "./api";
 import { LOG_DISPLAY_LIMIT } from "./utils/constants";
@@ -54,6 +57,7 @@ function App() {
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [config, setConfig] = useState<FerrumProxyConfig | null>(null);
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null);
   const [playerIPs, setPlayerIPs] = useState<PlayerIPEntry[]>([]);
   const [performance, setPerformance] = useState<PerformanceMetrics | null>(null);
   const [performanceError, setPerformanceError] = useState<string | null>(null);
@@ -82,6 +86,32 @@ function App() {
   const [isGuiUpdating, setIsGuiUpdating] = useState(false);
   const selectedInstanceRef = useRef<string | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const closeSettingsModal = useCallback(() => setSettingsModalOpen(false), []);
+  const [workspaceTab, setWorkspaceTab] = useState<'overview' | 'logs' | 'config' | 'players'>('overview');
+  const [instanceSearch, setInstanceSearch] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [savedConfig, setSavedConfig] = useState('');
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const configEdited = useRef(false);
+  const configDrafts = useRef(new Map<string, FerrumProxyConfig>());
+  const configDirty = !!config && JSON.stringify(config) !== savedConfig;
+  const hasUnsavedDrafts = configDirty || configDrafts.current.size > 0;
+  const editConfig = (updated: FerrumProxyConfig) => {
+    configEdited.current = JSON.stringify(updated) !== savedConfig;
+    setSaveFeedback(null);
+    setConfig(updated);
+    if (selectedInstance) {
+      if (JSON.stringify(updated) === savedConfig) configDrafts.current.delete(selectedInstance);
+      else configDrafts.current.set(selectedInstance, updated);
+    }
+  };
+  useEffect(() => {
+    if (!hasUnsavedDrafts) return;
+    const preventExit = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener('beforeunload', preventExit);
+    return () => window.removeEventListener('beforeunload', preventExit);
+  }, [hasUnsavedDrafts]);
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("theme");
@@ -290,7 +320,8 @@ function App() {
       }),
       on("configUpdated", (data: WebSocketEventMap["configUpdated"]) => {
         if (data.instanceId === selectedInstanceRef.current) {
-          setConfig(data.config);
+          if (!configEdited.current) setConfig(data.config);
+          setSavedConfig(JSON.stringify(data.config));
         }
       }),
       on("rateLimitError", (data: WebSocketEventMap["rateLimitError"]) => {
@@ -305,6 +336,10 @@ function App() {
     selectedInstanceRef.current = selectedInstance;
     setLogs([]);
     setConfig(null);
+    setConfigLoadError(null);
+    setSavedConfig('');
+    setSaveFeedback(null);
+    configEdited.current = false;
     setPlayerIPs([]);
     setPerformance(null);
     setPerformanceError(null);
@@ -373,13 +408,18 @@ function App() {
   }
 
   async function loadConfig(instanceId: string) {
+    setConfigLoadError(null);
     try {
       const data = await fetchConfig(instanceId);
       if (selectedInstanceRef.current === instanceId) {
-        setConfig(data);
+        const draft = configDrafts.current.get(instanceId);
+        setConfig(draft || data);
+        configEdited.current = !!draft;
+        setSavedConfig(JSON.stringify(data));
       }
     } catch (error) {
       console.error(t("errorLoadConfig"), error);
+      if (selectedInstanceRef.current === instanceId) setConfigLoadError(`${t('errorLoadConfig')} ${(error as Error).message}`);
     }
   }
 
@@ -499,14 +539,24 @@ function App() {
   }
 
   async function handleSaveConfig() {
-    if (!selectedInstance || !config) return;
-
+    if (!selectedInstance || !config || savingConfig) return;
+    const instanceId = selectedInstance;
+    const snapshot = config;
+    setSavingConfig(true);
+    setSaveFeedback(null);
     try {
-      await updateConfig(selectedInstance, config);
-      alert(t("configSaved"));
+      await updateConfig(instanceId, snapshot);
+      configDrafts.current.delete(instanceId);
+      if (selectedInstanceRef.current === instanceId) {
+        setSavedConfig(JSON.stringify(snapshot));
+        configEdited.current = false;
+        setSaveFeedback({ error: false, text: t('saveSuccess') });
+      }
     } catch (error) {
       const err = error as Error;
-      alert(`${t("errorSaveConfig")} ${err.message}`);
+      if (selectedInstanceRef.current === instanceId) setSaveFeedback({ error: true, text: `${t('errorSaveConfig')} ${err.message}` });
+    } finally {
+      setSavingConfig(false);
     }
   }
 
@@ -803,10 +853,12 @@ ${t("guiUpdateManualRestart")}`
 
   return (
     <div className="app">
+      <a className="skip-link" href="#workspace">{t('skipToWorkspace')}</a>
       <div className="app-shell">
         <header className="topbar">
           <div className="brand">
-            <p className="brand-kicker">FerrumProxy Control Console</p>
+            <div className="brand-symbol"><Server size={24} aria-hidden="true" /></div>
+            <p className="brand-kicker">CONTROL CONSOLE</p>
             <h1>{t("appTitle")}</h1>
             <div className="status-strip" aria-live="polite">
               <span
@@ -836,21 +888,23 @@ ${t("guiUpdateManualRestart")}`
             </select>
             <button
               type="button"
-              className="btn tertiary"
+              className="btn tertiary theme-toggle"
               onClick={toggleTheme}
               title={
-                theme === "light" ? "Switch to Dark Mode" : "Switch to Light Mode"
+                theme === "light" ? t('darkMode') : t('lightMode')
               }
             >
-              {theme === "light" ? "Night" : "Light"}
+              {theme === 'light' ? <Moon size={18} aria-hidden="true" /> : <Sun size={18} aria-hidden="true" />}
+              <span className="sr-only">{theme === 'light' ? t('darkMode') : t('lightMode')}</span>
             </button>
             <button
               type="button"
-              className="btn primary"
+              className="btn tertiary"
               onClick={() => void handleCheckAndUpdateAll()}
               disabled={isCheckingUpdates || instances.length === 0}
               title={t("checkUpdates")}
             >
+              <RefreshCw size={16} className={isCheckingUpdates ? 'spin' : ''} aria-hidden="true" />
               {isCheckingUpdates ? t("checking") : t("checkUpdates")}
             </button>
             {guiSelfUpdateSupported && (
@@ -875,25 +929,29 @@ ${t("guiUpdateManualRestart")}`
             {authStatus?.hasAuth && (
               <button
                 type="button"
-                className="btn danger"
+                className="btn tertiary logout-button"
                 onClick={handleLogout}
               >
-                {t("logout")}
+                <LogOut size={16} aria-hidden="true" />{t("logout")}
               </button>
             )}
           </div>
         </header>
 
         <div className="dashboard">
-          <aside className="instance-panel">
+          <aside className={`instance-panel ${sidebarOpen ? 'mobile-open' : ''}`} aria-label={t('instances')}>
             <section className="panel-block metrics-block">
               <div className="panel-title-row">
                 <h2>{t("instances")}</h2>
+                <span className="count-badge">{instanceMetrics.total}</span>
+                <button type="button" className="btn tertiary sidebar-toggle" aria-expanded={sidebarOpen} aria-controls="instance-navigation" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label={sidebarOpen ? t('collapseInstances') : t('expandInstances')}>
+                  <ChevronDown size={18} aria-hidden="true" />
+                </button>
               </div>
 
               <div className="metrics-grid">
                 <article className="metric-card">
-                  <span>Total</span>
+                  <span>{t('totalInstances')}</span>
                   <strong>{instanceMetrics.total}</strong>
                 </article>
                 <article className="metric-card">
@@ -907,13 +965,18 @@ ${t("guiUpdateManualRestart")}`
               </div>
             </section>
 
+            <div id="instance-navigation" className="instance-navigation">
             <section className="panel-block list-block">
-              <div className="instance-list" role="list">
+              <label className="search-field instance-search"><Search size={16} aria-hidden="true" /><span className="sr-only">{t('searchInstances')}</span>
+                <input type="search" placeholder={t('searchInstances')} value={instanceSearch} onChange={(event) => setInstanceSearch(event.target.value)} />
+              </label>
+              <div className="instance-list">
                 {instances.length === 0 && (
-                  <div className="instance-empty">No instance yet.</div>
+                  <div className="instance-empty">{t('noInstances')}</div>
                 )}
 
-                {instances.map((instance, index) => {
+                {instances.length > 0 && !instances.some((instance) => instance.name.toLowerCase().includes(instanceSearch.toLowerCase())) && <div className="instance-empty">{t('noSearchResults')}</div>}
+                {instances.filter((instance) => instance.name.toLowerCase().includes(instanceSearch.toLowerCase())).map((instance) => {
                   const state = getRuntimeState(instance);
                   const selected = selectedInstance === instance.id;
 
@@ -922,9 +985,11 @@ ${t("guiUpdateManualRestart")}`
                       type="button"
                       key={instance.id}
                       className={`instance-item ${selected ? "selected" : ""} ${state}`}
-                      role="listitem"
-                      onClick={() => setSelectedInstance(instance.id)}
-                      style={{ animationDelay: `${Math.min(index * 70, 560)}ms` }}
+                      aria-current={selected ? 'true' : undefined}
+                      onClick={() => {
+                        setSelectedInstance(instance.id);
+                        setSidebarOpen(false);
+                      }}
                     >
                       <div className="instance-item-header">
                         <strong>{instance.name}</strong>
@@ -956,8 +1021,8 @@ ${t("guiUpdateManualRestart")}`
               </div>
             </section>
 
-            <section className="panel-block create-block">
-              <h3>{t("createNewInstance")}</h3>
+            <details className="panel-block create-block" open={instances.length === 0 ? true : undefined}>
+              <summary><Plus size={18} aria-hidden="true" />{t("createNewInstance")}<ChevronRight size={16} className="create-chevron" aria-hidden="true" /></summary>
               <form
                 className="create-form"
                 onSubmit={(e) => {
@@ -1025,15 +1090,16 @@ ${t("guiUpdateManualRestart")}`
                   {isCreating ? t("creating") : t("createInstance")}
                 </button>
               </form>
-            </section>
+            </details>
+            </div>
           </aside>
 
-          <main className="workspace">
+          <main className="workspace" id="workspace" tabIndex={-1}>
             {selectedInstanceData ? (
               <>
                 <section className="instance-hero">
                   <div className="hero-copy">
-                    <p className="hero-overline">{selectedInstanceData.platform}</p>
+                    <p className="hero-overline">{t('workspaceCaption')} <ChevronRight size={12} aria-hidden="true" /> {selectedInstanceData.platform}</p>
                     <h2>{selectedInstanceData.name}</h2>
                     <div className="hero-meta">
                       <span
@@ -1050,7 +1116,7 @@ ${t("guiUpdateManualRestart")}`
                     </div>
                   </div>
 
-                  <div className="hero-actions">
+                  <div className="hero-actions" aria-label={t('instanceOperations')}>
                     {selectedInstanceData.pid ? (
                       <>
                         <button
@@ -1058,7 +1124,7 @@ ${t("guiUpdateManualRestart")}`
                           className="btn tertiary"
                           onClick={() => handleStopInstance(selectedInstanceData.id)}
                         >
-                          {t("stop")}
+                          <Square size={15} aria-hidden="true" />{t("stop")}
                         </button>
                         <button
                           type="button"
@@ -1067,7 +1133,7 @@ ${t("guiUpdateManualRestart")}`
                             handleRestartInstance(selectedInstanceData.id)
                           }
                         >
-                          {t("restart")}
+                          <RefreshCw size={15} aria-hidden="true" />{t("restart")}
                         </button>
                       </>
                     ) : (
@@ -1076,7 +1142,7 @@ ${t("guiUpdateManualRestart")}`
                         className="btn primary"
                         onClick={() => handleStartInstance(selectedInstanceData.id)}
                       >
-                        {t("start")}
+                        <Play size={16} aria-hidden="true" />{t("start")}
                       </button>
                     )}
 
@@ -1085,15 +1151,15 @@ ${t("guiUpdateManualRestart")}`
                       className="btn tertiary"
                       onClick={() => setSettingsModalOpen(true)}
                     >
-                      {t("settings") || "設定"}
+                      <Settings2 size={16} aria-hidden="true" />{t("settings") || "設定"}
                     </button>
 
                     <button
                       type="button"
-                      className="btn danger"
+                      className="btn tertiary delete-instance"
                       onClick={() => handleDeleteInstance(selectedInstanceData.id)}
                     >
-                      {t("delete")}
+                      <Trash2 size={16} aria-hidden="true" /><span className="sr-only">{t('delete')}</span>
                     </button>
                   </div>
                 </section>
@@ -1107,21 +1173,21 @@ ${t("guiUpdateManualRestart")}`
                   />
                 )}
 
-                {!isSharedRelayMode && (
-                <PerformanceMonitor
-                  performance={performance}
-                  error={performanceError}
-                  clearing={clearingPerformance}
-                  onExport={exportPerformanceJson}
-                  onClear={handleClearPerformanceCache}
-                  formatBytes={formatBytes}
-                  formatDuration={formatDuration}
-                />
-                )}
+                <WorkspaceTabs prefix="workspace" label={t('workspaceCaption')} active={workspaceTab} onChange={setWorkspaceTab}
+                  tabs={[
+                    { id: 'overview', label: t('workspaceOverview'), icon: Activity },
+                    { id: 'logs', label: t('workspaceLogs'), icon: Terminal },
+                    { id: 'config', label: t('workspaceConfig'), icon: Settings2, badge: configDirty ? '•' : undefined },
+                    { id: 'players', label: t('workspacePlayers'), icon: Users },
+                  ]} />
+                <div className="workspace-intro">
+                  <h3>{workspaceTab === 'overview' ? t('workspaceOverview') : workspaceTab === 'logs' ? t('workspaceLogs') : workspaceTab === 'config' ? t('workspaceConfig') : t('workspacePlayers')}</h3>
+                  <p>{workspaceTab === 'overview' ? t('overviewHint') : workspaceTab === 'logs' ? t('logsHint') : workspaceTab === 'config' ? t('configHint') : t('playersHint')}</p>
+                </div>
 
                 <InstanceSettingsModal
                   isOpen={settingsModalOpen}
-                  onClose={() => setSettingsModalOpen(false)}
+                  onClose={closeSettingsModal}
                   instanceId={selectedInstanceData.id}
                   instanceName={selectedInstanceData.name}
                   instanceVersion={selectedInstanceData.version}
@@ -1187,97 +1253,59 @@ ${t("guiUpdateManualRestart")}`
                   isUpdating={updatingInstances.has(selectedInstanceData.id)}
                 />
 
-                {isSharedRelayMode && config ? (
-                  <SharedRelayDashboard
-                    config={config}
-                    onChange={setConfig}
-                    onSave={handleSaveConfig}
-                    formatBytes={formatBytes}
-                    formatDuration={formatDuration}
-                    runtimeState={getRuntimeState(selectedInstanceData)}
-                    performance={performance}
-                    performanceError={performanceError}
-                    logs={logs}
-                  />
-                ) : (
-                <div className="workspace-grid">
-                  <section className="surface-card console-card">
-                    <div className="section-head">
-                      <h3>{t("consoleLogs")}</h3>
-                      <span>{logs.length} lines</span>
-                    </div>
-
-                    <div className="log-container">
-                      {logs.map((log, index) => (
-                        <div
-                          key={`${log.timestamp}-${index}`}
-                          className={`log-entry log-${log.type}`}
-                        >
-                          <span className="log-time">
-                            {new Date(log.timestamp).toLocaleTimeString()}
-                          </span>
-                          <span className="log-type">
-                            [
-                            {log.type === "stdout"
-                              ? t("logStdout")
-                              : log.type === "stderr"
-                                ? t("logStderr")
-                                : t("logSystem")}
-                            ]
-                          </span>
-                          <span
-                            className="log-message"
-                            dangerouslySetInnerHTML={{
-                              __html: formatLogMessage(log.message),
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="surface-card config-card">
-                    <div className="section-head">
-                      <h3>{t("configuration")}</h3>
-                    </div>
-
-                    {config && (
-                      <ConfigEditor
-                        instanceId={selectedInstanceData.id}
-                        config={config}
-                        onChange={setConfig}
-                        onSave={handleSaveConfig}
-                      />
-                    )}
-                  </section>
-
-                  {config?.savePlayerIP && (
-                    <section className="surface-card player-ip-card">
-                      <div className="section-head">
-                        <h3>プレイヤーIP記録</h3>
-                        <button
-                          type="button"
-                          className="btn tertiary small"
-                          onClick={() => loadPlayerIPs(selectedInstanceData.id)}
-                        >
-                          更新
-                        </button>
-                      </div>
-                      <PlayerIPList playerIPs={playerIPs} />
-                    </section>
+                <div id="workspace-panel-overview" role="tabpanel" aria-labelledby="workspace-tab-overview" hidden={workspaceTab !== 'overview'} tabIndex={0}>
+                  {isSharedRelayMode && config ? (
+                    <SharedRelayDashboard config={config} onChange={editConfig} onSave={() => setWorkspaceTab('config')}
+                      overviewOnly formatBytes={formatBytes} formatDuration={formatDuration}
+                      runtimeState={getRuntimeState(selectedInstanceData)} performance={performance} performanceError={performanceError} logs={logs} />
+                  ) : (
+                    <Suspense fallback={<div className="panel-loading" role="status">{t('loadingWorkspace')}</div>}>
+                    <PerformanceMonitor performance={performance} error={performanceError} clearing={clearingPerformance}
+                      onExport={exportPerformanceJson} onClear={handleClearPerformanceCache} formatBytes={formatBytes} formatDuration={formatDuration} />
+                    </Suspense>
                   )}
                 </div>
-                )}
+                <div id="workspace-panel-logs" role="tabpanel" aria-labelledby="workspace-tab-logs" hidden={workspaceTab !== 'logs'} tabIndex={0}>
+                  <LogConsole key={selectedInstanceData.id} logs={logs} instanceName={selectedInstanceData.name} />
+                </div>
+                <div id="workspace-panel-config" role="tabpanel" aria-labelledby="workspace-tab-config" hidden={workspaceTab !== 'config'} tabIndex={0}>
+                  {saveFeedback && <div className={`feedback-banner ${saveFeedback.error ? 'error' : 'success'}`} role={saveFeedback.error ? 'alert' : 'status'}>{saveFeedback.text}</div>}
+                  <section className="surface-card config-card">
+                    {config ? <ConfigEditor key={selectedInstanceData.id} instanceId={selectedInstanceData.id} config={config}
+                      onChange={editConfig} onSave={handleSaveConfig} dirty={configDirty} saving={savingConfig} sharedMode={isSharedRelayMode} />
+                    : configLoadError ? <div className="panel-empty"><p role="alert">{configLoadError}</p>
+                        <button type="button" className="btn tertiary" onClick={() => void loadConfig(selectedInstanceData.id)}>{t('retryRequest')}</button>
+                      </div> : <div className="panel-loading" role="status">{t('loadingWorkspace')}</div>}
+                  </section>
+                </div>
+                <div id="workspace-panel-players" role="tabpanel" aria-labelledby="workspace-tab-players" hidden={workspaceTab !== 'players'} tabIndex={0}>
+                  <section className="surface-card player-ip-card">
+                    <div className="section-head">
+                      <h3 className="icon-label"><Users size={18} aria-hidden="true" />{t('workspacePlayers')}</h3>
+                      <button type="button" className="btn tertiary" onClick={() => loadPlayerIPs(selectedInstanceData.id)}>
+                        <RefreshCw size={16} aria-hidden="true" />{t('refreshData')}
+                      </button>
+                    </div>
+                    {config?.savePlayerIP ? <PlayerIPList playerIPs={playerIPs} />
+                      : <div className="panel-empty"><Users size={30} aria-hidden="true" /><p>{t('ipDisabledHint')}</p>
+                        <button type="button" className="btn primary" onClick={() => setWorkspaceTab('config')}>{t('openConfig')}</button>
+                      </div>}
+                  </section>
+                </div>
               </>
             ) : (
               <section className="empty-state">
-                <h2>{t("appTitle")}</h2>
-                <p>{t("noSelection")}</p>
+                <div className="empty-state-icon"><Server size={32} aria-hidden="true" /></div>
+                <h2>{instances.length ? t("workspaceCaption") : t("noInstances")}</h2>
+                <p>{instances.length ? t("selectInstanceHint") : t("createInstanceHint")}</p>
                 <button
                   type="button"
                   className="btn primary"
                   onClick={() => {
-                    document.getElementById("create-instance-name")?.focus();
+                    setSidebarOpen(true);
+                    const createBlock = document.querySelector<HTMLDetailsElement>('.create-block');
+                    if (createBlock) createBlock.open = true;
+                    window.setTimeout(() => document.getElementById('create-instance-name')?.focus(), 0);
                   }}
                 >
                   {t("createNewInstance")}

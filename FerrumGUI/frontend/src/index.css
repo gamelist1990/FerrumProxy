@@ -1,27 +1,27 @@
-@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap");
-
 :root {
   color-scheme: light;
-  --ink: #162438;
-  --bg-primary: #f4f7fb;
-  --bg-secondary: #edf2f7;
+  --primary-soft: #edf3ff;
+  --on-primary: #ffffff;
+  --ink: #172b4d;
+  --bg-primary: #f5f7fb;
+  --bg-secondary: #edf1f7;
   --bg-tertiary: #ffffff;
-  --surface-glass: rgba(255, 255, 255, 0.94);
-  --surface-soft: rgba(255, 255, 255, 0.82);
-  --surface-input: rgba(255, 255, 255, 0.7);
-  --text-primary: #162438;
-  --text-secondary: #465770;
-  --text-muted: #61728a;
-  --border-color: rgba(23, 23, 23, 0.12);
+  --surface-glass: #ffffff;
+  --surface-soft: #f8fafc;
+  --surface-input: #ffffff;
+  --text-primary: #172b4d;
+  --text-secondary: #465772;
+  --text-muted: #63738a;
+  --border-color: #dce3ee;
 
-  --primary-color: #2368b5;
-  --primary-hover: #19518e;
-  --accent-green: #235347;
-  --danger-color: #c0392b;
-  --danger-hover: #9f2f1f;
-  --success-color: #238f52;
-  --warning-color: #b7791f;
-  --info-color: #0f5d79;
+  --primary-color: #245edb;
+  --primary-hover: #184ab7;
+  --accent-green: #147d64;
+  --danger-color: #be3345;
+  --danger-hover: #a32637;
+  --success-color: #147d64;
+  --warning-color: #9a650b;
+  --info-color: #2565a4;
 
   --shadow-sm: 0 2px 8px rgba(22, 36, 56, 0.04);
   --shadow-md: 0 14px 34px rgba(31, 24, 18, 0.12);
@@ -33,33 +33,35 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
 
-  --font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
-  --font-display: "Space Grotesk", "Trebuchet MS", sans-serif;
-  --font-mono: "JetBrains Mono", "Consolas", monospace;
+  --font-family: "Segoe UI", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
+  --font-display: var(--font-family);
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --ink: #f5f0e9;
-  --bg-primary: #111513;
-  --bg-secondary: #18231f;
-  --bg-tertiary: #202923;
-  --surface-glass: rgba(26, 34, 30, 0.9);
-  --surface-soft: rgba(255, 255, 255, 0.055);
-  --surface-input: rgba(255, 255, 255, 0.08);
-  --text-primary: #f5f0e9;
-  --text-secondary: #d9cec1;
-  --text-muted: #a99f93;
-  --border-color: rgba(255, 248, 239, 0.14);
+  --primary-soft: #223657;
+  --on-primary: #102345;
+  --ink: #e4ecfa;
+  --bg-primary: #101722;
+  --bg-secondary: #182131;
+  --bg-tertiary: #1b2638;
+  --surface-glass: #162031;
+  --surface-soft: #1b2638;
+  --surface-input: #141e2e;
+  --text-primary: #e4ecfa;
+  --text-secondary: #bac8dd;
+  --text-muted: #97aac5;
+  --border-color: #324158;
 
-  --primary-color: #ff8754;
-  --primary-hover: #ff9d74;
-  --accent-green: #70d0ac;
-  --danger-color: #ff6f61;
-  --danger-hover: #ff9187;
-  --success-color: #57d789;
-  --warning-color: #f0b457;
-  --info-color: #65c7c8;
+  --primary-color: #83adff;
+  --primary-hover: #a2c1ff;
+  --accent-green: #6ed5b3;
+  --danger-color: #ff96a2;
+  --danger-hover: #ffb1ba;
+  --success-color: #6ed5b3;
+  --warning-color: #f2c16e;
+  --info-color: #8ac4ff;
 
   --shadow-sm: 0 10px 28px rgba(0, 0, 0, 0.22);
   --shadow-md: 0 14px 34px rgba(0, 0, 0, 0.26);
@@ -82,11 +84,8 @@ body {
   font-family: var(--font-family);
   color: var(--text-primary);
   line-height: 1.5;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
-    linear-gradient(160deg, var(--bg-primary), var(--bg-secondary));
-  background-size: 22px 22px, 22px 22px, auto;
+  background: var(--bg-primary);
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   transition: background-color 0.25s ease, color 0.25s ease;
@@ -149,3 +148,7 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+[hidden] { display: none !important; }
+button { touch-action: manipulation; }
+@media (max-width: 640px) { input, select, textarea { font-size: 16px; } }

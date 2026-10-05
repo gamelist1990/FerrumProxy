@@ -530,14 +530,10 @@ async fn maybe_notify_connect(
     target: &ProxyTarget,
     client_addr: SocketAddr,
 ) {
-    let Some(webhook) = rule
-        .webhook
-        .as_deref()
-        .filter(|webhook| !webhook.trim().is_empty())
-    else {
-        return;
-    };
-
+    runtime
+        .connection_ip_mapper
+        .register_connection(client_addr.ip().to_string(), "TCP")
+        .await;
     let target_key = format!("{}:{}", target.host, target.tcp.unwrap_or_default());
     if runtime.use_rest_api {
         runtime
@@ -550,6 +546,13 @@ async fn maybe_notify_connect(
             )
             .await;
     } else {
+        let Some(webhook) = rule
+            .webhook
+            .as_deref()
+            .filter(|webhook| !webhook.trim().is_empty())
+        else {
+            return;
+        };
         runtime
             .notifier
             .add_connect_group(
@@ -560,5 +563,40 @@ async fn maybe_notify_connect(
                 "TCP",
             )
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ddos_guard::DdosGuardSettings;
+    use crate::runtime::{ip_tests, ConnectionIpMapper};
+
+    #[tokio::test]
+    async fn records_connections_without_webhook_or_login_callback() {
+        for use_rest_api in [false, true] {
+            let directory = ip_tests::temporary_directory();
+            let path = directory.join("connectionIP.json");
+            let mut runtime =
+                AppRuntime::new(use_rest_api, false, vec![], DdosGuardSettings::default());
+            runtime.connection_ip_mapper = ConnectionIpMapper::new(path.clone(), true);
+            let rule: ListenerRule = serde_yaml::from_str(
+                "bind: 127.0.0.1\ntcp: 5000\ntarget:\n  host: 127.0.0.1\n  tcp: 5001\n",
+            )
+            .unwrap();
+            let target = rule.targets_for(Protocol::Tcp)[0].clone();
+            let peer = "203.0.113.1:12345".parse().unwrap();
+            maybe_notify_connect(&runtime, &rule, &target, peer).await;
+            let records = ip_tests::read_connections(&path);
+            assert_eq!(records[0].ip, "203.0.113.1");
+            assert_eq!(records[0].protocol, "TCP");
+            assert_eq!(records[0].connections, 1);
+            let matched = runtime
+                .connection_buffer
+                .process_for_timestamp(crate::runtime::now_ms())
+                .await;
+            assert_eq!(matched.len(), usize::from(use_rest_api));
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { t } from "../lang";
 import "./InstanceSettingsModal.css";
 
@@ -41,6 +41,7 @@ export function InstanceSettingsModal({
   latestVersion,
   isUpdating = false,
 }: InstanceSettingsModalProps) {
+  const dialog = useRef<HTMLDivElement>(null);
   const [nameInput, setNameInput] = useState(instanceName);
   const [autoRestartChecked, setAutoRestartChecked] = useState(autoRestart);
   const [autoStartChecked, setAutoStartChecked] = useState(autoStart ?? false);
@@ -86,6 +87,25 @@ export function InstanceSettingsModal({
       document.body.style.paddingRight = prevPaddingRight;
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]') || [])
+      .filter((element) => element.getClientRects().length > 0);
+    focusable()[0]?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); onClose(); }
+      if (event.key !== 'Tab') return;
+      const elements = focusable();
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => { document.removeEventListener('keydown', handleKey); previousFocus?.focus(); };
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -222,11 +242,15 @@ export function InstanceSettingsModal({
     <div className="modal-overlay" onClick={onClose}>
       <div
         className="modal-content instance-settings-modal"
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="instance-settings-title"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
-          <h2>{t("instanceSettings") || "インスタンス設定"}</h2>
-          <button className="close-button" onClick={onClose}>
+          <h2 id="instance-settings-title">{t("instanceSettings") || "インスタンス設定"}</h2>
+          <button type="button" className="close-button" onClick={onClose} aria-label={t('closeDialog')}>
             ×
           </button>
         </div>

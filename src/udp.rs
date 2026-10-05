@@ -352,7 +352,10 @@ async fn handle_datagram(
         session.mark_established();
     }
 
-    if !session.notified.swap(true, Ordering::Relaxed) {
+    // Exclude server-list pings from connection records and login matching.
+    if (!rule.uses_raknet_udp() || !is_offline_ping(payload))
+        && !session.notified.swap(true, Ordering::Relaxed)
+    {
         maybe_notify_connect(&runtime, &rule, &session, original_client).await;
     }
 
@@ -654,14 +657,10 @@ async fn maybe_notify_connect(
     session: &UdpSession,
     client_addr: SocketAddr,
 ) {
-    let Some(webhook) = rule
-        .webhook
-        .as_deref()
-        .filter(|webhook| !webhook.trim().is_empty())
-    else {
-        return;
-    };
-
+    runtime
+        .connection_ip_mapper
+        .register_connection(client_addr.ip().to_string(), "UDP")
+        .await;
     let targets = rule.targets_for(Protocol::Udp);
     let index = session.active_target_index.load(Ordering::Relaxed);
     let Some(target) = targets.get(index).or_else(|| targets.first()) else {
@@ -680,6 +679,13 @@ async fn maybe_notify_connect(
             )
             .await;
     } else {
+        let Some(webhook) = rule
+            .webhook
+            .as_deref()
+            .filter(|webhook| !webhook.trim().is_empty())
+        else {
+            return;
+        };
         runtime
             .notifier
             .add_connect_group(
@@ -869,6 +875,67 @@ mod tests {
         let (len, addr) = timeout(Duration::from_secs(2), socket.recv_from(&mut bytes)).await??;
         bytes.truncate(len);
         Ok((bytes, addr))
+    }
+
+    #[tokio::test]
+    async fn records_udp_once_per_session_without_webhook_and_excludes_raknet_pings() -> Result<()>
+    {
+        use crate::runtime::{ip_tests, ConnectionIpMapper};
+        for transport in [BedrockTransport::Raknet, BedrockTransport::Nethernet] {
+            for use_rest_api in [false, true] {
+                let directory = ip_tests::temporary_directory();
+                let path = directory.join("connectionIP.json");
+                let backend = UdpSocket::bind("127.0.0.1:0").await?;
+                let server = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+                let rule = test_rule(backend.local_addr()?.port(), transport);
+                let mut runtime =
+                    AppRuntime::new(use_rest_api, false, vec![], DdosGuardSettings::default());
+                runtime.connection_ip_mapper = ConnectionIpMapper::new(path.clone(), true);
+                let runtime = Arc::new(runtime);
+                let sessions: SessionMap = Arc::new(StdMutex::new(HashMap::new()));
+                let cache = Arc::new(StdMutex::new(None));
+                let peer = "127.0.0.1:12345".parse()?;
+                if rule.uses_raknet_udp() {
+                    let mut ping = vec![0x01];
+                    ping.extend_from_slice(&[0; 8]);
+                    ping.extend_from_slice(&[
+                        0, 255, 255, 0, 254, 254, 254, 254, 253, 253, 253, 253, 18, 52, 86, 120,
+                    ]);
+                    handle_datagram(&server, &sessions, &rule, &runtime, &cache, peer, &ping)
+                        .await?;
+                    receive(&backend).await?;
+                    assert!(!path.exists(), "server-list ping must not be counted");
+                }
+                for _ in 0..3 {
+                    handle_datagram(
+                        &server, &sessions, &rule, &runtime, &cache, peer, b"payload",
+                    )
+                    .await?;
+                    receive(&backend).await?;
+                }
+                let records = ip_tests::read_connections(&path);
+                assert_eq!(
+                    records[0].connections, 1,
+                    "packets must not be counted as sessions"
+                );
+                assert_eq!(records[0].protocol, "UDP");
+                let matched = runtime
+                    .connection_buffer
+                    .process_for_timestamp(crate::runtime::now_ms())
+                    .await;
+                assert_eq!(matched.len(), usize::from(use_rest_api));
+                close_session(&sessions, &runtime, peer).await;
+                handle_datagram(
+                    &server, &sessions, &rule, &runtime, &cache, peer, b"payload",
+                )
+                .await?;
+                receive(&backend).await?;
+                assert_eq!(ip_tests::read_connections(&path)[0].connections, 2);
+                close_session(&sessions, &runtime, peer).await;
+                std::fs::remove_dir_all(directory)?;
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

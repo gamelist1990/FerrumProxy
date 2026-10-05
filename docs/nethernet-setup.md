@@ -86,3 +86,22 @@ java --enable-native-access=ALL-UNNAMED -cp Geyser-Standalone.jar C:\path\to\Web
 プレイヤー実IP保持を追加する修正は、この変更には含めていない。
 追加調査ではTCP signaling由来のIPがGeyserのpeer APIに残る動作を確認したが、実Bedrockログイン後の確認は未実施。
 詳細は `docs/nethernet-pr6712-check.md`。
+
+
+### 公開19132とバックエンド5001でのWebRTC広告ポート不一致
+
+2026-10-06確認: 公開TCP19132の `/v1/join` は200を返した。一方、Geyser `bedrock.port: 5001`, `webrtc-port: 0` ではWebRTC UDPも5001になる。
+preview JARの `SdpUtil.withAdvertisedCandidates` に内部候補 `100.83.127.8:5001` と公開IP `132.145.118.98` を渡すと、広告候補は `132.145.118.98:5001` となった。公開19132へのポート変換は行われない。
+同じテストで内部UDPを19132にすると公開候補も19132になった。FerrumProxyのUDP透過転送・クライアントごとのsocket維持テストも通過した。
+Tailscale利用者だけが接続できる症状は、内部候補へ直接接続している可能性と整合する。ただし本番SDP・選択候補・UDPパケットキャプチャは未取得。
+
+設定例 `config.pexserver-nethernet-public.example.json` と `geyser-pexserver-nethernet.yml` は次の経路を使用する:
+
+- 公開TCP25565 → Java TCP5000
+- 公開TCP19132 → Geyser signaling TCP5001
+- 公開UDP19132 → Geyser WebRTC UDP19132
+
+Geyserは `bedrock.port: 5001`, `webrtc-port: 19132`, `signaling.mode: builtin` とし、Paper JVMの `-jar` より前に `-DgeyserAdvertiseAddresses=132.145.118.98` を指定する。
+古い `-DgeyserSignalingPort` がある場合は5001と整合させる。
+Geyserの `advanced.bedrock.haproxy-protocol-whitelisted-ips` はProxyのTailscale IP `100.98.217.24` とする。
+公開ProxyのUDP19132とバックエンドのUDP19132のファイアウォール許可が必要。サンプルファイルの作成は本番への反映ではなく、Tailscaleなしの端末での再接続は未確認。

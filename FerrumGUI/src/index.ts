@@ -14,6 +14,7 @@ import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './serv
 import { ProcessManager } from './processManager.js';
 import { ConfigManager, FerrumProxyConfig } from './configManager.js';
 import { AuthManager } from './authManager.js';
+import { aggregateConnectionIps, type IpRecord, type PlayerIpRecord } from './ipAnalytics.js';
 import {
   getLatestRelease,
   getReleaseByVersion,
@@ -548,15 +549,6 @@ type PerformanceCache = {
   updatedAt: string;
 };
 
-type PlayerIpRecord = {
-  username?: string;
-  ips?: Array<{
-    ip?: string;
-    lastSeen?: number;
-    connections?: number;
-  }>;
-};
-
 const emptyAccumulatedProtocol = () => ({
   totalSessions: 0,
   bytesClientToTarget: 0,
@@ -671,22 +663,14 @@ async function buildIpAnalytics(instance: FerrumProxyInstance, cache: Performanc
     return { enabled: false, totalRecordedConnections: 0, uniqueIps: 0, topIps: [], locations: [] };
   }
   const records = await readPlayerIpRecords(instance);
-  const byIp = new Map<string, { ip: string; connections: number; players: Set<string>; lastSeen: number }>();
-  for (const record of records) {
-    for (const entry of record.ips || []) {
-      if (!entry.ip) continue;
-      const current = byIp.get(entry.ip) || {
-        ip: entry.ip,
-        connections: 0,
-        players: new Set<string>(),
-        lastSeen: 0,
-      };
-      current.connections += Math.max(1, Number(entry.connections) || 1);
-      if (record.username) current.players.add(record.username);
-      current.lastSeen = Math.max(current.lastSeen, Number(entry.lastSeen) || 0);
-      byIp.set(entry.ip, current);
-    }
+  let connections: IpRecord[] = [];
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(instance.dataDir, 'connectionIP.json'), 'utf-8'));
+    if (Array.isArray(parsed)) connections = parsed;
+  } catch {
+    // Older binaries only write playerIP.json; retain their existing analytics.
   }
+  const byIp = aggregateConnectionIps(records, connections);
 
   const unresolved = Array.from(byIp.keys()).filter((ip) => !cache.geo[ip]).slice(0, 3);
   const resolved = await Promise.all(

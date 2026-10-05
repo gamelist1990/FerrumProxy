@@ -47,6 +47,7 @@ pub struct AppRuntime {
     pub connection_buffer: ConnectionBuffer,
     pub player_mapper: TimestampPlayerMapper,
     pub player_ip_mapper: PlayerIpMapper,
+    pub connection_ip_mapper: ConnectionIpMapper,
     pub metrics: PerformanceMetrics,
     pub ddos_guard: DdosGuard,
 
@@ -86,6 +87,10 @@ impl AppRuntime {
             connection_buffer: ConnectionBuffer::default(),
             player_mapper: TimestampPlayerMapper::default(),
             player_ip_mapper: PlayerIpMapper::new(PathBuf::from("playerIP.json"), save_player_ip),
+            connection_ip_mapper: ConnectionIpMapper::new(
+                PathBuf::from("connectionIP.json"),
+                save_player_ip,
+            ),
             metrics: PerformanceMetrics::new(),
             ddos_guard: DdosGuard::new(ddos_settings),
             timeouts,
@@ -345,6 +350,87 @@ fn default_connection_count() -> u64 {
     1
 }
 
+/// Connection totals do not depend on a server reporting a player's username.
+#[derive(Clone)]
+pub struct ConnectionIpMapper {
+    records: Arc<Mutex<Vec<PlayerIpInfo>>>,
+    file_path: PathBuf,
+    enabled: bool,
+}
+
+impl ConnectionIpMapper {
+    pub fn new(file_path: PathBuf, enabled: bool) -> Self {
+        let mut records = Vec::<PlayerIpInfo>::new();
+        if enabled {
+            if file_path.exists() {
+                match std::fs::read_to_string(&file_path)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|text| Ok(serde_json::from_str(&text)?))
+                {
+                    Ok(saved) => records = saved,
+                    Err(err) => warn!("failed to load connection IPs: {err:#}"),
+                }
+            } else {
+                // Preserve historical totals on the first connection after an upgrade.
+                if let Ok(text) = std::fs::read_to_string(file_path.with_file_name("playerIP.json"))
+                {
+                    if let Ok(players) = serde_json::from_str::<Vec<PlayerIpRecord>>(&text) {
+                        for entry in players.into_iter().flat_map(|player| player.ips) {
+                            if let Some(existing) = records.iter_mut().find(|existing| {
+                                existing.ip == entry.ip && existing.protocol == entry.protocol
+                            }) {
+                                existing.connections =
+                                    existing.connections.saturating_add(entry.connections);
+                                existing.last_seen = existing.last_seen.max(entry.last_seen);
+                            } else {
+                                records.push(entry);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Self {
+            records: Arc::new(Mutex::new(records)),
+            file_path,
+            enabled,
+        }
+    }
+
+    pub async fn register_connection(&self, ip: String, protocol: &str) {
+        if !self.enabled {
+            return;
+        }
+        // Keep the lock through persistence to prevent stale concurrent writes.
+        let mut records = self.records.lock().await;
+        if let Some(entry) = records
+            .iter_mut()
+            .find(|entry| entry.ip == ip && entry.protocol == protocol)
+        {
+            entry.connections = entry.connections.saturating_add(1);
+            entry.last_seen = now_ms();
+        } else {
+            records.push(PlayerIpInfo {
+                ip,
+                protocol: protocol.to_string(),
+                last_seen: now_ms(),
+                connections: 1,
+            });
+        }
+        if let Err(err) = write_ip_records(&self.file_path, &*records).await {
+            warn!("failed to save connection IPs: {err:#}");
+        }
+    }
+}
+
+async fn write_ip_records(path: &std::path::Path, records: &impl Serialize) -> Result<()> {
+    let text = serde_json::to_string_pretty(records)?;
+    let temporary = path.with_extension("json.tmp");
+    tokio::fs::write(&temporary, text).await?;
+    tokio::fs::rename(&temporary, path).await?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct PlayerIpMapper {
     records: Arc<Mutex<HashMap<String, PlayerIpRecord>>>,
@@ -391,8 +477,8 @@ impl PlayerIpMapper {
                 connections: 1,
             });
         }
-        drop(guard);
-        if let Err(err) = self.save().await {
+        let records = guard.values().cloned().collect::<Vec<_>>();
+        if let Err(err) = write_ip_records(&self.file_path, &records).await {
             warn!("failed to save player IPs: {err:#}");
         }
     }
@@ -420,22 +506,6 @@ impl PlayerIpMapper {
             *guard = normalized;
         }
     }
-
-    async fn save(&self) -> Result<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-        let records = self
-            .records
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let text = serde_json::to_string_pretty(&records)?;
-        tokio::fs::write(&self.file_path, text).await?;
-        Ok(())
-    }
 }
 
 pub fn now_ms() -> i64 {
@@ -443,4 +513,109 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(crate) mod ip_tests {
+    use super::*;
+
+    pub fn temporary_directory() -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "ferrum-ip-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    pub fn read_connections(path: &std::path::Path) -> Vec<PlayerIpInfo> {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn connections_survive_concurrent_writes_and_restart() {
+        let directory = temporary_directory();
+        let path = directory.join("connectionIP.json");
+        let mapper = ConnectionIpMapper::new(path.clone(), true);
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..20 {
+            let mapper = mapper.clone();
+            tasks.spawn(async move {
+                mapper
+                    .register_connection("203.0.113.1".into(), "UDP")
+                    .await
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        assert_eq!(read_connections(&path)[0].connections, 20);
+        let reloaded = ConnectionIpMapper::new(path.clone(), true);
+        reloaded
+            .register_connection("203.0.113.1".into(), "UDP")
+            .await;
+        reloaded
+            .register_connection("203.0.113.1".into(), "TCP")
+            .await;
+        let records = read_connections(&path);
+        assert_eq!(records[0].connections, 21);
+        assert_eq!(records[1].connections, 1);
+        assert!(records[0].last_seen > 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn disabled_ip_saving_creates_no_file() {
+        let directory = temporary_directory();
+        let path = directory.join("connectionIP.json");
+        ConnectionIpMapper::new(path.clone(), false)
+            .register_connection("203.0.113.1".into(), "TCP")
+            .await;
+        assert!(!path.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn player_ip_history_is_persisted_and_reloaded() {
+        let directory = temporary_directory();
+        let path = directory.join("playerIP.json");
+        let mapper = PlayerIpMapper::new(path.clone(), true);
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let mapper = mapper.clone();
+            tasks.spawn(async move {
+                mapper
+                    .register_player_ip("Alex", "203.0.113.1".into(), "UDP")
+                    .await;
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        let reloaded = PlayerIpMapper::new(path, true);
+        let record = reloaded.get_player_ips("Alex").await.unwrap();
+        assert_eq!(record.ips[0].connections, 8);
+        assert_eq!(record.ips[0].ip, "203.0.113.1");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_player_counts_only_once() {
+        let directory = temporary_directory();
+        std::fs::write(directory.join("playerIP.json"), r#"[
+            {"username":"Alex","ips":[{"ip":"203.0.113.1","protocol":"UDP","lastSeen":1,"connections":3}]},
+            {"username":"Steve","ips":[{"ip":"203.0.113.1","protocol":"UDP","lastSeen":2}]}
+        ]"#).unwrap();
+        let path = directory.join("connectionIP.json");
+        ConnectionIpMapper::new(path.clone(), true)
+            .register_connection("203.0.113.1".into(), "UDP")
+            .await;
+        assert_eq!(read_connections(&path)[0].connections, 5);
+        ConnectionIpMapper::new(path.clone(), true)
+            .register_connection("203.0.113.1".into(), "UDP")
+            .await;
+        assert_eq!(read_connections(&path)[0].connections, 6);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
