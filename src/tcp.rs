@@ -667,7 +667,9 @@ mod tests {
 
     #[tokio::test]
     async fn diagnostics_do_not_wait_for_http_headers_before_forwarding() {
-        for diagnostics in [false, true] {
+        for (diagnostics, correction) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
             for request in [
                 b"\x16\x03\x01\0\x04abcd".as_slice(),
                 b"GET /v1/join HTTP/1.1\nHost: example.com\n\n".as_slice(),
@@ -680,10 +682,13 @@ mod tests {
                     let mut received = vec![0; expected.len()];
                     stream.read_exact(&mut received).await.unwrap();
                     assert_eq!(received, expected);
-                    stream.write_all(b"ACK").await.unwrap();
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nACK")
+                        .await
+                        .unwrap();
                     stream.shutdown().await.unwrap();
                 });
-                let rule: ListenerRule = serde_yaml::from_str(&format!("tcp: 19132\nudp: 19132\nbedrockTransport: nethernet\nnethernetDiagnostics: {diagnostics}\ntarget:\n  host: 127.0.0.1\n  tcp: {port}\n  udp: 19132\n")).unwrap();
+                let rule: ListenerRule = serde_yaml::from_str(&format!("tcp: 19132\nudp: 19132\nbedrockTransport: nethernet\nnethernetDiagnostics: {diagnostics}\nnethernetAdvertiseHost: {}\ntarget:\n  host: 127.0.0.1\n  tcp: {port}\n  udp: 19132\n", if correction { "132.145.118.98" } else { "null" })).unwrap();
                 let (mut client, proxy) = tokio::io::duplex(1024);
                 let task = tokio::spawn(handle_client(
                     Box::new(proxy),
@@ -697,7 +702,7 @@ mod tests {
                     )),
                 ));
                 client.write_all(request).await.unwrap();
-                let mut reply = [0; 3];
+                let mut reply = [0; 41];
                 let result =
                     timeout(Duration::from_millis(500), client.read_exact(&mut reply)).await;
                 if result.is_err() {
@@ -706,9 +711,9 @@ mod tests {
                 }
                 assert!(
                     result.is_ok(),
-                    "diagnostics={diagnostics} blocked the initial request"
+                    "diagnostics={diagnostics}, correction={correction} blocked the initial request"
                 );
-                assert_eq!(&reply, b"ACK");
+                assert_eq!(&reply, b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nACK");
                 client.shutdown().await.unwrap();
                 task.await.unwrap().unwrap();
                 upstream.await.unwrap();
