@@ -297,7 +297,21 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           onChange={(checked) => onChange('bedrockTransport', checked ? 'nethernet' : 'raknet')}
         />
         {listener.bedrockTransport === 'nethernet' && (
-          <p className="text-sm text-secondary">{t('nethernetTransportHint')}</p>
+          <div className="space-y-3">
+            <p className="text-sm text-secondary">{t('nethernetTransportHint')}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Input label={t('nethernetAdvertiseHost')} placeholder="132.145.118.98"
+                value={listener.nethernetAdvertiseHost || ''}
+                onChange={(e) => {
+                  onChange('nethernetAdvertiseHost', e.target.value.trim() || undefined);
+                }} />
+              <Input label={t('nethernetAdvertisePort')} type="number" min={1} max={65535} step={1}
+                placeholder={String(listener.udp || 19132)} value={listener.nethernetAdvertisePort || ''}
+                disabled={!listener.nethernetAdvertiseHost}
+                onChange={(e) => onChange('nethernetAdvertisePort', parseOptionalPort(e.target.value))} />
+            </div>
+            <p className="text-sm text-secondary">{t('nethernetAdvertiseHint')}</p>
+          </div>
         )}
       </div>
 

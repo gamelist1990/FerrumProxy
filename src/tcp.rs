@@ -128,6 +128,28 @@ async fn handle_client(
         return Ok(());
     }
     first_buf.truncate(first_len);
+    // Opt-in signaling detection must also work when the request line spans reads.
+    if !rule.uses_raknet_udp() && rule.nethernet_advertise_host.is_some() {
+        timeout(runtime.timeouts.initial_client_data, async {
+            while !first_buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                if first_buf.len() >= 64 * 1024 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "signaling headers too large",
+                    ));
+                }
+                let mut buf = [0; 4096];
+                let n = client.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                first_buf.extend_from_slice(&buf[..n]);
+            }
+            Ok::<_, io::Error>(())
+        })
+        .await
+        .context(INITIAL_CLIENT_DATA_TIMEOUT_MSG)??;
+    }
 
     let mut original_client = client_addr;
     let parsed =
@@ -200,6 +222,12 @@ async fn handle_client(
                     Arc::clone(&runtime),
                     forwarded_proto,
                     initial_payload,
+                    if !rule.uses_raknet_udp() {
+                        rule.nethernet_advertise_host
+                            .zip(rule.nethernet_advertise_port.or(rule.udp))
+                    } else {
+                        None
+                    },
                 )
                 .await;
             }
@@ -231,11 +259,31 @@ async fn copy_bidirectional(
     runtime: Arc<AppRuntime>,
     forwarded_proto: &'static str,
     initial_client_payload: Vec<u8>,
+    advertise: Option<(std::net::IpAddr, u16)>,
 ) -> Result<()> {
     let (client_read, client_write) = tokio::io::split(client);
     let (target_read, target_write) = tokio::io::split(target);
 
-    let (client_to_target, target_to_client) = if target_config.url_protocol.is_none() {
+    let signaling = advertise.filter(|_| {
+        http_request_path(&initial_client_payload)
+            .is_some_and(|p| p == "/v1/join" || p.starts_with("/v1/join/"))
+    });
+    let (client_to_target, target_to_client) = if let Some(endpoint) = signaling {
+        let c2t = tokio::spawn(pump(
+            client_read,
+            target_write,
+            initial_client_payload,
+            runtime.metrics.clone(),
+            Direction::ClientToTarget,
+        ));
+        let t2c = tokio::spawn(crate::nethernet_signaling::relay_answers(
+            target_read,
+            client_write,
+            endpoint,
+            runtime.metrics.clone(),
+        ));
+        (c2t, t2c)
+    } else if target_config.url_protocol.is_none() {
         let c2t = tokio::spawn(pump(
             client_read,
             target_write,
@@ -571,6 +619,59 @@ mod tests {
     use super::*;
     use crate::ddos_guard::DdosGuardSettings;
     use crate::runtime::{ip_tests, ConnectionIpMapper};
+
+    #[tokio::test]
+    async fn nethernet_fragmented_request_preserves_proxy_ip_and_rewrites_answer() {
+        let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = backend.local_addr().unwrap().port();
+        let rule: ListenerRule = serde_yaml::from_str(&format!(
+            "tcp: 19132\nudp: 19132\nhaproxy: true\nbedrockTransport: nethernet\nnethernetAdvertiseHost: 132.145.118.98\ntarget:\n  host: 127.0.0.1\n  tcp: {port}\n  udp: 5001\n"
+        )).unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.unwrap();
+            let mut proxy = [0; 28];
+            stream.read_exact(&mut proxy).await.unwrap();
+            let parsed = parse_proxy_chain(&proxy).unwrap();
+            assert_eq!(parsed.headers[0].source_address.to_string(), "203.0.113.42");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            assert!(request.starts_with(b"POST /v1/join/123 HTTP/1.1"));
+            let body = "v=0\r\nm=application 5001 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 KEEP\r\na=candidate:1 1 UDP 2114977535 127.0.0.1 5001 typ host\r\n";
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{body}",body.len());
+            for chunk in response.as_bytes().chunks(11) {
+                stream.write_all(chunk).await.unwrap();
+            }
+            stream.shutdown().await.unwrap();
+        });
+        let (mut client, proxy) = tokio::io::duplex(64);
+        let runtime = Arc::new(AppRuntime::new(
+            false,
+            false,
+            vec![],
+            DdosGuardSettings::default(),
+        ));
+        let task = tokio::spawn(handle_client(
+            Box::new(proxy),
+            "203.0.113.42:45678".parse().unwrap(),
+            Arc::new(rule),
+            runtime,
+        ));
+        let result = timeout(Duration::from_secs(5), async {
+            for chunk in b"POST /v1/join/123 HTTP/1.1\r\nHost: play.pexserver.com\r\nContent-Length: 0\r\n\r\n".chunks(3) {
+                client.write_all(chunk).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+            client.shutdown().await.unwrap();
+            let mut bytes = Vec::new(); client.read_to_end(&mut bytes).await.unwrap(); bytes
+        }).await.unwrap();
+        let result = String::from_utf8(result).unwrap();
+        assert!(result.contains("132.145.118.98 19132 typ srflx raddr 127.0.0.1 rport 5001"));
+        assert!(result.contains("a=fingerprint:sha-256 KEEP"));
+        upstream.await.unwrap();
+        task.await.unwrap().unwrap();
+    }
 
     #[tokio::test]
     async fn records_connections_without_webhook_or_login_callback() {

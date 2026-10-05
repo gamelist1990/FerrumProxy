@@ -247,6 +247,11 @@ pub struct ListenerRule {
     /// NetherNet keeps TCP PROXY forwarding but relays WebRTC UDP unchanged.
     #[serde(default)]
     pub bedrock_transport: BedrockTransport,
+    /// Literal public IP used for NetherNet SDP answers (opt-in).
+    #[serde(default)]
+    pub nethernet_advertise_host: Option<std::net::IpAddr>,
+    #[serde(default)]
+    pub nethernet_advertise_port: Option<u16>,
     #[serde(default)]
     pub https: Option<ListenerHttpsConfig>,
     #[serde(default = "default_rewrite_bedrock_pong_ports")]
@@ -344,6 +349,36 @@ impl ProxyConfig {
         let mut config: Self = serde_yaml::from_str(&text)
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         config.normalize_targets();
+        for listener in &config.listeners {
+            if let Some(ip) = listener.nethernet_advertise_host {
+                anyhow::ensure!(
+                    !ip.is_unspecified() && !ip.is_multicast(),
+                    "nethernetAdvertiseHost must be a usable IP address"
+                );
+                anyhow::ensure!(
+                    !listener.uses_raknet_udp(),
+                    "nethernetAdvertiseHost requires bedrockTransport: nethernet"
+                );
+                anyhow::ensure!(
+                    listener.tcp.is_some()
+                        && listener.udp.is_some()
+                        && listener.has_targets_for(Protocol::Udp),
+                    "NetherNet advertisement requires TCP signaling and UDP forwarding"
+                );
+                anyhow::ensure!(
+                    listener
+                        .nethernet_advertise_port
+                        .or(listener.udp)
+                        .is_some_and(|p| p != 0),
+                    "NetherNet advertised port must be nonzero"
+                );
+            } else {
+                anyhow::ensure!(
+                    listener.nethernet_advertise_port.is_none(),
+                    "nethernetAdvertisePort requires nethernetAdvertiseHost"
+                );
+            }
+        }
         Ok(config)
     }
 

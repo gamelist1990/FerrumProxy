@@ -3,6 +3,7 @@ import { watch, FSWatcher } from 'fs';
 import YAML from 'yaml';
 import { EventEmitter } from 'events';
 import chalk from 'chalk';
+import { isIP } from 'net';
 
 export interface FerrumProxyConfig {
   endpoint?: number;
@@ -60,6 +61,8 @@ export interface FerrumProxyConfig {
     udp?: number;
     haproxy?: boolean;
     bedrockTransport?: 'raknet' | 'nethernet';
+    nethernetAdvertiseHost?: string;
+    nethernetAdvertisePort?: number;
     https?: {
       enabled?: boolean;
       autoDetect?: boolean;
@@ -302,6 +305,18 @@ export class ConfigManager extends EventEmitter {
         errors.push('listeners must be an array');
       } else {
         config.listeners.forEach((listener, index) => {
+          if (listener.nethernetAdvertiseHost !== undefined) {
+            if (typeof listener.nethernetAdvertiseHost !== 'string' || !isIP(listener.nethernetAdvertiseHost) || ['0.0.0.0', '::'].includes(listener.nethernetAdvertiseHost)) {
+              errors.push(`listeners[${index}].nethernetAdvertiseHost must be a usable literal IP address`);
+            }
+            if (listener.bedrockTransport !== 'nethernet' || !listener.tcp || !listener.udp) {
+              errors.push(`listeners[${index}]: NetherNet advertisement requires NetherNet, TCP and UDP`);
+            }
+          }
+          if (listener.nethernetAdvertisePort !== undefined &&
+            (!listener.nethernetAdvertiseHost || !Number.isInteger(listener.nethernetAdvertisePort) || listener.nethernetAdvertisePort < 1 || listener.nethernetAdvertisePort > 65535)) {
+            errors.push(`listeners[${index}].nethernetAdvertisePort requires a public IP and a valid port`);
+          }
           if (listener.bedrockTransport !== undefined && !['raknet', 'nethernet'].includes(listener.bedrockTransport)) {
             errors.push(`listeners[${index}].bedrockTransport must be raknet or nethernet`);
           }

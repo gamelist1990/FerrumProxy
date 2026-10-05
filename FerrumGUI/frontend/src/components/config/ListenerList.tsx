@@ -32,6 +32,12 @@ export const ListenerList: React.FC<ListenerListProps> = ({ instanceId, listener
   const handleListenerChange = <K extends keyof ListenerConfig>(index: number, field: K, value: ListenerConfig[K]) => {
     const newListeners = [...listeners];
     newListeners[index] = syncListenerTargets({ ...newListeners[index], [field]: value });
+    if (field === 'bedrockTransport' && value !== 'nethernet') {
+      newListeners[index].nethernetAdvertiseHost = undefined;
+      newListeners[index].nethernetAdvertisePort = undefined;
+    } else if (field === 'nethernetAdvertiseHost' && !value) {
+      newListeners[index].nethernetAdvertisePort = undefined;
+    }
     onChange(newListeners);
   };
 

@@ -14,6 +14,8 @@ describe('multiple public routes to one server', () => {
     web.target = web.targets[0];
     web.httpMappings = [{ path: '/map', targets: [{ host: '100.83.127.8', tcp: 8124 }] }];
     const config = { listeners: [createListenerRoute('java', '100.83.127.8'), createListenerRoute('nethernet', '100.83.127.8'), web] };
+    config.listeners[1].nethernetAdvertiseHost = '132.145.118.98';
+    config.listeners[1].nethernetAdvertisePort = 19132;
     expect((await manager.validate(config)).errors).toEqual([]);
     const folder = await mkdtemp(join(tmpdir(), 'ferrum-ui-routes-'));
     const file = join(folder, 'routes.yml');
@@ -22,6 +24,8 @@ describe('multiple public routes to one server', () => {
       expect((await readFile(file, 'utf8')).includes('bedrockTransport: nethernet')).toBe(true);
       const restored = await manager.read(file);
       expect(restored.listeners).toHaveLength(3);
+      expect(restored.listeners![1].nethernetAdvertiseHost).toBe('132.145.118.98');
+      expect(restored.listeners![1].nethernetAdvertisePort).toBe(19132);
       expect(restored.listeners![2].tcp).toBe(8080);
       expect(restored.listeners![2].targets![0].tcp).toBe(8123);
       expect(restored.listeners![2].httpMappings![0].targets![0].tcp).toBe(8124);
@@ -29,6 +33,18 @@ describe('multiple public routes to one server', () => {
       await unlink(file).catch(() => {});
       await rmdir(folder);
     }
+  });
+  test('NetherNet advertisement rejects DNS names, missing IP and invalid ports', async () => {
+    const manager = new ConfigManager();
+    const listener = createListenerRoute('nethernet', '100.83.127.8');
+    listener.nethernetAdvertiseHost = 'play.pexserver.com';
+    expect((await manager.validate({ listeners: [listener] })).errors.length).toBeGreaterThan(0);
+    listener.nethernetAdvertiseHost = '132.145.118.98';
+    listener.nethernetAdvertisePort = 0;
+    expect((await manager.validate({ listeners: [listener] })).errors.length).toBeGreaterThan(0);
+    listener.nethernetAdvertiseHost = undefined;
+    listener.nethernetAdvertisePort = 19132;
+    expect((await manager.validate({ listeners: [listener] })).errors.length).toBeGreaterThan(0);
   });
   test('Java and NetherNet retain separate public and destination ports after JSON serialization', () => {
     const routes = JSON.parse(JSON.stringify([

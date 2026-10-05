@@ -32,18 +32,20 @@
       "udp": 19132,
       "target": {
         "host": "100.83.127.8",
-        "tcp": 5001,
+        "tcp": 19132,
         "udp": 19132
       },
       "targets": [
         {
           "host": "100.83.127.8",
-          "tcp": 5001,
+          "tcp": 19132,
           "udp": 19132
         }
       ],
       "haproxy": true,
       "bedrockTransport": "nethernet",
+      "nethernetAdvertiseHost": "132.145.118.98",
+      "nethernetAdvertisePort": 19132,
       "rewriteBedrockPongPorts": false,
       "https": {
         "enabled": false,
