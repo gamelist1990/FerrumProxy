@@ -116,6 +116,8 @@ export const ja_JP: Translation = {
   protoUdpOnly: 'UDPのみ',
   splitTargetHint: 'TCPとUDPを別のホストへ振り分けるには、「TCPのみ」のターゲットと「UDPのみ」のターゲットをそれぞれ別ホストで追加してください。',
   rewriteBedrockPongPorts: 'Bedrock pong のポートを書き換え',
+  nethernetTransport: 'NetherNet / WebRTC を使用',
+  nethernetTransportHint: 'TCP signaling と UDP WebRTC の両方のポートを設定してください。HAProxy は TCP にだけ適用されます。Geyser 側にも公開 UDP アドレスの設定が必要です。',
   enableHttpsListener: 'HTTPS待受を有効化',
   autoDetectLetsEncrypt: 'Let\'s Encrypt を自動検知',
   letsEncryptDomain: 'Let\'s Encrypt ドメイン',

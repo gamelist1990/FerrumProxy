@@ -1,0 +1,22 @@
+# Copy to a separate config, replace the backend host, then run:
+# ferrum-proxy --config config.nethernet.example.yml
+# Geyser's advertised WebRTC UDP port must match the public UDP port (5000).
+endpoint: 6000
+useRestApi: false
+savePlayerIp: false
+debug: false
+firewall:
+  enabled: false
+ddosGuard:
+  enabled: true
+listeners:
+  - bind: 0.0.0.0
+    tcp: 5000
+    udp: 5000
+    bedrockTransport: nethernet
+    # Sends TCP PROXY v2 to builtin signaling; never adds it to WebRTC UDP.
+    haproxy: true
+    target:
+      host: 192.0.2.10 # Replace with the reachable PEXServer address.
+      tcp: 5000
+      udp: 5000

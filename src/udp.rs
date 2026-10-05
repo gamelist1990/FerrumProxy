@@ -232,7 +232,10 @@ async fn handle_datagram(
 
     // ファストパス: PROXY v2 シグネチャを最初の 12 バイトで判定。
     // 通常のゲームパケットはこの分岐を通らず parse_proxy_chain を呼ばない。
-    let payload: &[u8] = if packet.len() >= 12 && &packet[..12] == b"\r\n\r\n\0\r\nQUIT\n" {
+    let payload: &[u8] = if rule.uses_raknet_udp()
+        && packet.len() >= 12
+        && &packet[..12] == b"\r\n\r\n\0\r\nQUIT\n"
+    {
         let parsed =
             parse_proxy_chain(packet).unwrap_or_else(|_| crate::proxy_protocol::ParsedProxyChain {
                 headers: Vec::new(),
@@ -265,7 +268,7 @@ async fn handle_datagram(
         return Ok(());
     }
 
-    if tracing::enabled!(tracing::Level::DEBUG) {
+    if rule.uses_raknet_udp() && tracing::enabled!(tracing::Level::DEBUG) {
         if let Some(description) = describe_offline_ping(payload) {
             debug!("Bedrock offline ping from {original_client} via {peer}: {description}");
         } else if let Some(description) = describe_raknet_packet(payload) {
@@ -273,7 +276,7 @@ async fn handle_datagram(
         }
     }
 
-    if is_offline_ping(payload) {
+    if rule.uses_raknet_udp() && is_offline_ping(payload) {
         let cached = shared_pong.lock().unwrap().clone();
         if let (Some(entry), Some(timestamp)) = (cached.as_ref(), payload.get(1..9)) {
             let age_ms = entry.updated_at.elapsed().as_millis() as u64;
@@ -307,7 +310,7 @@ async fn handle_datagram(
         }
     }
 
-    let is_new_conn = is_open_connection_request_1(&payload);
+    let is_new_conn = rule.uses_raknet_udp() && is_open_connection_request_1(&payload);
     let session = obtain_session(
         &server,
         &sessions,
@@ -319,7 +322,9 @@ async fn handle_datagram(
     )
     .await?;
 
-    session.record_raknet_stage(peer, "client->server", payload, Some("client"));
+    if rule.uses_raknet_udp() {
+        session.record_raknet_stage(peer, "client->server", payload, Some("client"));
+    }
 
     // Cloudburst does not remove the sender mapping when a RakNet child session
     // closes. RakProxyServerHandler reuses it until the ExpiringMap entry has
@@ -329,7 +334,8 @@ async fn handle_datagram(
     // Re-arm only when Cloudburst's mapping has actually had enough idle time
     // to expire while FerrumProxy's longer-lived upstream socket still exists.
     let upstream_idle_ms = session.ms_since_last_activity();
-    if rule.haproxy
+    if rule.uses_raknet_udp()
+        && rule.haproxy
         && upstream_idle_ms >= CLOUDBURST_PROXY_MAPPING_TIMEOUT_MS
         && session.header_sent.swap(false, Ordering::Relaxed)
     {
@@ -342,7 +348,7 @@ async fn handle_datagram(
 
     session.touch();
 
-    if matches!(payload.first(), Some(0x80..=0x8d)) {
+    if rule.uses_raknet_udp() && matches!(payload.first(), Some(0x80..=0x8d)) {
         session.mark_established();
     }
 
@@ -488,7 +494,17 @@ fn spawn_backend_recv(
     shared_pong: SharedPongCache,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
-    let idle_budget = runtime.timeouts.udp_session_idle;
+    // ICE keepalives can be farther apart than RakNet traffic. Keep the NAT-like
+    // upstream socket alive through a quiet WebRTC connection; preserve longer
+    // configured timeouts (e.g. the high-latency preset).
+    let idle_budget = if rule.uses_raknet_udp() {
+        runtime.timeouts.udp_session_idle
+    } else {
+        runtime
+            .timeouts
+            .udp_session_idle
+            .max(std::time::Duration::from_secs(60))
+    };
     let poll_interval = std::time::Duration::from_secs(1);
     tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
@@ -501,21 +517,23 @@ fn spawn_backend_recv(
                     let raw = &buf[..len];
 
                     // 1) PROXY v2 ヘッダは 12 バイトシグネチャで判定 (parse_proxy_chain は Zone 判定が重い)。
-                    let stripped: &[u8] =
-                        if raw.len() >= 12 && &raw[..12] == b"\r\n\r\n\0\r\nQUIT\n" {
-                            match parse_proxy_chain(raw) {
-                                Ok(parsed) if !parsed.headers.is_empty() => {
-                                    &raw[parsed.payload_offset..]
-                                }
-                                _ => raw,
+                    let stripped: &[u8] = if rule.uses_raknet_udp()
+                        && raw.len() >= 12
+                        && &raw[..12] == b"\r\n\r\n\0\r\nQUIT\n"
+                    {
+                        match parse_proxy_chain(raw) {
+                            Ok(parsed) if !parsed.headers.is_empty() => {
+                                &raw[parsed.payload_offset..]
                             }
-                        } else {
-                            raw
-                        };
+                            _ => raw,
+                        }
+                    } else {
+                        raw
+                    };
 
                     // 2) Pong 判定/書換は Pong opcode (0x1c) の場合だけ行う。
                     //    通常フレームでは owned Vec を確保しない。
-                    let is_pong = matches!(stripped.first(), Some(&0x1c));
+                    let is_pong = rule.uses_raknet_udp() && matches!(stripped.first(), Some(&0x1c));
                     let response_owned: Option<Vec<u8>> = if is_pong {
                         let mut buf_out: Vec<u8> = stripped.to_vec();
 
@@ -568,7 +586,7 @@ fn spawn_backend_recv(
                         }
                         Some(buf_out)
                     } else {
-                        if tracing::enabled!(tracing::Level::DEBUG) {
+                        if rule.uses_raknet_udp() && tracing::enabled!(tracing::Level::DEBUG) {
                             if let Some(description) = describe_raknet_packet(stripped) {
                                 debug!(
                                     "RakNet backend packet from {backend_addr} to {peer}: {description}"
@@ -580,16 +598,18 @@ fn spawn_backend_recv(
 
                     let out: &[u8] = response_owned.as_deref().unwrap_or(stripped);
 
-                    session.record_raknet_stage(
-                        peer,
-                        "server->client",
-                        out,
-                        Some(if response_owned.is_some() {
-                            "backend-rewritten"
-                        } else {
-                            "backend"
-                        }),
-                    );
+                    if rule.uses_raknet_udp() {
+                        session.record_raknet_stage(
+                            peer,
+                            "server->client",
+                            out,
+                            Some(if response_owned.is_some() {
+                                "backend-rewritten"
+                            } else {
+                                "backend"
+                            }),
+                        );
+                    }
 
                     if let Err(err) = server.send_to(out, peer).await {
                         error!("UDP response send to {peer} failed: {err}");
@@ -778,7 +798,8 @@ async fn send_to_target(
     // past that header, caches sender -> original client, and passes the same
     // datagram's RakNet payload onward. While cached, subsequent datagrams must
     // contain RakNet only. The expiry-aligned re-arm is handled above.
-    let need_header = rule.haproxy && !session.header_sent.load(Ordering::Relaxed);
+    let need_header =
+        rule.uses_raknet_udp() && rule.haproxy && !session.header_sent.load(Ordering::Relaxed);
 
     let bytes_sent = if need_header {
         let header = build_proxy_v2_header(
@@ -825,4 +846,143 @@ async fn resolve_target_addr(host: &str, port: u16) -> Result<SocketAddr> {
     addrs
         .next()
         .with_context(|| format!("no addresses returned for {host}:{port}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BedrockTransport;
+    use crate::ddos_guard::DdosGuardSettings;
+    use std::time::Duration;
+
+    fn test_rule(port: u16, transport: BedrockTransport) -> Arc<ListenerRule> {
+        let mut rule: ListenerRule = serde_yaml::from_str(&format!(
+            "bind: 127.0.0.1\nudp: 5000\nhaproxy: true\ntarget:\n  host: 127.0.0.1\n  udp: {port}\n"
+        ))
+        .unwrap();
+        rule.bedrock_transport = transport;
+        Arc::new(rule)
+    }
+
+    async fn receive(socket: &UdpSocket) -> Result<(Vec<u8>, SocketAddr)> {
+        let mut bytes = vec![0; MAX_DATAGRAM_SIZE];
+        let (len, addr) = timeout(Duration::from_secs(2), socket.recv_from(&mut bytes)).await??;
+        bytes.truncate(len);
+        Ok((bytes, addr))
+    }
+
+    #[tokio::test]
+    async fn nethernet_relays_opaque_datagrams_with_stable_separate_peer_sockets() -> Result<()> {
+        let backend = UdpSocket::bind("127.0.0.1:0").await?;
+        let server = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+        let clients = [
+            UdpSocket::bind("127.0.0.1:0").await?,
+            UdpSocket::bind("127.0.0.1:0").await?,
+        ];
+        let rule = test_rule(backend.local_addr()?.port(), BedrockTransport::Nethernet);
+        let runtime = Arc::new(AppRuntime::new(
+            false,
+            false,
+            vec![],
+            DdosGuardSettings::default(),
+        ));
+        let sessions: SessionMap = Arc::new(StdMutex::new(HashMap::new()));
+        // A valid RakNet pong makes accidental caching/rewriting observable.
+        let magic = [
+            0, 255, 255, 0, 254, 254, 254, 254, 253, 253, 253, 253, 18, 52, 86, 120,
+        ];
+        let motd = b"MCPE;\"Probe\";390;1.20.0;0;10;123;;Survival;1;19132;19133;";
+        let mut pong = vec![0x1c];
+        pong.extend_from_slice(&[0; 16]);
+        pong.extend_from_slice(&magic);
+        pong.extend_from_slice(&(motd.len() as u16).to_be_bytes());
+        pong.extend_from_slice(motd);
+        let cache = Arc::new(StdMutex::new(Some(CachedPong {
+            payload: pong.clone(),
+            updated_at: Instant::now(),
+        })));
+        let mut ping = vec![0x01];
+        ping.extend_from_slice(&[0; 8]);
+        ping.extend_from_slice(&magic);
+        let mut proxy_like = build_proxy_v2_header(
+            "203.0.113.42".parse()?,
+            12345,
+            "127.0.0.1".parse()?,
+            5000,
+            true,
+        );
+        proxy_like.extend_from_slice(b"opaque");
+        let mut ocr1 = vec![0x05];
+        ocr1.extend_from_slice(&magic);
+        ocr1.push(11);
+        let packets = [
+            vec![
+                0, 1, 0, 0, 0x21, 0x12, 0xa4, 0x42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ],
+            vec![22, 254, 253, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 42],
+            ping,
+            pong.clone(),
+            proxy_like,
+            ocr1,
+            vec![0x80, 1, 2, 3],
+        ];
+        let mut upstream_addresses = [None, None];
+        for packet in &packets {
+            for (index, client) in clients.iter().enumerate() {
+                let peer = client.local_addr()?;
+                handle_datagram(&server, &sessions, &rule, &runtime, &cache, peer, packet).await?;
+                let (forwarded, upstream) = receive(&backend).await?;
+                assert_eq!(forwarded, *packet, "client datagram was altered");
+                if let Some(previous) = upstream_addresses[index] {
+                    assert_eq!(upstream, previous, "ICE mapping changed during the session");
+                }
+                upstream_addresses[index] = Some(upstream);
+                backend.send_to(packet, upstream).await?;
+                let (reply, source) = receive(client).await?;
+                assert_eq!(reply, *packet, "backend datagram was altered");
+                assert_eq!(source, server.local_addr()?);
+            }
+        }
+        assert_ne!(upstream_addresses[0], upstream_addresses[1]);
+        assert_eq!(cache.lock().unwrap().as_ref().unwrap().payload, pong);
+        for client in &clients {
+            let peer = client.local_addr()?;
+            {
+                let guard = sessions.lock().unwrap();
+                let session = guard.get(&peer).unwrap();
+                assert!(!session.header_sent.load(Ordering::Relaxed));
+                assert!(!session.established.load(Ordering::Relaxed));
+            }
+            close_session(&sessions, &runtime, peer).await;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn raknet_still_sends_proxy_header_only_on_initial_datagram() -> Result<()> {
+        let backend = UdpSocket::bind("127.0.0.1:0").await?;
+        let server = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+        let rule = test_rule(backend.local_addr()?.port(), BedrockTransport::Raknet);
+        let runtime = Arc::new(AppRuntime::new(
+            false,
+            false,
+            vec![],
+            DdosGuardSettings::default(),
+        ));
+        let sessions: SessionMap = Arc::new(StdMutex::new(HashMap::new()));
+        let cache = Arc::new(StdMutex::new(None));
+        let peer: SocketAddr = "127.0.0.1:12345".parse()?;
+        for index in 0..2 {
+            handle_datagram(
+                &server, &sessions, &rule, &runtime, &cache, peer, b"payload",
+            )
+            .await?;
+            let (received, _) = receive(&backend).await?;
+            let parsed = parse_proxy_chain(&received)?;
+            assert_eq!(parsed.headers.len(), if index == 0 { 1 } else { 0 });
+            assert_eq!(&received[parsed.payload_offset..], b"payload");
+        }
+        close_session(&sessions, &runtime, peer).await;
+        Ok(())
+    }
 }

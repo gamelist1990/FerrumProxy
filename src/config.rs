@@ -244,6 +244,9 @@ pub struct ListenerRule {
     pub udp: Option<u16>,
     #[serde(default)]
     pub haproxy: bool,
+    /// NetherNet keeps TCP PROXY forwarding but relays WebRTC UDP unchanged.
+    #[serde(default)]
+    pub bedrock_transport: BedrockTransport,
     #[serde(default)]
     pub https: Option<ListenerHttpsConfig>,
     #[serde(default = "default_rewrite_bedrock_pong_ports")]
@@ -256,6 +259,35 @@ pub struct ListenerRule {
     pub targets: Vec<ProxyTarget>,
     #[serde(default)]
     pub http_mappings: Vec<HttpTargetMapping>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BedrockTransport {
+    #[default]
+    Raknet,
+    Nethernet,
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn existing_listeners_default_to_raknet_and_nethernet_survives_serialization() {
+        let legacy: ListenerRule = serde_yaml::from_str("udp: 5000\nhaproxy: true").unwrap();
+        assert!(legacy.uses_raknet_udp());
+        let nethernet: ListenerRule = serde_yaml::from_str(
+            "tcp: 5000\nudp: 5000\nhaproxy: true\nbedrockTransport: nethernet",
+        )
+        .unwrap();
+        assert!(!nethernet.uses_raknet_udp());
+        assert!(nethernet.haproxy);
+        let restored: ListenerRule =
+            serde_yaml::from_str(&serde_yaml::to_string(&nethernet).unwrap()).unwrap();
+        assert_eq!(restored.bedrock_transport, BedrockTransport::Nethernet);
+        assert!(serde_yaml::from_str::<ListenerRule>("udp: 5000\nbedrockTransport: typo").is_err());
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -407,6 +439,10 @@ listeners:
 }
 
 impl ListenerRule {
+    pub fn uses_raknet_udp(&self) -> bool {
+        self.bedrock_transport == BedrockTransport::Raknet
+    }
+
     pub fn has_targets_for(&self, protocol: Protocol) -> bool {
         !self.targets_for(protocol).is_empty() || !self.http_targets_for(protocol).is_empty()
     }

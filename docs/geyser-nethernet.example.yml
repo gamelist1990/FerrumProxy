@@ -1,0 +1,19 @@
+# PR #6712 standalone preview. Merge these settings into Geyser's generated config.
+# Start with -DgeyserAdvertiseAddresses=<FerrumProxy public IPv4> before -jar.
+bedrock:
+  address: 0.0.0.0
+  port: 5000
+  webrtc-port: 0
+  transport: nethernet
+  signaling:
+    mode: builtin
+java:
+  address: 127.0.0.1
+  port: 25565
+  auth-type: online # Keep your current online/floodgate setting.
+advanced:
+  bedrock:
+    use-haproxy-protocol: true
+    # Replace with the FerrumProxy source IP as observed by PEXServer.
+    haproxy-protocol-whitelisted-ips:
+      - 192.0.2.20

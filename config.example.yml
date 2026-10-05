@@ -67,6 +67,9 @@ listeners:
     tcp: 25565
     udp: 25565
     haproxy: false
+    # raknet (default) | nethernet. NetherNet sends PROXY only on TCP signaling;
+    # UDP is relayed unchanged, without RakNet pong caching or port rewriting.
+    bedrockTransport: raknet
     https:
       enabled: false
       autoDetect: true

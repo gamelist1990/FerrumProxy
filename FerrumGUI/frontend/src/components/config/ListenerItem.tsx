@@ -282,19 +282,30 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
 
       <div className="mt-4 mb-4">
         <Switch
+          label={t('nethernetTransport')}
+          checked={listener.bedrockTransport === 'nethernet'}
+          onChange={(checked) => onChange('bedrockTransport', checked ? 'nethernet' : 'raknet')}
+        />
+        {listener.bedrockTransport === 'nethernet' && (
+          <p className="text-sm text-secondary">{t('nethernetTransportHint')}</p>
+        )}
+      </div>
+
+      <div className="mt-4 mb-4">
+        <Switch
           label="HAProxy Protocol"
           checked={listener.haproxy || false}
           onChange={(checked) => onChange('haproxy', checked)}
         />
       </div>
 
-      <div className="mt-4 mb-4">
+      {listener.bedrockTransport !== 'nethernet' && <div className="mt-4 mb-4">
         <Switch
           label={t('rewriteBedrockPongPorts') || 'Rewrite Bedrock pong ports'}
           checked={listener.rewriteBedrockPongPorts ?? true}
           onChange={(checked) => onChange('rewriteBedrockPongPorts', checked)}
         />
-      </div>
+      </div>}
 
       <div className="mt-4 mb-4">
         <Switch

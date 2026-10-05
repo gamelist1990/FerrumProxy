@@ -30,6 +30,7 @@ export interface ListenerConfig {
   tcp?: number;
   udp?: number;
   haproxy?: boolean;
+  bedrockTransport?: 'raknet' | 'nethernet';
   https?: {
     enabled?: boolean;
     autoDetect?: boolean;

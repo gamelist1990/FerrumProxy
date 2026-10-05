@@ -114,6 +114,8 @@ export const en_US = {
   protoUdpOnly: 'UDP only',
   splitTargetHint: 'To route TCP and UDP to different hosts, add a "TCP only" target and a "UDP only" target with separate hosts.',
   rewriteBedrockPongPorts: 'Rewrite Bedrock pong ports',
+  nethernetTransport: 'Use NetherNet / WebRTC',
+  nethernetTransportHint: 'Configure both TCP signaling and UDP WebRTC ports. HAProxy applies only to TCP. Configure the public UDP address in Geyser as well.',
   enableHttpsListener: 'Enable HTTPS Listener',
   autoDetectLetsEncrypt: 'Auto-detect Let\'s Encrypt',
   letsEncryptDomain: 'Let\'s Encrypt Domain',

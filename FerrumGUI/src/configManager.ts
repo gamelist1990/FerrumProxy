@@ -59,6 +59,7 @@ export interface FerrumProxyConfig {
     tcp?: number;
     udp?: number;
     haproxy?: boolean;
+    bedrockTransport?: 'raknet' | 'nethernet';
     https?: {
       enabled?: boolean;
       autoDetect?: boolean;
@@ -301,6 +302,9 @@ export class ConfigManager extends EventEmitter {
         errors.push('listeners must be an array');
       } else {
         config.listeners.forEach((listener, index) => {
+          if (listener.bedrockTransport !== undefined && !['raknet', 'nethernet'].includes(listener.bedrockTransport)) {
+            errors.push(`listeners[${index}].bedrockTransport must be raknet or nethernet`);
+          }
           if (listener.tcp !== undefined) {
             if (typeof listener.tcp !== 'number' || listener.tcp < 1 || listener.tcp > 65535) {
               errors.push(`listeners[${index}].tcp must be a valid port number`);
