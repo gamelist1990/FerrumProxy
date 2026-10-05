@@ -1,17 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { Plus, Network } from 'lucide-react';
+import { Input } from '../ui/Input';
+import { createListenerRoute, listenerPortsConflict, type RoutePreset } from './listenerRoutes';
 import { ListenerItem } from './ListenerItem';
 import { Button } from '../ui/Button';
 import type { ListenerConfig } from '../../api';
 import { t } from '../../lang';
 
-const createDefaultTarget = () => ({
-  host: 'localhost',
-  tcp: 19132,
-  udp: 19132,
-});
-
 const syncListenerTargets = (listener: ListenerConfig): ListenerConfig => {
-  const targets = listener.targets && listener.targets.length > 0
+  const targets = listener.targets !== undefined
     ? listener.targets
     : listener.target
       ? [listener.target]
@@ -31,7 +28,8 @@ interface ListenerListProps {
 }
 
 export const ListenerList: React.FC<ListenerListProps> = ({ instanceId, listeners, onChange }) => {
-  const handleListenerChange = (index: number, field: string, value: any) => {
+  const [sharedHost, setSharedHost] = useState(listeners[0]?.targets?.[0]?.host ?? listeners[0]?.target?.host ?? '100.83.127.8');
+  const handleListenerChange = <K extends keyof ListenerConfig>(index: number, field: K, value: ListenerConfig[K]) => {
     const newListeners = [...listeners];
     newListeners[index] = syncListenerTargets({ ...newListeners[index], [field]: value });
     onChange(newListeners);
@@ -42,6 +40,7 @@ export const ListenerList: React.FC<ListenerListProps> = ({ instanceId, listener
     newListeners[index] = syncListenerTargets({
       ...newListeners[index],
       targets,
+      target: targets[0],
     });
     onChange(newListeners);
   };
@@ -55,30 +54,8 @@ export const ListenerList: React.FC<ListenerListProps> = ({ instanceId, listener
     onChange(newListeners);
   };
 
-  const addListener = () => {
-    const newListeners = [...listeners];
-    newListeners.push({
-      bind: '0.0.0.0',
-      tcp: 25565,
-      udp: 25565,
-      haproxy: false,
-      https: {
-        enabled: false,
-        autoDetect: true,
-        autoProvision: false,
-        letsEncryptDomain: 'play.pexserver.com',
-        letsEncryptDomains: ['play.pexserver.com'],
-        letsEncryptEmail: '',
-        certPath: '',
-        keyPath: '',
-      },
-      webhook: '',
-      rewriteBedrockPongPorts: true,
-      target: createDefaultTarget(),
-      targets: [createDefaultTarget()],
-      httpMappings: [],
-    });
-    onChange(newListeners);
+  const addListener = (preset: RoutePreset) => {
+    onChange([...listeners, createListenerRoute(preset, sharedHost.trim() || 'localhost')]);
   };
 
   const removeListener = (index: number) => {
@@ -89,21 +66,21 @@ export const ListenerList: React.FC<ListenerListProps> = ({ instanceId, listener
 
   return (
     <div className="listener-list">
-      <div className="flex justify-between items-center mb-4">
-        <h4 className="text-lg font-bold text-primary">{t('listeners') || 'Listeners'}</h4>
-        {listeners.length === 0 && (
-          <span className="text-sm text-secondary">{t('singleListenerOnly') || 'Single listener only'}</span>
-        )}
-      </div>
-
-      {listeners.length === 0 ? (
-        <div className="text-center py-8 text-secondary">
-          <p>{t('noListenersConfigured') || 'No listeners configured'}</p>
-          <Button variant="primary" onClick={addListener} className="mt-4">
-            + {t('addListener') || 'Add Listener'}
-          </Button>
+      <div className="route-builder">
+        <div className="route-builder-heading"><Network size={20} /><h4>{t('routeTitle')}</h4><span className="route-count">{listeners.length}</span></div>
+        <p className="ui-help-text">{t('routeIntro')}</p>
+        <Input label={t('newRouteHost')} value={sharedHost} onChange={e => setSharedHost(e.target.value)} placeholder="100.83.127.8" />
+        <div className="route-preset-actions">
+          <Button variant="primary" onClick={() => addListener('custom')}><Plus size={16} />{t('addCustomRoute')}</Button>
+          <Button variant="secondary" onClick={() => addListener('java')}>Java · TCP 25565</Button>
+          <Button variant="secondary" onClick={() => addListener('nethernet')}>NetherNet · TCP/UDP 19132</Button>
         </div>
-      ) : (
+        <p className="ui-help-text">{t('routePresetHint')}</p>
+      </div>
+      {listeners.some((listener, index) => listeners.slice(index + 1).some(other => listenerPortsConflict(listener, other))) && (
+        <p className="route-warning" role="alert">{t('routePortConflict')}</p>
+      )}
+      {listeners.length === 0 ? <p className="ui-help-text">{t('noListenersConfigured')}</p> : (
         listeners.map((listener, index) => (
           <ListenerItem
             key={index}

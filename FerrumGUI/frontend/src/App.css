@@ -500,15 +500,7 @@
   overflow: hidden;
 }
 
-.performance-summary .metric-card::after {
-  content: '';
-  position: absolute;
-  inset: auto -18px -28px auto;
-  width: 72px;
-  height: 72px;
-  border: 14px solid color-mix(in srgb, var(--primary-color) 10%, transparent);
-  border-radius: 50%;
-}
+.performance-summary .metric-card::after { content: none; }
 
 .featured-metric {
   border-color: color-mix(in srgb, var(--success-color) 55%, var(--border-color));
@@ -938,3 +930,11 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Keep sidebar statistics and long instance labels inside their columns. */
+.metrics-grid .metric-card { min-width: 0; padding: 9px; }
+.metrics-grid .metric-card small { overflow-wrap: anywhere; font-size: 0.72rem; }
+.instance-item { min-width: 0; }
+.instance-item small { overflow-wrap: anywhere; }
+.instance-item .status-badge { max-width: 100%; white-space: normal; }
+.performance-actions { flex-wrap: wrap; }

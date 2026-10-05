@@ -42,7 +42,7 @@
 
 .ui-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 0.85rem;
 }
 
@@ -368,3 +368,10 @@
     padding: 0.85rem;
   }
 }
+
+.ui-card-actions { flex-wrap: wrap; }
+.ui-switch-track { flex-shrink: 0; }
+.ui-switch-input:focus-visible + .ui-switch-track { outline: 2px solid var(--primary-color); outline-offset: 3px; }
+.ui-button { min-height: 40px; text-transform: none; letter-spacing: normal; }
+.ui-input { min-height: 40px; }
+.ui-label { text-transform: none; letter-spacing: 0.02em; }

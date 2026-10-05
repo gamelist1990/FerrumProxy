@@ -1,4 +1,18 @@
 export const en_US = {
+  routeTitle: "Forwarding routes",
+  routeIntro: "Add a route for each public port and forward to different ports on the same host. Each route has its own bind address, TCP and UDP ports.",
+  newRouteHost: "Destination host for new routes",
+  addCustomRoute: "Add custom route",
+  routePresetHint: "The host applies only to new routes. Set ports for custom routes. Preset ports and HAProxy settings remain editable.",
+  routePortConflict: "Public ports overlap. Use different ports for routes with the same bind address and protocol.",
+  routeSummary: "Forwarding path",
+  publicEndpoint: "Public endpoint / incoming traffic",
+  forwardDestination: "Destination",
+  publicTcpPort: "Public TCP port",
+  publicUdpPort: "Public UDP port",
+  targetTcpPort: "Target TCP port",
+  targetUdpPort: "Target UDP port",
+
   appTitle: 'FerrumProxy GUI',
   connected: '● Connected',
   disconnected: '○ Disconnected',

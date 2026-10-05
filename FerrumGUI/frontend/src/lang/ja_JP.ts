@@ -1,6 +1,21 @@
 import type { Translation } from './en_US';
 
+
 export const ja_JP: Translation = {
+  routeTitle: "転送ルート",
+  routeIntro: "公開ポートごとにルートを追加し、同じホストの異なるポートへ転送できます。各ルートのバインド・TCP・UDPは個別に変更できます。",
+  newRouteHost: "新しいルートの転送先ホスト",
+  addCustomRoute: "カスタムルートを追加",
+  routePresetHint: "ホストは新規追加にのみ使用します。カスタムルートはポートを設定してください。ひな形のポートやHAProxy設定も編集できます。",
+  routePortConflict: "公開ポートが重複しています。同じバインド・プロトコルのポートはルートごとに分けてください。",
+  routeSummary: "転送経路",
+  publicEndpoint: "公開側 / 受信設定",
+  forwardDestination: "転送先",
+  publicTcpPort: "公開 TCP ポート",
+  publicUdpPort: "公開 UDP ポート",
+  targetTcpPort: "転送先 TCP ポート",
+  targetUdpPort: "転送先 UDP ポート",
+
   appTitle: 'FerrumProxy GUI',
   connected: '● 接続中',
   disconnected: '○ 切断',

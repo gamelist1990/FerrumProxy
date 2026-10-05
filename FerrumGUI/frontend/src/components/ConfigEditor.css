@@ -79,3 +79,36 @@
 .focus\:border-primary:focus {
   border-color: color-mix(in srgb, var(--primary-color) 70%, var(--border-color));
 }
+.route-builder {
+  padding: 1.2rem; border: 1px solid var(--border-color); border-radius: 12px;
+  background: var(--bg-tertiary); display: grid; gap: 0.85rem;
+  border-top: 3px solid var(--primary-color);
+}
+.route-builder-heading, .route-card-title { display: flex; align-items: center; gap: 0.6rem; }
+.route-builder-heading h4 { margin: 0; font-size: 1.08rem; }
+.route-count { border-radius: 6px; padding: 0.1rem 0.5rem; background: var(--bg-secondary); font: 600 0.78rem var(--font-mono); }
+.route-preset-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.route-flow { display: grid; grid-template-columns: minmax(0,1fr) 20px minmax(0,1fr); align-items: center; gap: 1rem; padding: 1rem; border-radius: 10px; background: var(--bg-primary); margin-bottom: 1.2rem; }
+.route-flow > div { min-width: 0; display: grid; gap: 0.25rem; }
+.route-flow small { color: var(--text-muted); font-size: 0.75rem; }
+.route-flow code { overflow-wrap: anywhere; font: 600 0.95rem var(--font-mono); }
+.route-flow span { color: var(--text-secondary); font: 0.75rem var(--font-mono); }
+.route-flow > svg { color: var(--primary-color); }
+.route-section-title { margin: 0 0 0.8rem; font-size: 0.9rem; }
+.route-endpoint-grid { padding-bottom: 1rem; border-bottom: 1px solid var(--border-color); }
+.route-endpoint-grid .ui-switch { margin-bottom: 0.7rem; }
+.route-target { padding: 1rem; border: 1px solid var(--border-color); border-radius: 10px; margin-bottom: 0.8rem; background: var(--bg-tertiary); }
+.route-protocol-options { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.route-target .ui-grid { margin-top: 0.9rem; }
+.route-http-details { border-top: 1px solid var(--border-color); margin-top: 1.2rem; padding-top: 1rem; }
+.route-http-details summary { cursor: pointer; font-weight: 700; margin-bottom: 1rem; }
+.route-warning { border: 1px solid var(--warning-color); border-radius: 10px; padding: 0.85rem; color: var(--text-primary); background: color-mix(in srgb, var(--warning-color) 10%, var(--bg-tertiary)); font-size: 0.85rem; }
+.listener-route-card .ui-card-title { text-transform: none; letter-spacing: normal; }
+@media (max-width: 520px) {
+ .route-builder { padding: 0.85rem; }
+ .route-flow { gap: 0.6rem; padding: 0.75rem; }
+ .route-flow code { font-size: 0.8rem; }
+ .route-flow span { font-size: 0.65rem; }
+ .route-preset-actions .ui-button { width: 100%; }
+ .route-target > .flex { align-items: flex-start; gap: 0.5rem; flex-wrap: wrap; }
+}

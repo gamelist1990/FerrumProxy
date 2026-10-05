@@ -35,6 +35,11 @@ export function ConfigEditor({ instanceId, config, onChange, onSave }: ConfigEdi
     <div className="config-editor">
       {!showAdvanced ? (
         <>
+          <ListenerList
+            instanceId={instanceId}
+            listeners={localConfig.listeners || []}
+            onChange={(listeners) => handleChange('listeners', listeners)}
+          />
           <GeneralSettings config={localConfig} onChange={handleChange} />
           <DdosGuardSettingsPanel
             config={localConfig.ddosGuard}
@@ -52,11 +57,7 @@ export function ConfigEditor({ instanceId, config, onChange, onSave }: ConfigEdi
             config={localConfig}
             onChange={(sharedService) => handleChange('sharedService', sharedService)}
           />
-          <ListenerList
-            instanceId={instanceId}
-            listeners={localConfig.listeners || []}
-            onChange={(listeners) => handleChange('listeners', listeners)}
-          />
+
         </>
       ) : (
         <div className="json-editor">

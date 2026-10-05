@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ArrowRight, Network } from 'lucide-react';
 import { Card } from '../ui/Card';
 import { Input } from '../ui/Input';
 import { Switch } from '../ui/Switch';
@@ -76,7 +77,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
   const [keyFile, setKeyFile] = useState<File | null>(null);
   const [provisioningCertificate, setProvisioningCertificate] = useState(false);
 
-  const targets = listener.targets && listener.targets.length > 0
+  const targets = listener.targets !== undefined
     ? listener.targets
     : listener.target
       ? [listener.target]
@@ -116,7 +117,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
   };
 
   const addTarget = () => {
-    onTargetsChange([...targets, createEmptyTarget()]);
+    onTargetsChange([...targets, { ...createEmptyTarget(), host: targets[0]?.host ?? '' }]);
   };
 
   const removeTarget = (targetIndex: number) => {
@@ -227,7 +228,8 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
 
   return (
     <Card
-      title={`Listener #${index + 1}`}
+      className="listener-route-card"
+      title={<span className="route-card-title"><Network size={16} />{t('routeTitle')} #{index + 1}</span>}
       actions={
         onRemove ? (
           <Button variant="danger" onClick={onRemove} style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}>
@@ -236,7 +238,13 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
         ) : undefined
       }
     >
-      <div className="ui-grid">
+      <div className="route-flow" aria-label={t('routeSummary')}>
+        <div><small>{t('publicEndpoint')}</small><code>{listener.bind || '0.0.0.0'}</code><span>TCP {listener.tcp ?? '—'} · UDP {listener.udp ?? '—'}</span></div>
+        <ArrowRight size={20} aria-hidden="true" />
+        <div><small>{t('forwardDestination')}</small><code>{targets[0]?.host || '—'}</code><span>TCP {targets[0]?.tcp ?? '—'} · UDP {targets[0]?.udp ?? '—'}</span></div>
+      </div>
+      <h5 className="route-section-title">{t('publicEndpoint')}</h5>
+      <div className="ui-grid route-endpoint-grid">
         <Input
           label={t('bindAddress') || 'Bind Address'}
           value={listener.bind || ''}
@@ -251,8 +259,9 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           />
           {tcpEnabled && (
             <Input
-              label="TCP Port"
+              label={t('publicTcpPort')}
               type="number"
+                  min={1} max={65535} step={1}
               value={listener.tcp || ''}
               onChange={(e) => onChange('tcp', parseOptionalPort(e.target.value))}
             />
@@ -266,8 +275,9 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           />
           {udpEnabled && (
             <Input
-              label="UDP Port"
+              label={t('publicUdpPort')}
               type="number"
+                  min={1} max={65535} step={1}
               value={listener.udp || ''}
               onChange={(e) => onChange('udp', parseOptionalPort(e.target.value))}
             />
@@ -479,7 +489,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           { value: 'udp', label: t('protoUdpOnly') || 'UDP only' },
         ];
         return (
-          <div key={targetIndex} className="mb-4">
+          <div key={targetIndex} className="route-target">
             <div className="flex justify-between items-center mb-2">
               <strong className="text-primary">
                 {(t('targetServer') || 'Target Server')} #{targetIndex + 1}
@@ -499,10 +509,11 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
               <label className="ui-label" style={{ display: 'block', marginBottom: '0.35rem' }}>
                 {t('protocolScope') || 'Protocol'}
               </label>
-              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+              <div className="route-protocol-options">
                 {protocolOptions.map((option) => (
                   <Button
                     key={option.value}
+                    aria-pressed={protocol === option.value}
                     variant={protocol === option.value ? 'primary' : 'ghost'}
                     onClick={() => handleTargetProtocolChange(targetIndex, option.value)}
                     style={{ padding: '0.35rem 0.85rem', fontSize: '0.8rem' }}
@@ -522,16 +533,18 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
               />
               {protocol !== 'udp' && (
                 <Input
-                  label="Target TCP Port"
+                  label={t('targetTcpPort')}
                   type="number"
+                  min={1} max={65535} step={1}
                   value={target.tcp || ''}
                   onChange={(e) => handleTargetChange(targetIndex, 'tcp', parseOptionalPort(e.target.value))}
                 />
               )}
               {protocol !== 'tcp' && (
                 <Input
-                  label="Target UDP Port"
+                  label={t('targetUdpPort')}
                   type="number"
+                  min={1} max={65535} step={1}
                   value={target.udp || ''}
                   onChange={(e) => handleTargetChange(targetIndex, 'udp', parseOptionalPort(e.target.value))}
                 />
@@ -547,9 +560,8 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
 
       {(listener.tcp || listener.https?.enabled) && (
         <>
-          <div className="ui-divider">
-            <span className="ui-divider-label">{t('httpPathMappings') || 'HTTP Path Mappings'}</span>
-          </div>
+          <details className="route-http-details" open={hasHttpMappings || undefined}>
+          <summary>{t('httpPathMappings')} <span className="route-count">{httpMappings.length}</span></summary>
 
           <p className="text-sm text-secondary mb-4">
             {t('httpPathMappingsHint') || 'For HTTP/HTTPS traffic, the longest matching path is routed first. Choose paths carefully when they overlap.'}
@@ -586,8 +598,9 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
                     placeholder="https://example.com/base"
                   />
                   <Input
-                    label="Target TCP Port"
+                    label={t('targetTcpPort')}
                     type="number"
+                  min={1} max={65535} step={1}
                     value={target.tcp || ''}
                     onChange={(e) => updateHttpMapping(mappingIndex, 'tcp', parseOptionalPort(e.target.value))}
                     placeholder="auto"
@@ -600,6 +613,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           <Button variant="ghost" onClick={addHttpMapping}>
             + {t('addHttpPathMapping') || 'Add HTTP Mapping'}
           </Button>
+          </details>
         </>
       )}
     </Card>

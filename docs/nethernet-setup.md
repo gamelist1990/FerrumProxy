@@ -40,6 +40,31 @@ RakNetと併用する場合は、別のUDPポート・別リスナーを使い�
 
 ## 検証結果
 
+### Paperとbuiltin signalingのTCPポート競合
+
+`Built-in signaling cannot use port 5000 because the Java server already uses it` と出る場合、
+TCP 5000はPaperのJavaリスナーが使用しており、GeyserのHTTP signalingではない。
+UDPは同じ番号を使用できても、同じアドレスのTCPリスナーを共有することはできない。
+このログが出た起動では、Geyserは外部signalingへフォールバックする。
+
+Paper TCP 5000をそのまま使い、Bedrock公開ポートを19132にする構成例:
+
+| 用途 | FerrumProxy公開ポート | 転送先 |
+|---|---|---|
+| Java | TCP 25565 | `100.83.127.8:5000` TCP |
+| NetherNet signaling | TCP 19132 | `100.83.127.8:19132` TCP |
+| NetherNet WebRTC | UDP 19132 | `100.83.127.8:19132` UDP |
+
+`config.pexserver-nethernet.example.json` にこの例を保存している。
+Geyser側は `bedrock.port: 19132`, `bedrock.webrtc-port: 0`,
+`bedrock.transport: nethernet`, `bedrock.signaling.mode: builtin` を指定する。
+`-DgeyserSignalingPort` に5000を指定している場合は外すか19132へ変更する。
+Geyser-Spigotを使う場合、`-DgeyserAdvertiseAddresses=<Proxy公開IPv4>` はPaperを起動するJavaコマンドの `-jar` より前に指定する。
+
+起動ログで `Built-in signaling started` とポート19132を確認し、公開側とバックエンド側のTCP/UDP 19132の開放を確認する。
+HTTPの場合、`curl --max-time 5 http://play.pexserver.com:19132/v1/join` でHTTP 200の応答を確認してからBedrock接続を試す。
+HTTP 200だけではUDP到達性やゲームログインの成功は証明できない。
+
 2026-10-05、PR #6712 standalone preview build 3056 (`bc81f9e`) で確認。
 
 - FerrumProxyのTCP転送 → PROXY v2 → スタンドアロンGeyser builtin signaling の `GET /v1/join` が HTTP 200 を返した。
@@ -58,4 +83,6 @@ java --enable-native-access=ALL-UNNAMED -cp Geyser-Standalone.jar C:\path\to\Web
 ```
 
 これらはローカルのsignaling経路・WebRTC UDP経路の検証であり、実Bedrockクライアントによるログイン・ワールド参加や外部PEXServerでの動作を実測したものではない。
-プレイヤー実IP保持は、この変更の対象外。詳細は `docs/nethernet-pr6712-check.md`。
+プレイヤー実IP保持を追加する修正は、この変更には含めていない。
+追加調査ではTCP signaling由来のIPがGeyserのpeer APIに残る動作を確認したが、実Bedrockログイン後の確認は未実施。
+詳細は `docs/nethernet-pr6712-check.md`。
