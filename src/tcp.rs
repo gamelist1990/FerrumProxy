@@ -128,13 +128,17 @@ async fn handle_client(
         return Ok(());
     }
     first_buf.truncate(first_len);
-    // Opt-in signaling detection must also work when the request line spans reads.
+    // Only active rewriting needs a request line for routing. Passive diagnostics
+    // must not wait for headers (the first bytes may be a TLS handshake).
     if !rule.uses_raknet_udp()
-        && (rule.nethernet_advertise_host.is_some() || rule.nethernet_diagnostics)
+        && rule.nethernet_advertise_host.is_some()
+        && [b"GET".as_slice(), b"POST".as_slice()]
+            .iter()
+            .any(|method| first_buf.starts_with(method) || method.starts_with(&first_buf))
     {
         timeout(runtime.timeouts.initial_client_data, async {
-            while !first_buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                if first_buf.len() >= 64 * 1024 {
+            while !first_buf.contains(&b'\n') {
+                if first_buf.len() >= 4096 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "signaling headers too large",
@@ -268,9 +272,10 @@ async fn copy_bidirectional(
     let (client_read, client_write) = tokio::io::split(client);
     let (target_read, target_write) = tokio::io::split(target);
 
-    let signaling = (advertise.is_some() || diagnostics)
+    let rewrite_signaling = advertise.is_some()
         && http_request_path(&initial_client_payload)
             .is_some_and(|p| p == "/v1/join" || p.starts_with("/v1/join/"));
+    let signaling = rewrite_signaling || (diagnostics && target_config.url_protocol.is_none());
     let context = crate::nethernet_diagnostics::Context {
         client: client_addr,
         backend: target_addr,
@@ -300,7 +305,7 @@ async fn copy_bidirectional(
                 Direction::ClientToTarget,
             ))
         };
-        let t2c = if let Some(endpoint) = advertise {
+        let t2c = if let Some(endpoint) = advertise.filter(|_| rewrite_signaling) {
             tokio::spawn(crate::nethernet_signaling::relay_answers(
                 target_read,
                 client_write,
@@ -659,6 +664,57 @@ mod tests {
     use super::*;
     use crate::ddos_guard::DdosGuardSettings;
     use crate::runtime::{ip_tests, ConnectionIpMapper};
+
+    #[tokio::test]
+    async fn diagnostics_do_not_wait_for_http_headers_before_forwarding() {
+        for diagnostics in [false, true] {
+            for request in [
+                b"\x16\x03\x01\0\x04abcd".as_slice(),
+                b"GET /v1/join HTTP/1.1\nHost: example.com\n\n".as_slice(),
+            ] {
+                let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let port = backend.local_addr().unwrap().port();
+                let expected = request.to_vec();
+                let upstream = tokio::spawn(async move {
+                    let (mut stream, _) = backend.accept().await.unwrap();
+                    let mut received = vec![0; expected.len()];
+                    stream.read_exact(&mut received).await.unwrap();
+                    assert_eq!(received, expected);
+                    stream.write_all(b"ACK").await.unwrap();
+                    stream.shutdown().await.unwrap();
+                });
+                let rule: ListenerRule = serde_yaml::from_str(&format!("tcp: 19132\nudp: 19132\nbedrockTransport: nethernet\nnethernetDiagnostics: {diagnostics}\ntarget:\n  host: 127.0.0.1\n  tcp: {port}\n  udp: 19132\n")).unwrap();
+                let (mut client, proxy) = tokio::io::duplex(1024);
+                let task = tokio::spawn(handle_client(
+                    Box::new(proxy),
+                    "203.0.113.42:1234".parse().unwrap(),
+                    Arc::new(rule),
+                    Arc::new(AppRuntime::new(
+                        false,
+                        false,
+                        vec![],
+                        DdosGuardSettings::default(),
+                    )),
+                ));
+                client.write_all(request).await.unwrap();
+                let mut reply = [0; 3];
+                let result =
+                    timeout(Duration::from_millis(500), client.read_exact(&mut reply)).await;
+                if result.is_err() {
+                    task.abort();
+                    upstream.abort();
+                }
+                assert!(
+                    result.is_ok(),
+                    "diagnostics={diagnostics} blocked the initial request"
+                );
+                assert_eq!(&reply, b"ACK");
+                client.shutdown().await.unwrap();
+                task.await.unwrap().unwrap();
+                upstream.await.unwrap();
+            }
+        }
+    }
 
     #[tokio::test]
     async fn nethernet_fragmented_request_preserves_proxy_ip_and_rewrites_answer() {

@@ -15,7 +15,7 @@ pub fn is_likely_http_request(buf: &[u8]) -> bool {
 pub fn http_request_path(buf: &[u8]) -> Option<String> {
     let head_end = header_end(buf).unwrap_or(buf.len().min(1024));
     let head = String::from_utf8_lossy(&buf[..head_end]);
-    let request_line = head.split("\r\n").next().unwrap_or_default();
+    let request_line = head.lines().next().unwrap_or_default();
     let parts = request_line.split_whitespace().collect::<Vec<_>>();
     if parts.len() != 3 || !parts[2].starts_with("HTTP/1.") {
         return None;

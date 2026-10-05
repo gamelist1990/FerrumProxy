@@ -98,6 +98,14 @@ impl Observer {
             return;
         }
         self.pending.extend_from_slice(data);
+        if self.pending.len() >= 3
+            && (20..=25).contains(&self.pending[0])
+            && self.pending[1] == 3
+            && self.pending[2] <= 4
+        {
+            self.disable("tls_encrypted");
+            return;
+        }
         loop {
             match self.frame(eof) {
                 Ok(Some((n, details))) => {
@@ -131,7 +139,20 @@ impl Observer {
         self.disabled = true;
     }
     fn frame(&self, eof: bool) -> Result<Option<(usize, Value)>, &'static str> {
-        let Some(end) = self.pending.windows(4).position(|w| w == b"\r\n\r\n") else {
+        let delimiter = [
+            self.pending
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|end| (end, 4)),
+            self.pending
+                .windows(2)
+                .position(|w| w == b"\n\n")
+                .map(|end| (end, 2)),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(end, _)| *end);
+        let Some((end, delimiter_len)) = delimiter else {
             if self.pending.len() > HEADER_LIMIT {
                 return Err("header_limit");
             }
@@ -144,7 +165,7 @@ impl Observer {
             return Err("header_limit");
         }
         let text = std::str::from_utf8(&self.pending[..end]).map_err(|_| "header_encoding")?;
-        let mut lines = text.split("\r\n");
+        let mut lines = text.lines();
         let first: Vec<_> = lines.next().unwrap_or("").split_whitespace().collect();
         let headers: Vec<_> = lines.filter_map(|l| l.split_once(':')).collect();
         let h = |name: &str| {
@@ -177,7 +198,7 @@ impl Observer {
             };
             json!({"method":method,"path":path})
         };
-        let start = end + 4;
+        let start = end + delimiter_len;
         let status = details["status"].as_u64().unwrap_or(0);
         let no_body =
             self.response && ((100..200).contains(&status) || status == 204 || status == 304);
@@ -310,7 +331,8 @@ pub async fn relay<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         data.clear();
         data.extend_from_slice(&buffer[..n]);
     }
-    writer.shutdown().await?;
+    // Match the transparent pump: shutdown errors must not abort the reverse direction.
+    let _ = writer.shutdown().await;
     Ok(total)
 }
 
@@ -330,6 +352,20 @@ mod tests {
         assert!(!result.contains("SECRET"));
         assert_eq!(sdp_summary(body)["candidates"][0]["ip"], "100.83.127.8");
         assert_eq!(sdp_summary(body)["identityPresent"], true);
+    }
+    #[test]
+    fn lf_only_http_is_observed_without_rewriting_the_wire_data() {
+        let mut observer = Observer::new(false, context());
+        observer.pending = b"POST /v1/join/123 HTTP/1.1\nContent-Type: application/sdp\nContent-Length: 4\n\nv=0\n".to_vec();
+        let original = observer.pending.clone();
+        let (n, details) = observer.frame(false).unwrap().unwrap();
+        assert_eq!(n, original.len());
+        assert_eq!(details["method"], "POST");
+        assert_eq!(details["sdp"]["bytes"], 4);
+        assert_eq!(observer.pending, original);
+        let mut encrypted = Observer::new(false, context());
+        encrypted.feed(b"\x16\x03\x01", false);
+        assert!(encrypted.disabled);
     }
     #[test]
     fn reassembles_chunked_and_pipelined_responses_without_mutating_them() {
