@@ -15,11 +15,16 @@ import java.security.cert.*;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Duration;
 import java.util.*;
+import java.util.function.Consumer;
 
 final class CertificateSync implements AutoCloseable {
     record Settings(boolean enabled, URI managerUrl, Path tokenFile, String certificateId, String domain,
             long pollSeconds, boolean autoReload) {
         static Settings load(Path directory) throws IOException {
+            return load(directory, ignored -> {});
+        }
+
+        static Settings load(Path directory, Consumer<String> warning) throws IOException {
             org.yaml.snakeyaml.LoaderOptions options = new org.yaml.snakeyaml.LoaderOptions();
             options.setAllowDuplicateKeys(false);
             Map<String, Object> config = new Yaml(new SafeConstructor(options)).load(Files.readString(directory.resolve("config.yml")));
@@ -27,8 +32,13 @@ final class CertificateSync implements AutoCloseable {
                 throw new IllegalArgumentException("Extension config is empty");
             if (!Boolean.TRUE.equals(config.get("enabled")))
                 return new Settings(false, null, null, "", "", 300, false);
-            URI uri = URI.create(Objects.toString(config.get("manager-url"), "").replaceAll("/+$", ""));
+            URI uri = URI.create(Objects.toString(config.get("manager-url"), "").trim());
             validateUri(uri, Boolean.TRUE.equals(config.get("allow-insecure-http")));
+            String rawPath = Objects.toString(uri.getRawPath(), "");
+            String path = rawPath.replaceAll("/{2,}", "/").replaceAll("/+$", "");
+            if (rawPath.contains("//"))
+                warning.accept("manager-url path contains repeated slashes; corrected automatically. Use a single / before api/instances/.");
+            uri = URI.create(uri.getScheme() + "://" + uri.getRawAuthority() + path);
             String id = Objects.toString(config.get("certificate-id"), "");
             String domain = Objects.toString(config.get("domain"), "").toLowerCase(Locale.ROOT);
             if (!id.matches("[A-Za-z0-9_-]{1,64}") || !domain.matches("[a-z0-9.-]+") || !domain.contains("."))
@@ -53,7 +63,10 @@ final class CertificateSync implements AutoCloseable {
     private final Path directory, geyserConfig;
     private final HttpClient client;
     private String revision;
+    private volatile String stage = "idle";
     private static final int LIMIT = 1024 * 1024;
+
+    String stage() { return stage; }
 
     CertificateSync(Settings settings, Path directory, Path geyserConfig) {
         this.settings = settings;
@@ -64,16 +77,19 @@ final class CertificateSync implements AutoCloseable {
     }
 
     synchronized Applied sync() throws Exception {
+        stage = "read-token";
         String token = Files.readString(settings.tokenFile()).trim();
         if (token.isEmpty() || token.length() > 1024 || token.contains("\n") || token.contains("\r"))
             throw new IOException("Invalid manager token file");
         URI uri = URI.create(settings.managerUrl() + "/api/v1/certificates/" + settings.certificateId());
+        stage = "manager-request";
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(15))
                 .header("Authorization", "Bearer " + token)
                 .header("User-Agent", "FerrumGeyserCertificates/1.0").GET();
         // Fetch the bundle each time: a 304 must not hide deleted local files,
         // configuration edits, or a certificate that has since expired.
         HttpResponse<InputStream> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        stage = "manager-response";
         byte[] bytes;
         try (InputStream body = response.body()) {
             if (response.statusCode() != 200)
@@ -82,13 +98,17 @@ final class CertificateSync implements AutoCloseable {
             if (bytes.length > LIMIT)
                 throw new IOException("Certificate response exceeds 1 MiB");
         }
+        stage = "decode-response";
         Bundle bundle = decodeBundle(new String(bytes, StandardCharsets.UTF_8));
         if (bundle == null || !settings.certificateId().equals(bundle.id())
                 || !settings.domain().equalsIgnoreCase(bundle.domain())
                 || bundle.revision() == null || !bundle.revision().matches("[a-f0-9]{64}"))
             throw new IOException("Certificate response identity mismatch");
+        stage = "verify-certificate";
         verify(bundle);
+        stage = "read-geyser-config";
         String current = Files.readString(geyserConfig);
+        stage = "validate-geyser-network";
         if (bundle.advertisePort() != null) {
             Map<?, ?> config = new Yaml(new SafeConstructor(new org.yaml.snakeyaml.LoaderOptions())).load(current);
             Map<?, ?> bedrock = (Map<?, ?>) config.get("bedrock");
@@ -100,6 +120,7 @@ final class CertificateSync implements AutoCloseable {
                     || webrtc instanceof Number udp && udp.intValue() != 0 && udp.intValue() != port.intValue())
                 throw new IOException("Automatic advertisement requires nethernet transport on the Bedrock port");
         }
+        stage = "write-certificate";
         Path generation = directory.resolve("tls").resolve(bundle.revision());
         if (Files.isSymbolicLink(directory) || Files.isSymbolicLink(directory.resolve("tls"))
                 || Files.isSymbolicLink(generation))
@@ -109,6 +130,7 @@ final class CertificateSync implements AutoCloseable {
         Path cert = generation.resolve("fullchain.pem"), key = generation.resolve("privkey.pem");
         writeIfChanged(cert, bundle.certificatePem(), true);
         writeIfChanged(key, bundle.privateKeyPem(), true);
+        stage = "write-geyser-config";
         String updated = ConfigPatch.https(current, cert.toString().replace('\\', '/'),
                 key.toString().replace('\\', '/'));
         boolean changed = (revision != null && !Objects.equals(revision, bundle.revision())) || !updated.equals(current);
@@ -119,6 +141,7 @@ final class CertificateSync implements AutoCloseable {
             atomicWrite(geyserConfig, updated, true);
         }
         revision = bundle.revision();
+        stage = "complete";
         return new Applied(changed, revision, bundle.advertiseHost(), bundle.advertisePort());
     }
 

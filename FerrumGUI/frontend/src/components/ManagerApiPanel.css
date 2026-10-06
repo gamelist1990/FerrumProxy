@@ -9,6 +9,7 @@
 .manager-api-item { display: flex; justify-content: space-between; align-items: center; gap: .7rem; margin-top: .6rem; }
 .manager-api-item small { display: block; overflow-wrap: anywhere; color: var(--text-secondary); }
 .manager-api-error { color: var(--danger-color, #dc2626); overflow-wrap: anywhere; }
+.manager-api-notice { color: var(--success-color, #16803b); overflow-wrap: anywhere; }
 .manager-api-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; padding: .6rem; background: var(--bg-secondary); border-radius: .4rem; font-size: .75rem; }
 .manager-issued-token { padding: .7rem; border: 1px solid var(--border-color); margin-top: .7rem; border-radius: .4rem; }
 .manager-issued-token p { font-size: .8rem; }

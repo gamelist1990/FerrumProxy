@@ -53,6 +53,23 @@ class CertificateSyncTest {
         assertThrows(IllegalArgumentException.class, () -> CertificateSync.validateUri(URI.create("https://secret@manager.example.com"), false));
     }
 
+    @Test void correctsRepeatedPathSlashesAndReportsItWithoutChangingSchemeOrEscapes() throws Exception {
+        var warnings = new java.util.ArrayList<String>();
+        Path config = directory.resolve("config.yml");
+        Files.writeString(config, "enabled: true\nmanager-url: 'http://100.64.0.1:3000//api//instances/test%20id/manager///'\ncertificate-id: geyser\ndomain: example.com\n");
+        var settings = CertificateSync.Settings.load(directory, warnings::add);
+        assertEquals("http://100.64.0.1:3000/api/instances/test%20id/manager", settings.managerUrl().toString());
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.getFirst().contains("corrected automatically"));
+        assertFalse(warnings.getFirst().contains("100.64.0.1"));
+        Files.writeString(config, "enabled: true\nmanager-url: 'https://manager.example.com/api/instances/test/manager/'\ncertificate-id: geyser\ndomain: example.com\n");
+        warnings.clear();
+        assertEquals("https://manager.example.com/api/instances/test/manager", CertificateSync.Settings.load(directory, warnings::add).managerUrl().toString());
+        assertTrue(warnings.isEmpty());
+        Files.writeString(config, "enabled: true\nmanager-url: 'https://secret@manager.example.com//manager'\ncertificate-id: geyser\ndomain: example.com\n");
+        assertThrows(IllegalArgumentException.class, () -> CertificateSync.Settings.load(directory, warnings::add));
+    }
+
     @Test void syncsRotationAndPreservesWorkingConfigOnFailure() throws Exception {
         var response = new AtomicReference<>(bundle("rsa", "rsa-key.pem", "a".repeat(64)));
         var auth = new AtomicReference<>("Bearer first-token");
@@ -90,6 +107,12 @@ class CertificateSyncTest {
             Files.writeString(config, working);
             response.set(bundle("expired", "expired-key.pem", "c".repeat(64)));
             assertThrows(CertificateExpiredException.class, sync::sync);
+            assertEquals("verify-certificate", sync.stage());
+            assertEquals(working, Files.readString(config));
+            auth.set("Bearer different-token");
+            var unauthorized = assertThrows(java.io.IOException.class, sync::sync);
+            assertEquals("manager-response", sync.stage());
+            assertTrue(SyncDiagnostics.detail(unauthorized).contains("HTTP 403"));
             assertEquals(working, Files.readString(config));
         } finally { server.stop(0); }
     }

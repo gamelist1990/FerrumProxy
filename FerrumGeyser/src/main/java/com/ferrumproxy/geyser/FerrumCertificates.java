@@ -32,11 +32,16 @@ public final class FerrumCertificates implements Extension {
                     Files.copy(input, config);
                 }
                 CertificateSync.privatePermissions(config, false);
-                logger().info("Configure FerrumCertificates/config.yml and manager-token.txt, then restart Geyser.");
+                logger().info("Configure " + config.toAbsolutePath() + " and manager-token.txt, then restart Geyser.");
             }
-            settings = CertificateSync.Settings.load(dataFolder());
-            if (!settings.enabled())
+            settings = CertificateSync.Settings.load(dataFolder(), message -> logger().warning(message));
+            if (!settings.enabled()) {
+                logger().info("Certificate sync is disabled (enabled: false). Set enabled: true in "
+                        + config.toAbsolutePath() + " and restart Geyser.");
                 return;
+            }
+            logger().info("Certificate sync is enabled (certificate-id: " + settings.certificateId()
+                    + ", poll-seconds: " + settings.pollSeconds() + "). Config: " + config.toAbsolutePath());
             if (Files.exists(settings.tokenFile()))
                 CertificateSync.privatePermissions(settings.tokenFile(), false);
             sync = new CertificateSync(settings, dataFolder(), geyserApi().configDirectory().resolve("config.yml"));
@@ -45,7 +50,7 @@ public final class FerrumCertificates implements Extension {
             // to apply the first disk change, just as for subsequent renewals.
             synchronize();
         } catch (Exception | LinkageError failure) {
-            report(failure);
+            report(failure, "initialize");
         }
     }
 
@@ -63,6 +68,7 @@ public final class FerrumCertificates implements Extension {
     }
 
     private void synchronize() {
+        String phase = "certificate-sync";
         try {
             CertificateSync.Applied result = sync.sync();
             if (result.advertiseHost() != null)
@@ -75,6 +81,7 @@ public final class FerrumCertificates implements Extension {
             if (!initialized || !needsApply)
                 return;
             if (settings.autoReload()) {
+                phase = "reload-geyser";
                 logger().info("Reloading Geyser to apply HTTPS; Bedrock players will disconnect.");
                 reload.request().get(30, TimeUnit.SECONDS);
                 needsApply = false;
@@ -86,14 +93,14 @@ public final class FerrumCertificates implements Extension {
         } catch (InterruptedException stopped) {
             Thread.currentThread().interrupt();
         } catch (Exception | LinkageError failure) {
-            report(failure);
+            report(failure, "certificate-sync".equals(phase) ? sync.stage() : phase);
         }
     }
 
-    private void report(Throwable failure) {
+    private void report(Throwable failure, String stage) {
         // Never log tokens, PEM or response bodies.
         logger().warning("Certificate sync/apply failed (" + failure.getClass().getSimpleName()
-                + "). Check Manager URL, token, source validity and Geyser version compatibility.");
+                + ", stage: " + stage + "). " + SyncDiagnostics.detail(failure));
     }
 
     @Subscribe
@@ -105,7 +112,7 @@ public final class FerrumCertificates implements Extension {
             // before either an automatic or a console-initiated native reload.
             reload.awaitNetworkShutdown();
         } catch (Exception | LinkageError failure) {
-            report(failure);
+            report(failure, "close-nethernet");
         }
     }
 
