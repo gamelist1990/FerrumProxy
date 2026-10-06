@@ -1,4 +1,7 @@
 .manager-workspace { margin-top: 1rem; display: grid; gap: .8rem; }
+.manager-workspace .small-action-button { min-height: 40px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.manager-workspace .small-action-button:disabled { opacity: .5; cursor: not-allowed; }
+.manager-workspace .setting-description { color: var(--text-secondary); font-size: 14px; line-height: 1.6; }
 .manager-workspace-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
 .manager-workspace details { border-top: 1px solid var(--border-color); padding-top: .75rem; }
 .manager-workspace summary { cursor: pointer; font-weight: 600; padding-bottom: .5rem; }

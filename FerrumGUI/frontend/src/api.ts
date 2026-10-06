@@ -523,7 +523,7 @@ export interface WebSocketEventMap {
   instanceInitializing: { instanceId: string };
   instanceInitialized: { instanceId: string };
   updateProgress: { instanceId: string; percentage: number };
-  instanceUpdated: { instanceId: string; version: string };
+  instanceUpdated: { instanceId: string } & ({ version: string; updates?: never } | { updates: Partial<FerrumProxyInstance>; version?: never });
   log: { instanceId: string; timestamp: string; logType: string; message: string };
   configUpdated: { instanceId: string; config: FerrumProxyConfig };
   rateLimitError: { message: string };

@@ -18,8 +18,8 @@ function redact(value: unknown): unknown {
   return value;
 }
 
-export function ManagerApiPanel({ instanceId, managerToken, copyText }: {
-  instanceId: string; managerToken?: string; copyText: (text: string) => Promise<void>;
+export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChange }: {
+  instanceId: string; managerToken?: string; copyText: (text: string) => Promise<void>; onBusyChange?: (busy: boolean) => void;
 }) {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [certificates, setCertificates] = useState<Certificate[]>([]);
@@ -40,6 +40,8 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText }: {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const base = `/api/instances/${encodeURIComponent(instanceId)}/manager`;
+  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
+  useEffect(() => () => { onBusyChange?.(false); }, [onBusyChange]);
 
   const request = useCallback(async (method: string, path: string, payload?: unknown) => {
     const headers: Record<string, string> = {};
@@ -118,7 +120,7 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText }: {
   return <div className="manager-workspace">
     <div className="manager-workspace-heading"><strong>API・Geyser証明書連携</strong>
       <button type="button" className="small-action-button" disabled={busy} onClick={() => act(refresh)}>一覧を取得</button></div>
-    <p className="setting-description">① 証明書を検証して登録 → ② 登録済み証明書を選択 → ③ 拡張用トークンを発行。証明書の登録・トークン発行は、この画面の各ボタンでManagerへ保存されます。画面下の「保存」はインスタンス設定を保存します。</p>
+    <p className="setting-description">まず証明書を検証して登録してください。GeyserはManager APIの管理トークンで接続できます。証明書の取得だけを許可する拡張用トークンも発行できます。証明書の登録・トークン発行は、各ボタンで即時保存されます。</p>
     {error && <p className="manager-api-error" role="alert">{error}</p>}
     {notice && <p className="manager-api-notice" role="status">{notice}</p>}
     <details open><summary>配布する証明書</summary>
@@ -148,6 +150,7 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText }: {
       </div>)}
     </details>
     <details><summary>Geyser拡張の認証</summary>
+      <p className="setting-description">管理トークンを使う場合は、Manager API画面のトークンを manager-token.txt に保存します。以下の拡張用トークンは指定した証明書の取得専用で、GET /api/v1/health は許可しません。接続確認には GET /api/v1/certificates/証明書ID を使います。</p>
       <div className="manager-api-fields">
         <label>名前<input value={credentialName} onChange={event => setCredentialName(event.target.value)} /></label>
         <label>取得を許可する登録済み証明書<select value={certificateId} disabled={busy || certificates.length === 0} onChange={event => setCertificateId(event.target.value)}>

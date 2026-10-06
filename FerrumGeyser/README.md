@@ -6,9 +6,9 @@ FerrumProxyのManager APIから証明書と秘密鍵を取得し、Geyserの `co
 
 ## 導入手順
 
-1. この変更を含むFerrumProxy本体とFerrumGUIをビルド・更新し、対象インスタンスを起動します。GUIのインスタンス設定 → **Manager API** → **API・Geyser証明書連携**を開きます。
+1. この変更を含むFerrumProxy本体とFerrumGUIをビルド・更新し、対象インスタンスを起動します。GUIのインスタンス設定 → **証明書・Geyser**を開きます。
 2. 「配布する証明書」で接続ドメインと、**FerrumProxyが動くサーバー上**の `fullchain.pem` / `privkey.pem` のパスを指定し、**「証明書を検証して登録」**を押します。ドメインを変更すると `/etc/letsencrypt/live/example.com/` 形式の標準パスを自動入力します。手動指定した別のパスは保持します。これはパスの補完であり、実際のファイルの存在・ドメイン・鍵の一致は登録時に検証します。既存の登録は一覧から選択して編集できます。FerrumProxyの実行ユーザーにファイル・親ディレクトリの読み取り権限が必要です。秘密鍵を全ユーザーに公開する権限にはしないでください。
-3. 「Geyser拡張の認証」で、登録済み証明書を選択してトークンを発行します。発行時に一度だけ表示されます。管理者用Manager Tokenを拡張に渡す必要はありません。「拡張設定をコピー」には、選択した証明書のIDとドメインが入ります。証明書登録・トークン発行は各ボタンで即時保存され、画面下のインスタンス設定の「保存」とは別の操作です。
+3. GeyserにはManager APIの管理トークンを使えます。証明書の取得だけを許可する場合は「Geyser拡張の認証」で登録済み証明書を選択して拡張用トークンを発行します。発行時に一度だけ表示されます。「拡張設定をコピー」には、選択した証明書のIDとドメインが入ります。証明書登録・トークン発行は各ボタンで即時保存され、画面下のインスタンス設定の「保存」とは別の操作です。
 4. GitHub Releasesの固定タグ **FerrumGeyser** から `FerrumGeyser.jar` を取得するか、下の手順でビルドし、Geyserの `extensions/` に配置して一度起動します。設定フォルダー `extensions/FerrumCertificates/` が作成されます。Paperの場合は通常 `plugins/Geyser-Spigot/extensions/` です。
 5. 発行したトークンを `extensions/FerrumCertificates/manager-token.txt` に保存し、同フォルダーの `config.yml` を下の例のように設定して、Geyserを再起動します。GUIの「拡張設定をコピー」も使えます。
 
@@ -27,6 +27,8 @@ allow-insecure-http: false
 Managerへの接続はHTTPS、localhostのHTTP、またはTailscaleの100.64.0.0/10内のIPv4 HTTPに対応します。Manager本体は `127.0.0.1` のみで待ち受けるため、別マシンのGeyserからはGUIのManager転送URLを使います。公開HTTPのURLをコピーした場合はHTTPSまたはTailscale経由のURLへ変更してください。
 
 GUIのHTTPサーバーはWebSocket受付も共有するため、拡張の通信はHTTP/1.1を使用します。JavaのHTTP/2への切り替え要求がWebSocket受付で400として拒否される問題を避けます。GUIのhealthが正常なのに旧版の拡張だけHTTP 400になる場合は、拡張を更新してください。
+
+GUIが発行する拡張用トークンは `certificates:read:証明書ID` のみを許可し、`GET /api/v1/health` は拒否します。拡張用トークンの接続確認には `GET /api/v1/certificates/証明書ID` を使い、レスポンスの秘密鍵を画面やログへ表示しないよう、`id`・`domain`・`expiresAt`・`revision` などの情報だけを確認してください。Manager APIの管理トークンならhealthと証明書取得の両方を実行できます。
 
 UbuntuではトークンファイルをGeyserの実行ユーザー所有にして、権限を制限します。
 

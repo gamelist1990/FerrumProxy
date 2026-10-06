@@ -41,7 +41,7 @@ import { Login } from "./components/Login";
 import { ConfigEditor } from "./components/ConfigEditor";
 import { PlayerIPList } from "./components/PlayerIPList";
 import { UpdateProgress } from "./components/UpdateProgress";
-import { InstanceSettingsModal } from "./components/InstanceSettingsModal";
+import { InstanceSettingsPage } from "./components/InstanceSettingsPage";
 import { SharedRelayDashboard } from "./components/SharedRelayDashboard";
 import { Activity, ChevronDown, ChevronRight, LogOut, Moon, Play, Plus, RefreshCw, Search, Server, Settings2, Square, Sun, Terminal, Trash2, Users } from 'lucide-react';
 import { WorkspaceTabs } from './components/WorkspaceTabs';
@@ -86,8 +86,11 @@ function App() {
   const [guiSelfUpdateSupported, setGuiSelfUpdateSupported] = useState(false);
   const [isGuiUpdating, setIsGuiUpdating] = useState(false);
   const selectedInstanceRef = useRef<string | null>(null);
-  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
-  const closeSettingsModal = useCallback(() => setSettingsModalOpen(false), []);
+  const [settingsPageOpen, setSettingsPageOpen] = useState(false);
+  const closeSettingsPage = useCallback(() => {
+    setSettingsPageOpen(false);
+    requestAnimationFrame(() => document.getElementById('instance-settings-trigger')?.focus());
+  }, []);
   const [workspaceTab, setWorkspaceTab] = useState<'overview' | 'logs' | 'config' | 'players' | 'nethernet'>('overview');
   const [instanceSearch, setInstanceSearch] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -292,13 +295,15 @@ function App() {
         });
       }),
       on("instanceUpdated", (data: WebSocketEventMap["instanceUpdated"]) => {
-        setUpdatingInstances((prev) => {
-          const next = new Map(prev);
-          next.delete(data.instanceId);
-          return next;
-        });
+        if (data.version !== undefined) {
+          setUpdatingInstances((prev) => {
+            const next = new Map(prev);
+            next.delete(data.instanceId);
+            return next;
+          });
+          alert(`アップデートが完了しました: v${data.version}`);
+        }
         loadInstances();
-        alert(`アップデートが完了しました: v${data.version}`);
       }),
       on("log", (data: WebSocketEventMap["log"]) => {
         if (data.instanceId === selectedInstanceRef.current) {
@@ -369,7 +374,7 @@ function App() {
   }, [selectedInstance]);
 
   useEffect(() => {
-    setSettingsModalOpen(false);
+    setSettingsPageOpen(false);
   }, [selectedInstance]);
 
   async function loadInstances() {
@@ -939,6 +944,19 @@ ${t("guiUpdateManualRestart")}`
           </div>
         </header>
 
+        {settingsPageOpen && selectedInstanceData ? (
+          <InstanceSettingsPage key={selectedInstanceData.id} instance={selectedInstanceData}
+            onBack={closeSettingsPage}
+            onOpenProxyConfig={() => { closeSettingsPage(); setWorkspaceTab('config'); }}
+            onSaveMetadata={async patch => {
+              const updated = await updateInstanceMetadata(selectedInstanceData.id, patch);
+              setInstances(previous => previous.map(instance => instance.id === updated.id ? { ...instance, ...updated } : instance));
+              return updated;
+            }}
+            onUpdateInstance={(version, force) => handleUpdateInstance(selectedInstanceData.id, version, !!force)}
+            availableVersions={availableVersions} latestVersion={latestVersion}
+            isUpdating={updatingInstances.has(selectedInstanceData.id)} />
+        ) : (
         <div className="dashboard">
           <aside className={`instance-panel ${sidebarOpen ? 'mobile-open' : ''}`} aria-label={t('instances')}>
             <section className="panel-block metrics-block">
@@ -1150,7 +1168,8 @@ ${t("guiUpdateManualRestart")}`
                     <button
                       type="button"
                       className="btn tertiary"
-                      onClick={() => setSettingsModalOpen(true)}
+                      id="instance-settings-trigger"
+                      onClick={() => setSettingsPageOpen(true)}
                     >
                       <Settings2 size={16} aria-hidden="true" />{t("settings") || "設定"}
                     </button>
@@ -1187,73 +1206,7 @@ ${t("guiUpdateManualRestart")}`
                   <p>{workspaceTab === 'nethernet' ? t('netherWorkspaceHint') : workspaceTab === 'overview' ? t('overviewHint') : workspaceTab === 'logs' ? t('logsHint') : workspaceTab === 'config' ? t('configHint') : t('playersHint')}</p>
                 </div>
 
-                <InstanceSettingsModal
-                  isOpen={settingsModalOpen}
-                  onClose={closeSettingsModal}
-                  instanceId={selectedInstanceData.id}
-                  instanceName={selectedInstanceData.name}
-                  instanceVersion={selectedInstanceData.version}
-                  autoStart={!!selectedInstanceData.autoStart}
-                  autoRestart={!!selectedInstanceData.autoRestart}
-                  managerPort={selectedInstanceData.managerPort}
-                  managerToken={selectedInstanceData.managerToken}
-                  onUpdateName={async (name) => {
-                    await updateInstanceMetadata(selectedInstanceData.id, {
-                      name,
-                    });
-                    setInstances((prev) =>
-                      prev.map((instance) =>
-                        instance.id === selectedInstanceData.id
-                          ? { ...instance, name }
-                          : instance
-                      )
-                    );
-                  }}
-                  onToggleAutoStart={async (enabled) => {
-                    await updateInstanceMetadata(selectedInstanceData.id, {
-                      autoStart: enabled,
-                    });
-                    setInstances((prev) =>
-                      prev.map((instance) =>
-                        instance.id === selectedInstanceData.id
-                          ? { ...instance, autoStart: enabled }
-                          : instance
-                      )
-                    );
-                  }}
-                  onToggleAutoRestart={async (enabled) => {
-                    await updateInstanceMetadata(selectedInstanceData.id, {
-                      autoRestart: enabled,
-                    });
-                    setInstances((prev) =>
-                      prev.map((instance) =>
-                        instance.id === selectedInstanceData.id
-                          ? { ...instance, autoRestart: enabled }
-                          : instance
-                      )
-                    );
-                  }}
-                  onUpdateManagerApi={async (settings) => {
-                    const updatedInstance = await updateInstanceMetadata(selectedInstanceData.id, settings);
-                    setInstances((prev) =>
-                      prev.map((instance) =>
-                        instance.id === selectedInstanceData.id
-                          ? { ...instance, ...updatedInstance }
-                          : instance
-                      )
-                    );
-                  }}
-                  onUpdateInstance={async (version, forceReinstall) => {
-                    await handleUpdateInstance(
-                      selectedInstanceData.id,
-                      version,
-                      !!forceReinstall
-                    );
-                  }}
-                  availableVersions={availableVersions}
-                  latestVersion={latestVersion}
-                  isUpdating={updatingInstances.has(selectedInstanceData.id)}
-                />
+
 
                 <div id="workspace-panel-overview" role="tabpanel" aria-labelledby="workspace-tab-overview" hidden={workspaceTab !== 'overview'} tabIndex={0}>
                   {isSharedRelayMode && config ? (
@@ -1320,6 +1273,7 @@ ${t("guiUpdateManualRestart")}`
             )}
           </main>
         </div>
+        )}
       </div>
     </div>
   );
