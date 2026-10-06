@@ -36,6 +36,7 @@
 
 -  **Minecraft Bedrock サーバー** を Geyser 経由で公開する (RakNet 対応)
 -  **NetherNet / WebRTC の中継** — TCP signalingとUDPを転送 ([設定手順](docs/nethernet-setup.md))
+-  **GeyserのHTTPS証明書連携** — Manager APIから証明書を取得し、自動設定・更新反映 ([導入手順](FerrumGeyser/README.md))
 -  **Minecraft Java サーバー** を安全に公開する (TCP 転送)
 -  **Web サーバー** の前段に置いて TLS 終端 / パス書き換え
 -  **DDoS 対策** を IP 単位で軽量に (iptables 不要)

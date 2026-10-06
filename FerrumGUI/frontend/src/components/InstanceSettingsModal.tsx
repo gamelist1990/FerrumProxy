@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { t } from "../lang";
 import "./InstanceSettingsModal.css";
+import { ManagerApiPanel } from './ManagerApiPanel';
 
 interface InstanceSettingsModalProps {
   isOpen: boolean;
@@ -401,6 +402,7 @@ export function InstanceSettingsModal({
                 {managerTokenListPathCopied ? "コピー済み" : "Token list pathをコピー"}
               </button>
             </div>
+                  <ManagerApiPanel instanceId={instanceId} managerToken={managerToken} copyText={writeClipboardText} />
           </div>
         </div>
 

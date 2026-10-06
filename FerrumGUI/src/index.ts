@@ -14,6 +14,7 @@ import { ServiceManager, FerrumProxyInstance, FerrumProxyPlatform } from './serv
 import { ProcessManager } from './processManager.js';
 import { ConfigManager, FerrumProxyConfig } from './configManager.js';
 import { AuthManager } from './authManager.js';
+import { managerForwardHeaders, validManagerPath } from './managerProxy.js';
 import { aggregateConnectionIps, type IpRecord, type PlayerIpRecord } from './ipAnalytics.js';
 import {
   getLatestRelease,
@@ -2684,11 +2685,6 @@ function requestHasAnyManagerBearer(req: express.Request): boolean {
   return serviceManager.getAll().some((instance) => instance.managerToken === token);
 }
 
-function requestHasManagerBearer(req: express.Request, instance: FerrumProxyInstance): boolean {
-  const token = managerTokenFromRequest(req);
-  return !!instance.managerToken && token === instance.managerToken;
-}
-
 app.all('/api/instances/:id/manager/*', async (req, res) => {
   try {
     const instanceId = req.params.id;
@@ -2700,12 +2696,14 @@ app.all('/api/instances/:id/manager/*', async (req, res) => {
     if (!instance.managerPort || !instance.managerToken) {
       return res.status(400).json({ error: 'Manager API is not configured for this instance' });
     }
-    if (!requestHasValidGuiSession(req) && !requestHasManagerBearer(req, instance)) {
+    const forwardedHeaders = managerForwardHeaders(req.headers.authorization, requestHasValidGuiSession(req), instance.managerToken,
+      typeof req.headers['if-none-match'] === 'string' ? req.headers['if-none-match'] : undefined);
+    if (!forwardedHeaders) {
       return res.status(401).json({ error: 'Unauthorized', requireAuth: true });
     }
 
     const managerPath = String((req.params as Record<string, string>)[0] || '');
-    if (!managerPath.startsWith('api/v1/')) {
+    if (!validManagerPath(managerPath)) {
       return res.status(400).json({ error: 'Manager proxy path must start with api/v1/' });
     }
 
@@ -2718,9 +2716,7 @@ app.all('/api/instances/:id/manager/*', async (req, res) => {
       }
     }
 
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${instance.managerToken}`,
-    };
+    const headers: Record<string, string> = forwardedHeaders;
     const hasBody = !['GET', 'HEAD'].includes(req.method.toUpperCase()) && req.body !== undefined;
     if (hasBody) {
       headers['Content-Type'] = 'application/json';
@@ -2730,10 +2726,15 @@ app.all('/api/instances/:id/manager/*', async (req, res) => {
       method: req.method,
       headers,
       body: hasBody ? JSON.stringify(req.body) : undefined,
+      signal: AbortSignal.timeout(15000),
     });
 
-    if (response.status === 204) {
-      return res.status(204).send();
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const etag = response.headers.get('etag');
+    if (etag) res.setHeader('ETag', etag);
+    if (response.status === 204 || response.status === 304) {
+      return res.status(response.status).send();
     }
     const data = await response.json().catch(() => ({}));
     res.status(response.status).json(data);

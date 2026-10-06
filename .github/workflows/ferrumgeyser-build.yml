@@ -1,0 +1,143 @@
+name: Build FerrumGeyser
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'FerrumGeyser/**'
+      - '.github/workflows/ferrumgeyser-build.yml'
+      - 'scripts/gen-version-json.mjs'
+      - 'src/manager_api.rs'
+      - 'src/manager_secrets.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    paths:
+      - 'FerrumGeyser/**'
+      - '.github/workflows/ferrumgeyser-build.yml'
+      - 'scripts/gen-version-json.mjs'
+      - 'src/manager_api.rs'
+      - 'src/manager_secrets.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+concurrency:
+  group: ferrumgeyser-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Java 21 build and Geyser HTTPS integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: FerrumGeyser/pom.xml
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Enforce restricted reflection and no external reload commands
+        run: python FerrumGeyser/scripts/check_no_reflection.py
+
+      - name: Fetch verified Geyser preview fixture
+        run: python FerrumGeyser/scripts/fetch_geyser.py
+
+      - name: Build and test extension
+        working-directory: FerrumGeyser
+        run: mvn --batch-mode --no-transfer-progress -Ppreview-api -Dgeyser.jar="$PWD/.deps/Geyser-Standalone.jar" clean verify
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build test Manager
+        run: cargo build --locked
+
+      - name: Verify actual Geyser HTTPS and certificate renewal
+        timeout-minutes: 5
+        run: python FerrumGeyser/scripts/verify_standalone.py
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release-assets
+          cp FerrumGeyser/target/FerrumGeyser.jar release-assets/FerrumGeyser.jar
+          cp FerrumGeyser/src/main/resources/config.yml release-assets/config.example.yml
+          cp FerrumGeyser/README.md release-assets/README.md
+          cd release-assets
+          sha256sum FerrumGeyser.jar config.example.yml README.md > SHA256SUMS
+
+      - name: Upload extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: FerrumGeyser
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FerrumGeyser-diagnostics
+          path: |
+            FerrumGeyser/target/surefire-reports/*.txt
+            FerrumGeyser/.deps/smoke-*/geyser.log
+            FerrumGeyser/.deps/smoke-*/proxy.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    name: Release FerrumGeyser
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Download extension
+        uses: actions/download-artifact@v4
+        with:
+          name: FerrumGeyser
+          path: release-assets
+
+      - name: Generate version manifest
+        run: node repo/scripts/gen-version-json.mjs geyser FerrumGeyser release-assets
+
+      - name: Publish fixed FerrumGeyser release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: FerrumGeyser
+          target_commitish: ${{ github.sha }}
+          name: FerrumGeyser
+          body: |
+            Latest FerrumGeyser certificate extension build from `${{ github.sha }}`.
+
+            Requires Java 21+ and Geyser with builtin NetherNet HTTPS support.
+            Configure Manager credentials using the attached README. Certificate changes use Geyser's native internal reload.
+
+            Action: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          overwrite_files: true

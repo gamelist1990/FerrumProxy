@@ -6,6 +6,8 @@ config.yml
 playerIP.json
 connectionIP.json
 *IP.json.tmp
+*.manager.json
+*.manager.*.tmp
 *.log
 
 # FerrumGUI dependencies and build output
@@ -42,3 +44,8 @@ FerrumClient/src-tauri/target/
 Thumbs.db
 .idea/
 .vscode/
+
+# Geyser extension build output and local distribution used for verification
+FerrumGeyser/target/
+FerrumGeyser/.deps/
+!FerrumGeyser/src/main/resources/config.yml

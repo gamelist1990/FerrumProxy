@@ -21,3 +21,12 @@ pub fn hash_token(token: &str, server_salt: &str) -> String {
     hasher.update(server_salt.as_bytes());
     format!("{:x}", hasher.finalize())
 }
+
+pub fn tokens_equal(left: &str, right: &str) -> bool {
+    let left = Sha256::digest(left.as_bytes());
+    let right = Sha256::digest(right.as_bytes());
+    left.iter()
+        .zip(right.iter())
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}

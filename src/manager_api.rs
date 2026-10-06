@@ -13,14 +13,15 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config::{ProxyConfig, SharedServiceConfig, SharedServiceLimits, SharedServiceToken};
+use crate::manager_secrets::{read_bundle, CertificateSource, Store};
 use crate::runtime::AppRuntime;
-use crate::token_security::{generate_opaque_token, generate_salt, hash_token};
+use crate::token_security::{generate_opaque_token, generate_salt, hash_token, tokens_equal};
 
-#[derive(Clone)]
 struct ManagerState {
     config_path: PathBuf,
     manager_token: String,
     runtime: Arc<AppRuntime>,
+    secrets: Store,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,21 +72,40 @@ pub async fn start_manager_api(
     runtime: Arc<AppRuntime>,
 ) -> anyhow::Result<()> {
     let state = Arc::new(ManagerState {
+        secrets: Store::new(&config_path),
         config_path,
         manager_token,
         runtime,
     });
-    let app = Router::new()
-        .route("/api/v1/health", get(health))
-        .route("/api/v1/performance", get(performance))
-        .route("/api/v1/tokens", post(issue_token).get(list_tokens))
-        .route("/api/v1/tokens/:id", delete(delete_token))
-        .with_state(state);
-
+    let app = manager_router(state);
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     info!("Manager API listening on http://127.0.0.1:{port}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn manager_router(state: Arc<ManagerState>) -> Router {
+    Router::new()
+        .route("/api/v1/health", get(health))
+        .route("/api/v1/performance", get(performance))
+        .route("/api/v1/tokens", post(issue_token).get(list_tokens))
+        .route("/api/v1/tokens/:id", delete(delete_token))
+        .route("/api/v1/catalog", get(catalog))
+        .route(
+            "/api/v1/credentials",
+            get(list_credentials).post(issue_credential),
+        )
+        .route("/api/v1/credentials/:id", delete(revoke_credential))
+        .route(
+            "/api/v1/certificates",
+            get(list_certificates).post(register_certificate),
+        )
+        .route(
+            "/api/v1/certificates/:id",
+            get(get_certificate).delete(delete_certificate),
+        )
+        .layer(axum::middleware::from_fn(manager_response_headers))
+        .with_state(state)
 }
 
 fn authorize(headers: &HeaderMap, state: &ManagerState) -> Result<(), Response> {
@@ -110,7 +130,7 @@ fn authorize(headers: &HeaderMap, state: &ManagerState) -> Result<(), Response> 
         )
             .into_response());
     };
-    if token != state.manager_token {
+    if !tokens_equal(token, &state.manager_token) {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "Invalid manager token" })),
@@ -121,17 +141,195 @@ fn authorize(headers: &HeaderMap, state: &ManagerState) -> Result<(), Response> 
 }
 
 async fn health(State(state): State<Arc<ManagerState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = authorize(&headers, &state) {
+    if let Err(response) = authorize_scope(&headers, &state, "health:read") {
         return response;
     }
     Json(json!({ "ok": true })).into_response()
 }
 
 async fn performance(State(state): State<Arc<ManagerState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = authorize(&headers, &state) {
+    if let Err(response) = authorize_scope(&headers, &state, "performance:read") {
         return response;
     }
     Json(state.runtime.metrics.snapshot()).into_response()
+}
+
+async fn manager_response_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+fn authorize_scope(headers: &HeaderMap, state: &ManagerState, scope: &str) -> Result<(), Response> {
+    if authorize(headers, state).is_ok() {
+        return Ok(());
+    }
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    match token {
+        Some(token) if state.secrets.permits(token, scope).unwrap_or(false) => Ok(()),
+        _ => authorize(headers, state),
+    }
+}
+
+async fn catalog(State(state): State<Arc<ManagerState>>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    Json(json!({"version":1,"endpoints":[
+        {"method":"GET","path":"/api/v1/health","scope":"health:read"},
+        {"method":"GET","path":"/api/v1/performance","scope":"performance:read"},
+        {"method":"GET","path":"/api/v1/tokens","scope":"manager"},
+        {"method":"POST","path":"/api/v1/tokens","scope":"manager"},
+        {"method":"DELETE","path":"/api/v1/tokens/{id}","scope":"manager"},
+        {"method":"GET","path":"/api/v1/credentials","scope":"manager"},
+        {"method":"POST","path":"/api/v1/credentials","scope":"manager"},
+        {"method":"DELETE","path":"/api/v1/credentials/{id}","scope":"manager"},
+        {"method":"GET","path":"/api/v1/certificates","scope":"manager"},
+        {"method":"POST","path":"/api/v1/certificates","scope":"manager"},
+        {"method":"GET","path":"/api/v1/certificates/{id}","scope":"certificates:read:{id}"},
+        {"method":"DELETE","path":"/api/v1/certificates/{id}","scope":"manager"}
+    ]}))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IssueCredentialRequest {
+    name: String,
+    scopes: Vec<String>,
+    expires_in: Option<i64>,
+}
+
+fn secret_error(status: StatusCode, error: impl std::fmt::Display) -> Response {
+    (status, Json(json!({"error":error.to_string()}))).into_response()
+}
+
+async fn issue_credential(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Json(request): Json<IssueCredentialRequest>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    match state
+        .secrets
+        .issue(&request.name, request.scopes, request.expires_in)
+    {
+        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+        Err(error) => secret_error(StatusCode::BAD_REQUEST, error),
+    }
+}
+async fn list_credentials(State(state): State<Arc<ManagerState>>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    match state.secrets.credentials() {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => secret_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+async fn revoke_credential(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    match state.secrets.revoke(&id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => secret_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
+}
+async fn register_certificate(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Json(source): Json<CertificateSource>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    match state.secrets.register(source) {
+        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+        Err(error) => secret_error(StatusCode::BAD_REQUEST, error),
+    }
+}
+async fn list_certificates(State(state): State<Arc<ManagerState>>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    match state.secrets.sources() {
+        Ok(sources) => Json(sources.into_iter().map(|source| {
+            let mut result = read_bundle(&source).map(|bundle|bundle.metadata()).unwrap_or_else(|error|
+                json!({"id":source.id,"domain":source.domain,"error":error.to_string()}));
+            result["certificatePath"] = json!(source.certificate_path);
+            result["privateKeyPath"] = json!(source.private_key_path);
+            result
+        }).collect::<Vec<_>>()).into_response(),
+        Err(error) => secret_error(StatusCode::INTERNAL_SERVER_ERROR,error),
+    }
+}
+async fn get_certificate(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(response) = authorize_scope(&headers, &state, &format!("certificates:read:{id}")) {
+        return response;
+    }
+    let source = match state.secrets.sources() {
+        Ok(sources) => sources.into_iter().find(|source| source.id == id),
+        Err(error) => return secret_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    };
+    let Some(source) = source else {
+        return secret_error(StatusCode::NOT_FOUND, "Certificate source not found");
+    };
+    match read_bundle(&source) {
+        Ok(bundle) => {
+            let etag = format!("\"{}\"", bundle.revision);
+            let mut response = if headers
+                .get(axum::http::header::IF_NONE_MATCH)
+                .and_then(|value| value.to_str().ok())
+                == Some(etag.as_str())
+            {
+                StatusCode::NOT_MODIFIED.into_response()
+            } else {
+                Json(bundle).into_response()
+            };
+            response
+                .headers_mut()
+                .insert(axum::http::header::ETAG, etag.parse().unwrap());
+            response
+        }
+        Err(error) => secret_error(StatusCode::SERVICE_UNAVAILABLE, error),
+    }
+}
+async fn delete_certificate(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    match state.secrets.remove_source(&id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => secret_error(StatusCode::INTERNAL_SERVER_ERROR, error),
+    }
 }
 
 async fn issue_token(
@@ -337,5 +535,170 @@ fn default_shared_service() -> SharedServiceConfig {
         tokens: Vec::new(),
         defaults: SharedServiceLimits::default(),
         maximums: SharedServiceLimits::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+
+    #[tokio::test]
+    async fn certificate_api_enforces_scope_revocation_and_reads_renewed_files() -> Result<()> {
+        crate::install_rustls_crypto_provider();
+        let directory = std::env::temp_dir().join(generate_opaque_token("ferrum-api-test-"));
+        std::fs::create_dir_all(&directory)?;
+        let cert_path = directory.join("fullchain.pem");
+        let key_path = directory.join("privkey.pem");
+        std::fs::write(
+            &cert_path,
+            include_str!("../FerrumGeyser/src/test/resources/fixtures/rsa-cert.pem"),
+        )?;
+        std::fs::write(
+            &key_path,
+            include_str!("../FerrumGeyser/src/test/resources/fixtures/rsa-key.pem"),
+        )?;
+        let config_path = directory.join("config.yml");
+        let state = Arc::new(ManagerState {
+            secrets: Store::new(&config_path),
+            config_path,
+            manager_token: "test-root-only".to_string(),
+            runtime: Arc::new(AppRuntime::new(false, false, vec![], Default::default())),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let app = manager_router(state);
+        let task = tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = reqwest::Client::new();
+        let root = "test-root-only";
+        let missing = client
+            .get(format!("{base}/api/v1/certificates/geyser"))
+            .send()
+            .await?;
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        let registration = client.post(format!("{base}/api/v1/certificates")).bearer_auth(root).json(&json!({
+            "id":"geyser", "domain":"play.pexserver.com", "certificatePath":cert_path,"privateKeyPath":key_path,
+            "advertiseHost":"132.145.118.98", "advertisePort":19132
+        })).send().await?;
+        assert_eq!(registration.status(), StatusCode::CREATED);
+        let issued: serde_json::Value = client
+            .post(format!("{base}/api/v1/credentials"))
+            .bearer_auth(root)
+            .json(&json!({
+                "name":"Geyser", "scopes":["certificates:read:geyser"], "expiresIn":60
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let delegated = issued["token"].as_str().unwrap();
+        for path in [
+            "/api/v1/catalog",
+            "/api/v1/health",
+            "/api/v1/credentials",
+            "/api/v1/certificates/other",
+        ] {
+            assert_eq!(
+                client
+                    .get(format!("{base}{path}"))
+                    .bearer_auth(delegated)
+                    .send()
+                    .await?
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        assert_eq!(
+            client
+                .delete(format!("{base}/api/v1/certificates/geyser"))
+                .bearer_auth(delegated)
+                .send()
+                .await?
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        let response = client
+            .get(format!("{base}/api/v1/certificates/geyser"))
+            .bearer_auth(delegated)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        let etag = response.headers()["etag"].to_str()?.to_owned();
+        let bundle: serde_json::Value = response.json().await?;
+        assert!(bundle["privateKeyPem"]
+            .as_str()
+            .unwrap()
+            .contains("BEGIN PRIVATE KEY"));
+        assert_eq!(
+            client
+                .get(format!("{base}/api/v1/certificates/geyser"))
+                .bearer_auth(delegated)
+                .header("If-None-Match", &etag)
+                .send()
+                .await?
+                .status(),
+            StatusCode::NOT_MODIFIED
+        );
+        let metadata = client
+            .get(format!("{base}/api/v1/certificates"))
+            .bearer_auth(root)
+            .send()
+            .await?
+            .text()
+            .await?;
+        assert!(!metadata.contains("BEGIN") && !metadata.contains("privateKeyPem"));
+        std::fs::write(
+            &cert_path,
+            include_str!("../FerrumGeyser/src/test/resources/fixtures/rotated-cert.pem"),
+        )?;
+        // Certbot updates its files separately: never hand out a mismatched pair.
+        assert_eq!(
+            client
+                .get(format!("{base}/api/v1/certificates/geyser"))
+                .bearer_auth(delegated)
+                .send()
+                .await?
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        std::fs::write(
+            &key_path,
+            include_str!("../FerrumGeyser/src/test/resources/fixtures/rotated-key.pem"),
+        )?;
+        let renewed = client
+            .get(format!("{base}/api/v1/certificates/geyser"))
+            .bearer_auth(delegated)
+            .header("If-None-Match", &etag)
+            .send()
+            .await?;
+        assert_eq!(renewed.status(), StatusCode::OK);
+        assert_ne!(renewed.headers()["etag"], etag);
+        assert_eq!(
+            client
+                .delete(format!(
+                    "{base}/api/v1/credentials/{}",
+                    issued["id"].as_str().unwrap()
+                ))
+                .bearer_auth(root)
+                .send()
+                .await?
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/api/v1/certificates/geyser"))
+                .bearer_auth(delegated)
+                .send()
+                .await?
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        task.abort();
+        let _ = task.await;
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

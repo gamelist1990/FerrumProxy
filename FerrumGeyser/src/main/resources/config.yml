@@ -1,0 +1,12 @@
+# Place the delegated token in manager-token.txt next to this file.
+enabled: false
+# GUI URL followed by /api/instances/INSTANCE_ID/manager
+manager-url: 'https://manager.example.com/api/instances/INSTANCE_ID/manager'
+token-file: manager-token.txt
+certificate-id: geyser
+domain: example.com
+poll-seconds: 300
+# Calls Geyser's internal reload when the certificate changes; disconnects Bedrock players.
+auto-reload: true
+# HTTPS, loopback HTTP, and Tailscale IPv4 HTTP are accepted without this override.
+allow-insecure-http: false

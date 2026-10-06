@@ -1,0 +1,6 @@
+id: ferrumcertificates
+name: FerrumCertificates
+main: com.ferrumproxy.geyser.FerrumCertificates
+api: 2.11.0
+version: 1.0.0
+authors: [FerrumProxy]

@@ -1,12 +1,12 @@
 // Generates a `version.json` manifest describing a fixed-tag GitHub release so
 // the FerrumProxy GUI can do reliable update detection ("更新確認 & 一括更新").
 //
-// Fixed-tag releases (FerrumProxy / FerrumProxyGUI / FerrumProxyClient) carry no
+// Fixed-tag releases (FerrumProxy / FerrumProxyGUI / FerrumProxyClient / FerrumGeyser) carry no
 // semantic version, so this manifest is the source of truth: a commit/date-based
 // version string plus the concrete downloadable assets for each platform.
 //
 // Usage: node scripts/gen-version-json.mjs <component> <tag> [assetsDir]
-//   component : "proxy" | "gui" | "client"
+//   component : "proxy" | "gui" | "client" | "geyser"
 //   tag       : the fixed release tag the assets are published under
 //   assetsDir : directory containing the built assets (default: release-assets)
 //
@@ -36,6 +36,7 @@ const version = `${now.getUTCFullYear()}.${pad(now.getUTCMonth() + 1)}.${pad(
 /** Infer a platform key from an asset filename. */
 function platformOf(name) {
   const s = name.toLowerCase();
+  if (s.endsWith('.jar')) return 'java';
   if (s.includes('windows') || s.endsWith('.exe') || s.endsWith('.msi')) {
     return s.includes('arm64') ? 'windows-arm64' : 'windows-x64';
   }
