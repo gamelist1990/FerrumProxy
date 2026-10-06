@@ -26,6 +26,8 @@ allow-insecure-http: false
 
 Managerへの接続はHTTPS、localhostのHTTP、またはTailscaleの100.64.0.0/10内のIPv4 HTTPに対応します。Manager本体は `127.0.0.1` のみで待ち受けるため、別マシンのGeyserからはGUIのManager転送URLを使います。公開HTTPのURLをコピーした場合はHTTPSまたはTailscale経由のURLへ変更してください。
 
+GUIのHTTPサーバーはWebSocket受付も共有するため、拡張の通信はHTTP/1.1を使用します。JavaのHTTP/2への切り替え要求がWebSocket受付で400として拒否される問題を避けます。GUIのhealthが正常なのに旧版の拡張だけHTTP 400になる場合は、拡張を更新してください。
+
 UbuntuではトークンファイルをGeyserの実行ユーザー所有にして、権限を制限します。
 
 ```sh

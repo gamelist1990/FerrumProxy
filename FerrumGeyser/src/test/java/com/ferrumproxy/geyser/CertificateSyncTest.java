@@ -76,6 +76,12 @@ class CertificateSyncTest {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/v1/certificates/geyser", exchange -> {
             try {
+                // Like the GUI's WebSocket listener, reject an h2c upgrade.
+                // Normal certificate GETs must use HTTP/1.1 without Upgrade.
+                if (exchange.getRequestHeaders().getFirst("Upgrade") != null) {
+                    exchange.sendResponseHeaders(400, -1); return;
+                }
+                assertEquals("HTTP/1.1", exchange.getProtocol());
                 if (!auth.get().equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
                     exchange.sendResponseHeaders(403, -1); return;
                 }

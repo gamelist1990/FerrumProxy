@@ -72,7 +72,9 @@ final class CertificateSync implements AutoCloseable {
         this.settings = settings;
         this.directory = directory.toAbsolutePath().normalize();
         this.geyserConfig = geyserConfig;
-        client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
+        // The GUI shares its HTTP server with ws. Java's cleartext HTTP/2
+        // upgrade is handled as a WebSocket upgrade and can be rejected.
+        client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
     }
 

@@ -38,10 +38,12 @@ final class SyncDiagnostics {
         String message = failure.getMessage();
         if (message != null && message.matches("Manager certificate API returned HTTP [1-5][0-9]{2}")) {
             String hint = switch (message.substring(message.length() - 3)) {
+                case "400" -> " Check manager-url/path and that Manager API is configured for this instance.";
                 case "401" -> " Check the delegated token and its expiration.";
                 case "403" -> " Check that the token permits this certificate ID.";
                 case "404" -> " Check manager-url, instance ID and registered certificate ID.";
-                case "502", "503" -> " Check that the FerrumProxy instance and its Manager API are running.";
+                case "502" -> " Check that the FerrumProxy instance and its Manager API are running.";
+                case "503" -> " Check certificate source files and Manager availability.";
                 default -> " Check the Manager certificate registration and source files.";
             };
             return message + "." + hint;
