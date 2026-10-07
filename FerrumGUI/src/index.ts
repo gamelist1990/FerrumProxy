@@ -1721,6 +1721,7 @@ app.post('/api/self/update', async (_req, res) => {
     });
   }
   try {
+    processManager.stopAll();
     const result = await performGuiSelfUpdate(isCompiled, (downloaded, total) => {
       broadcast({
         type: 'guiUpdateProgress',
