@@ -26,3 +26,11 @@ Content-Length、chunked、接続終了で区切られたHTTP/1.x応答、同じ
 確認手順：新しい本体と設定で再起動し、Tailscale OFFのBedrockクライアントで接続します。Proxyからクライアントへ返るSDPに `132.145.118.98 19132 typ srflx` があることと、UDPの往復を確認してください。Tailscale側のキャプチャは書き換え前のGeyser応答なので、そこに公開候補が追加されていなくても正常です。認証情報を含むSDP本文全体は共有しないでください。
 
 この機能は接続候補を広告する機能です。外部ファイアウォールの開放、UDP到達性、backendへの転送、実IPの取得を独立して確認する必要があります。ローカルのHTTPフレーミング・SDP補正テストと既存のNetherNet UDP転送テストで検証し、実サーバーの認証済みゲーム参加は未検証です。
+
+2026-10-06の追加検証：初期転送の待ち合わせを修正した本体では、補正ON/OFF × 解析ON/OFFの全組み合わせでTLS試行とLF区切りHTTPリクエストを停止せず転送できます。`docs/probes/WebRtcSignalingProbe.java` はPR #6712のGeyser Standalone jarに含まれるlibdatachannelを使い、実際のFerrumProxyのHTTP補正とUDPリレーを検証するローカルfixtureです。補正ONで解析ON/OFFの両方について、追加されたsrflx候補だけをテストクライアントに残し、ProxyのUDPポートが選択され、ICE/DTLS/SCTPの双方向echoが成功しました。ICE資格情報とfingerprintの保持も確認しています。直接接続を防ぐ候補削除はfixture内だけの操作で、本体は元の候補を保持します。Minecraftログインと公開環境での接続成功はこのfixtureの検証範囲に含みません。
+
+実行例（Java 25以上、ローカルIPv4に合わせて変更）：
+```text
+java --enable-native-access=ALL-UNNAMED -cp Geyser-Standalone.jar docs/probes/WebRtcSignalingProbe.java 192.168.1.5 52010 52011 52012 52013
+```
+起動済みFerrumProxyのリスナーはTCP/UDP 52013、targetはTCP 52010 / UDP 52011、公開IPは192.168.1.5、公開UDPポートは52013、haproxyはfalseにします。fixtureのHTTPサーバーはPROXY protocolを解釈しません。Geyser向けのPROXY v2転送は別のRust統合テストで確認します。
