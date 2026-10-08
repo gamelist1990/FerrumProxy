@@ -1,0 +1,18 @@
+.ip-block-settings { display: grid; gap: 1rem; }
+.ip-block-settings p { margin: 0; line-height: 1.65; }
+.ip-block-list, .ip-block-runtime { border-top: 1px solid var(--border-color); padding-top: 1rem; display: grid; gap: .75rem; }
+.ip-block-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .6rem; }
+.ip-block-heading h4 { margin: 0; font-size: .95rem; }
+.ip-block-heading small { color: var(--text-muted); font-weight: 400; }
+.ip-block-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: .65rem; align-items: end; }
+.ip-block-cidr { grid-template-columns: minmax(0, 1fr) auto; }
+.ip-block-feeds { border: 1px solid var(--border-color); border-radius: 8px; padding: .85rem; }
+.ip-block-feeds summary { cursor: pointer; font-size: .9rem; font-weight: 600; }
+.ip-block-feeds .ui-grid { margin: 1rem 0 .75rem; }
+.ip-block-stats { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin: 0; }
+.ip-block-stats dt { color: var(--text-muted); font-size: .8rem; }
+.ip-block-stats dd { margin: .3rem 0 0; font-size: .95rem; }
+@media (max-width: 640px) {
+  .ip-block-row, .ip-block-cidr { grid-template-columns: minmax(0, 1fr); }
+  .ip-block-row > button { justify-self: end; }
+}

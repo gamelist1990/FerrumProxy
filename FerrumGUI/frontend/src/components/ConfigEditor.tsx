@@ -6,6 +6,7 @@ import { GeneralSettings } from './config/GeneralSettings';
 import { SharedRelaySettings } from './config/SharedRelaySettings';
 import { ListenerList } from './config/ListenerList';
 import { DdosGuardSettingsPanel } from './config/DdosGuardSettings';
+import { IpBlockSettingsPanel } from './config/IpBlockSettings';
 import { HighLatencySettingsPanel } from './config/HighLatencySettings';
 import { UdpSessionSettingsPanel } from './config/UdpSessionSettings';
 import { WorkspaceTabs } from './WorkspaceTabs';
@@ -44,7 +45,10 @@ export function ConfigEditor({ instanceId, config, onChange, onSave, dirty = fal
         <fieldset disabled={saving} className="config-fields">
           {section === 'routes' && <ListenerList instanceId={instanceId} listeners={config.listeners || []} onChange={(listeners) => handleChange('listeners', listeners)} />}
           {section === 'general' && <GeneralSettings config={config} onChange={handleChange} />}
-          {section === 'protection' && <DdosGuardSettingsPanel config={config.ddosGuard} onChange={(ddosGuard) => handleChange('ddosGuard', ddosGuard)} />}
+          {section === 'protection' && <>
+            <IpBlockSettingsPanel instanceId={instanceId} config={config.ipBlock} onChange={(ipBlock) => handleChange('ipBlock', ipBlock)} />
+            <DdosGuardSettingsPanel config={config.ddosGuard} onChange={(ddosGuard) => handleChange('ddosGuard', ddosGuard)} />
+          </>}
           {section === 'connection' && <>
             <UdpSessionSettingsPanel config={config.highLatency} onChange={(highLatency) => handleChange('highLatency', highLatency)} />
             <HighLatencySettingsPanel config={config.highLatency} onChange={(highLatency) => handleChange('highLatency', highLatency)} />

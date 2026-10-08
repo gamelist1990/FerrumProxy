@@ -80,7 +80,23 @@ export interface HighLatencyConfig {
   udpSessionIdleTimeoutMs?: number;
 }
 
+export interface IpBlockConfig {
+  enabled?: boolean;
+  blockVpn?: boolean;
+  blockDatacenter?: boolean;
+  vpnFeedUrl?: string;
+  datacenterFeedUrl?: string;
+  feedRefreshIntervalSeconds?: number;
+  blockedIps?: Array<{ ip: string; reason?: string | null }>;
+  blockedCidrs?: string[];
+}
+
+export interface IpBlockStatus extends IpBlockConfig {
+  feedStats: { vpnCidrs: number; datacenterCidrs: number; lastUpdatedSecondsAgo: number | null };
+}
+
 export interface FerrumProxyConfig {
+  ipBlock?: IpBlockConfig;
   endpoint?: number;
   useRestApi?: boolean;
   savePlayerIP?: boolean;
@@ -282,6 +298,12 @@ export async function fetchLogs(id: string, limit?: number): Promise<LogEntry[]>
 export async function fetchConfig(id: string): Promise<FerrumProxyConfig> {
   const res = await fetch(`${API_BASE}/instances/${id}/config`);
   if (!res.ok) throw new Error('Failed to fetch config');
+  return res.json();
+}
+
+export async function fetchIpBlockStatus(id: string, signal?: AbortSignal): Promise<IpBlockStatus> {
+  const res = await fetch(`${API_BASE}/instances/${encodeURIComponent(id)}/manager/api/v1/ip-block`, { signal });
+  if (!res.ok) throw new Error('IP Block status is unavailable');
   return res.json();
 }
 

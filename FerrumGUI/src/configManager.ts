@@ -4,8 +4,10 @@ import YAML from 'yaml';
 import { EventEmitter } from 'events';
 import chalk from 'chalk';
 import { isIP } from 'net';
+import { validateIpBlockConfig, type IpBlockConfig } from './ipBlockConfig.js';
 
 export interface FerrumProxyConfig {
+  ipBlock?: IpBlockConfig;
   endpoint?: number;
   useRestApi?: boolean;
   savePlayerIP?: boolean;
@@ -130,6 +132,15 @@ export class ConfigManager extends EventEmitter {
 
   private sanitize(config: FerrumProxyConfig): FerrumProxyConfig {
     const sanitized: FerrumProxyConfig = { ...config };
+    if (config.ipBlock) {
+      sanitized.ipBlock = {
+        ...config.ipBlock,
+        vpnFeedUrl: config.ipBlock.vpnFeedUrl?.trim(),
+        datacenterFeedUrl: config.ipBlock.datacenterFeedUrl?.trim(),
+        blockedIps: config.ipBlock.blockedIps?.map(entry => ({ ...entry, ip: entry.ip.trim(), reason: entry.reason?.trim() || undefined })),
+        blockedCidrs: config.ipBlock.blockedCidrs?.map(cidr => cidr.trim()),
+      };
+    }
 
     // Sanitize sharedService
     if (sanitized.sharedService) {
@@ -196,6 +207,7 @@ export class ConfigManager extends EventEmitter {
 
   async validate(config: FerrumProxyConfig, isSharedRelayMode: boolean = false): Promise<{ valid: boolean; errors: string[] }> {
     const errors: string[] = [];
+    if (config.ipBlock !== undefined) errors.push(...validateIpBlockConfig(config.ipBlock));
     const validateTargetPorts = (
       target: { tcp?: number; udp?: number } | undefined,
       path: string
