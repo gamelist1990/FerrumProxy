@@ -160,7 +160,7 @@ export function InstanceSettingsPage({ instance, onBack, onOpenProxyConfig, onSa
           <div className="settings-callout"><KeyRound size={20} aria-hidden="true" /><div><strong>{t('settingsApplyTitle')}</strong><p>{t('settingsManagerApplyHint')}</p></div></div>
         </section>
         <section hidden={section !== 'certificates'} aria-label={t('settingsCertificates')}>
-          {instance.managerPort && instance.managerToken ? certificatesVisited && <div className="settings-card settings-api-card"><ManagerApiPanel instanceId={instance.id} managerToken={instance.managerToken} copyText={copyText} onBusyChange={setApiBusy} /></div>
+          {instance.managerPort && instance.managerToken ? certificatesVisited && <div className="settings-card settings-api-card"><ManagerApiPanel instanceId={instance.id} managerToken={instance.managerToken} onBusyChange={setApiBusy} /></div>
           : <div className="settings-card settings-empty"><ShieldCheck size={32} aria-hidden="true" /><h4>{t('settingsManagerRequired')}</h4><p>{t('settingsManagerRequiredHint')}</p><button type="button" className="btn tertiary" onClick={() => navigate('manager')}>{t('settingsOpenManager')}</button></div>}
         </section>
         <section hidden={section !== 'version'} aria-label={t('settingsVersion')}>

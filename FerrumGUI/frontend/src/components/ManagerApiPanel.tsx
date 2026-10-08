@@ -17,14 +17,13 @@ function redact(value: unknown): unknown {
   return value;
 }
 
-export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChange }: {
-  instanceId: string; managerToken?: string; copyText: (text: string) => Promise<void>; onBusyChange?: (busy: boolean) => void;
+export function ManagerApiPanel({ instanceId, managerToken, onBusyChange }: {
+  instanceId: string; managerToken?: string; onBusyChange?: (busy: boolean) => void;
 }) {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [certificates, setCertificates] = useState<Certificate[]>([]);
   const [source, setSource] = useState(initialSource);
   const [editingId, setEditingId] = useState('');
-  const [certificateId, setCertificateId] = useState('');
   const [endpoint, setEndpoint] = useState('GET /api/v1/health');
   const [resourceId, setResourceId] = useState('geyser');
   const [body, setBody] = useState('{}');
@@ -56,7 +55,6 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
       certificatePath: certificate.certificatePath, privateKeyPath: certificate.privateKeyPath,
       advertiseHost: certificate.advertiseHost || '', advertisePort: certificate.advertisePort == null ? '' : String(certificate.advertisePort),
     } : { ...initialSource, id: certificates.length ? '' : initialSource.id });
-    if (certificate) setCertificateId(certificate.id);
   }
 
   function changeSource(key: keyof typeof initialSource, value: string) {
@@ -78,13 +76,13 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
   useEffect(() => {
     let active = true;
     setResult(''); setError(''); setNotice('');
-    setCertificates([]); setEndpoints([]); setCertificateId(''); setEditingId(''); setSource(initialSource); setBusy(true);
+    setCertificates([]); setEndpoints([]); setEditingId(''); setSource(initialSource); setBusy(true);
     void request('GET', '/api/v1/certificates').then(({ data }: { data: Certificate[] }) => {
       if (!active) return;
       setCertificates(data);
       const first = data.find(item => item.id === 'geyser') || data[0];
       if (first) {
-        setCertificateId(first.id); setEditingId(first.id);
+        setEditingId(first.id);
         setSource({ id: first.id, domain: first.domain, certificatePath: first.certificatePath, privateKeyPath: first.privateKeyPath,
           advertiseHost: first.advertiseHost || '', advertisePort: first.advertisePort == null ? '' : String(first.advertisePort) });
       }
@@ -100,7 +98,6 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
     ]);
     setEndpoints(results[0].data.endpoints); setCertificates(results[1].data);
     const next: Certificate[] = results[1].data;
-    setCertificateId(current => next.some(item => item.id === current) ? current : next[0]?.id || '');
     setEditingId(current => next.some(item => item.id === current) ? current : '');
   }
   async function act(action: () => Promise<void>) {
@@ -132,7 +129,7 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
         if (payload.advertisePort !== null && (!Number.isInteger(payload.advertisePort) || payload.advertisePort < 1 || payload.advertisePort > 65535))
           throw new Error('公開UDPポートは1〜65535の整数で指定してください');
         const response = await request('POST', '/api/v1/certificates', payload);
-        setCertificateId(response.data.id); setEditingId(response.data.id); await refresh();
+        setEditingId(response.data.id); await refresh();
         setNotice(`証明書「${response.data.id}」（${response.data.domain}）を登録しました。`);
       })}>証明書を検証して登録</button>
       {certificates.map(certificate => <div className="manager-api-item" key={certificate.id}>
