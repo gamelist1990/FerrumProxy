@@ -2,6 +2,9 @@ import fs from 'fs/promises';
 import fssync from 'fs';
 import path from 'path';
 import chalk from 'chalk';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { startGuiUpdateInstaller } from './selfUpdateInstaller.js';
 
 // Bun のビルド時に `--define BUILD_VERSION="\"1.0.0\""` で埋め込まれる想定。
 // 開発モード (bun --watch) では未定義なので try/typeof で判定する。
@@ -205,12 +208,13 @@ export type SelfUpdateResult =
  * フロー:
  *  1. GitHub Release から現在プラットフォームに合うアセット URL を取得
  *  2. `{execPath}.new` にダウンロード
- *  3. 現在の `{execPath}` を `{execPath}.old` にリネーム
- *  4. `{execPath}.new` を `{execPath}` にリネーム（インストール）
+ *  3. ダウンロード完了後に管理プロセスを停止し、別プロセスの更新ヘルパーを起動
+ *  4. 呼び出し元がGUIを終了すると、ヘルパーが差し替えて新しいGUIを起動
  */
 export async function performGuiSelfUpdate(
   isCompiled: boolean,
-  onProgress?: SelfUpdateProgress
+  onProgress?: SelfUpdateProgress,
+  beforeInstall?: () => Promise<void>
 ): Promise<SelfUpdateResult> {
   if (!isSelfUpdateSupported(isCompiled)) {
     return {
@@ -256,14 +260,10 @@ export async function performGuiSelfUpdate(
 
   const execPath = process.execPath;
   const newPath = execPath + '.new';
-  const oldPath = execPath + '.old';
 
   // 前回の残骸を掃除しておく
   try {
     if (fssync.existsSync(newPath)) await fs.rm(newPath, { force: true });
-  } catch {}
-  try {
-    if (fssync.existsSync(oldPath)) await fs.rm(oldPath, { force: true });
   } catch {}
 
   console.log(
@@ -281,65 +281,42 @@ export async function performGuiSelfUpdate(
   const totalSize =
     Number.parseInt(res.headers.get('content-length') || '0', 10) ||
     (latest.assetSize ?? 0);
-  const fileStream = fssync.createWriteStream(newPath);
-  const reader = res.body.getReader();
   let downloaded = 0;
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      fileStream.write(value);
-      downloaded += value.length;
-      if (onProgress && totalSize > 0) onProgress(downloaded, totalSize);
+    await pipeline(Readable.fromWeb(res.body as any), new Transform({
+      transform(chunk, _encoding, callback) {
+        downloaded += chunk.length;
+        if (onProgress && totalSize > 0) onProgress(downloaded,totalSize);
+        callback(null,chunk);
+      },
+    }), fssync.createWriteStream(newPath));
+    const expectedSize = latest.assetSize || totalSize;
+    if (!downloaded || (expectedSize > 0 && downloaded !== expectedSize)) {
+      throw new Error(`Incomplete download: expected ${expectedSize} bytes, received ${downloaded}`);
     }
-    await new Promise<void>((resolve, reject) => {
-      fileStream.end(() => resolve());
-      fileStream.on('error', reject);
-    });
   } catch (err: any) {
-    try {
-      fileStream.destroy();
-    } catch {}
     try {
       await fs.rm(newPath, { force: true });
     } catch {}
     return { success: false, error: `Download error: ${err.message}` };
   }
 
-  if (process.platform !== 'win32') {
-    try {
-      await fs.chmod(newPath, 0o755);
-    } catch {}
-  }
-
   try {
-    await fs.rename(execPath, oldPath);
+    await beforeInstall?.();
+    await startGuiUpdateInstaller();
   } catch (err: any) {
     try {
       await fs.rm(newPath, { force: true });
     } catch {}
     return {
       success: false,
-      error: `Failed to move current binary aside: ${err.message}`,
-    };
-  }
-
-  try {
-    await fs.rename(newPath, execPath);
-  } catch (err: any) {
-    // ロールバック
-    try {
-      await fs.rename(oldPath, execPath);
-    } catch {}
-    return {
-      success: false,
-      error: `Failed to install new binary: ${err.message}`,
+      error: `Failed to prepare GUI restart: ${err.message}`,
     };
   }
 
   console.log(
     chalk.green(
-      `✓ GUI updated to v${latest.version}. Restart is not performed automatically.`
+      `✓ GUI v${latest.version} downloaded. Installer will apply it after this process exits.`
     )
   );
 

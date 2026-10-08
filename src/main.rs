@@ -17,6 +17,7 @@ mod tcp_tuning;
 mod tls_config;
 mod token_security;
 mod udp;
+mod ip_block;
 mod webhook_queue;
 
 use std::path::PathBuf;
@@ -76,13 +77,23 @@ async fn main() -> Result<()> {
         connect: high_latency.effective_connect_timeout(),
         udp_session_idle: high_latency.effective_udp_session_idle_timeout(),
     };
-    let runtime = Arc::new(runtime::AppRuntime::with_timeouts(
+    let ip_block = ip_block::IpBlockList::new(&cfg.ip_block);
+    let runtime = Arc::new(runtime::AppRuntime::with_timeouts_and_ip_block(
         cfg.use_rest_api,
         cfg.save_player_ip,
         webhooks,
         cfg.ddos_guard.to_settings(),
         timeouts,
+        ip_block,
     ));
+    {
+        let ip_block_list = runtime.ip_block.clone();
+        let http_client_for_feed = runtime.http_client.clone();
+        let ip_block_config = cfg.ip_block.clone();
+        tokio::spawn(async move {
+            ip_block::start_feed_refresh_task(ip_block_list, http_client_for_feed, ip_block_config).await;
+        });
+    }
     let mut tasks = JoinSet::new();
 
     info!(

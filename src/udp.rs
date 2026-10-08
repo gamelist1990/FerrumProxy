@@ -214,6 +214,10 @@ pub async fn start_udp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
     loop {
         let (len, peer) = server.recv_from(&mut buf).await?;
+        if runtime.ip_block.is_blocked(peer.ip()) {
+            debug!("IP block: dropped UDP datagram from {peer}");
+            continue;
+        }
 
         // P99 最適化: `buf[..len].to_vec()` によるパケット毎のヒープ確保を削除。
         // handle_datagram は await されるだけで spawn しないので、buf の借用は

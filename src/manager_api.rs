@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config::{ProxyConfig, SharedServiceConfig, SharedServiceLimits, SharedServiceToken};
+use crate::ip_block::{IpBlockEntry, FeedStats, normalize_ip_str};
 use crate::manager_secrets::{read_bundle, CertificateSource, Store};
 use crate::runtime::AppRuntime;
 use crate::token_security::{generate_opaque_token, generate_salt, hash_token, tokens_equal};
@@ -104,6 +105,11 @@ fn manager_router(state: Arc<ManagerState>) -> Router {
             "/api/v1/certificates/:id",
             get(get_certificate).delete(delete_certificate),
         )
+        .route("/api/v1/ip-block", get(get_ip_block).post(update_ip_block))
+        .route("/api/v1/ip-block/ips", post(add_ip_block_ip))
+        .route("/api/v1/ip-block/ips/:ip", delete(remove_ip_block_ip))
+        .route("/api/v1/ip-block/cidrs", post(add_ip_block_cidr))
+        .route("/api/v1/ip-block/cidrs/:cidr", delete(remove_ip_block_cidr))
         .layer(axum::middleware::from_fn(manager_response_headers))
         .with_state(state)
 }
@@ -507,6 +513,275 @@ async fn delete_token(
                     .into_response(),
             }
         }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateIpBlockRequest {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    block_vpn: Option<bool>,
+    #[serde(default)]
+    block_datacenter: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddIpRequest {
+    ip: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddCidrRequest {
+    cidr: String,
+}
+
+async fn get_ip_block(State(state): State<Arc<ManagerState>>, headers: HeaderMap) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    match ProxyConfig::load(&state.config_path) {
+        Ok(config) => {
+            let stats = state.runtime.ip_block.feed_stats();
+            Json(json!({
+                "enabled": config.ip_block.enabled,
+                "blockVpn": config.ip_block.block_vpn,
+                "blockDatacenter": config.ip_block.block_datacenter,
+                "vpnFeedUrl": config.ip_block.vpn_feed_url,
+                "datacenterFeedUrl": config.ip_block.datacenter_feed_url,
+                "feedRefreshIntervalSeconds": config.ip_block.feed_refresh_interval_seconds,
+                "blockedIps": config.ip_block.blocked_ips,
+                "blockedCidrs": config.ip_block.blocked_cidrs,
+                "feedStats": stats,
+            }))
+            .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn update_ip_block(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Json(req): Json<UpdateIpBlockRequest>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    let mut config = match ProxyConfig::load(&state.config_path) {
+        Ok(c) => c,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    if let Some(v) = req.enabled {
+        config.ip_block.enabled = v;
+        state.runtime.ip_block.set_enabled(v);
+    }
+    if let Some(v) = req.block_vpn {
+        config.ip_block.block_vpn = v;
+        state.runtime.ip_block.set_block_vpn(v);
+    }
+    if let Some(v) = req.block_datacenter {
+        config.ip_block.block_datacenter = v;
+        state.runtime.ip_block.set_block_datacenter(v);
+    }
+    match config.save(&state.config_path) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn add_ip_block_ip(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Json(req): Json<AddIpRequest>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    let ip = match normalize_ip_str(&req.ip) {
+        Some(ip) => ip,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid IP address: {:?}", req.ip) })),
+            )
+                .into_response()
+        }
+    };
+    let mut config = match ProxyConfig::load(&state.config_path) {
+        Ok(c) => c,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let ip_str = ip.to_string();
+    if config.ip_block.blocked_ips.iter().any(|e| e.ip == ip_str) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": format!("IP {ip_str} is already blocked") })),
+        )
+            .into_response();
+    }
+    config.ip_block.blocked_ips.push(IpBlockEntry {
+        ip: ip_str,
+        reason: req.reason,
+    });
+    state.runtime.ip_block.add_ip(ip);
+    match config.save(&state.config_path) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn remove_ip_block_ip(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Path(raw_ip): Path<String>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    let ip = match normalize_ip_str(&raw_ip) {
+        Some(ip) => ip,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid IP address: {:?}", raw_ip) })),
+            )
+                .into_response()
+        }
+    };
+    let mut config = match ProxyConfig::load(&state.config_path) {
+        Ok(c) => c,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let ip_str = ip.to_string();
+    let before = config.ip_block.blocked_ips.len();
+    config.ip_block.blocked_ips.retain(|e| e.ip != ip_str);
+    if config.ip_block.blocked_ips.len() == before {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("IP {ip_str} is not in the block list") })),
+        )
+            .into_response();
+    }
+    state.runtime.ip_block.remove_ip(ip);
+    match config.save(&state.config_path) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn add_ip_block_cidr(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Json(req): Json<AddCidrRequest>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    if !state.runtime.ip_block.add_cidr(&req.cidr) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid CIDR: {:?}", req.cidr) })),
+        )
+            .into_response();
+    }
+    let mut config = match ProxyConfig::load(&state.config_path) {
+        Ok(c) => c,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    if !config.ip_block.blocked_cidrs.contains(&req.cidr) {
+        config.ip_block.blocked_cidrs.push(req.cidr);
+    }
+    match config.save(&state.config_path) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn remove_ip_block_cidr(
+    State(state): State<Arc<ManagerState>>,
+    headers: HeaderMap,
+    Path(cidr): Path<String>,
+) -> Response {
+    if let Err(response) = authorize(&headers, &state) {
+        return response;
+    }
+    let mut config = match ProxyConfig::load(&state.config_path) {
+        Ok(c) => c,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let before = config.ip_block.blocked_cidrs.len();
+    config.ip_block.blocked_cidrs.retain(|c| *c != cidr);
+    if config.ip_block.blocked_cidrs.len() == before {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("CIDR {:?} is not in the block list", cidr) })),
+        )
+            .into_response();
+    }
+    state.runtime.ip_block.remove_cidr(&cidr);
+    match config.save(&state.config_path) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": err.to_string() })),

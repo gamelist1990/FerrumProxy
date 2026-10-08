@@ -50,6 +50,7 @@ import { NetherNetPanel } from './components/NetherNetPanel';
 import './AppLayout.css';
 const PerformanceMonitor = lazy(() => import('./components/PerformanceMonitor').then((module) => ({ default: module.PerformanceMonitor })));
 import { DEFAULT_FERRUMPROXY_VERSION } from "./utils/version";
+import { waitForGuiRestart } from './utils/guiRestart';
 import type { WebSocketEventMap } from "./api";
 import { LOG_DISPLAY_LIMIT } from "./utils/constants";
 
@@ -594,15 +595,8 @@ function App() {
     try {
       setIsGuiUpdating(true);
       const result = await performGuiSelfUpdate();
-      alert(
-        `${t("guiUpdateSuccess")}
-
-v${result.version}
-
-${t("guiUpdateManualRestart")}`
-      );
-      setIsGuiUpdating(false);
-      await loadGuiVersion();
+      await waitForGuiRestart(result.version);
+      window.location.reload();
     } catch (error) {
       const err = error as Error;
       alert(`${t("errorGuiUpdate")} ${err.message}`);

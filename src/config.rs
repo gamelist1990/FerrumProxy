@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::ddos_guard::DdosGuardSettings;
 use crate::firewall::FirewallConfig;
+use crate::ip_block::IpBlockConfig;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Protocol {
@@ -34,6 +35,8 @@ pub struct ProxyConfig {
 
     #[serde(default)]
     pub firewall: FirewallConfig,
+    #[serde(default)]
+    pub ip_block: IpBlockConfig,
     pub listeners: Vec<ListenerRule>,
 }
 

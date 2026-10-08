@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::ddos_guard::{DdosGuard, DdosGuardSettings};
+use crate::ip_block::IpBlockList;
 use crate::webhook_queue::WebhookGroupNotifier;
 
 const BUFFER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -50,6 +51,7 @@ pub struct AppRuntime {
     pub connection_ip_mapper: ConnectionIpMapper,
     pub metrics: PerformanceMetrics,
     pub ddos_guard: DdosGuard,
+    pub ip_block: IpBlockList,
 
     pub timeouts: TimeoutSettings,
 }
@@ -78,6 +80,24 @@ impl AppRuntime {
         ddos_settings: DdosGuardSettings,
         timeouts: TimeoutSettings,
     ) -> Self {
+        Self::with_timeouts_and_ip_block(
+            use_rest_api,
+            save_player_ip,
+            webhooks,
+            ddos_settings,
+            timeouts,
+            IpBlockList::default(),
+        )
+    }
+
+    pub fn with_timeouts_and_ip_block(
+        use_rest_api: bool,
+        save_player_ip: bool,
+        webhooks: Vec<String>,
+        ddos_settings: DdosGuardSettings,
+        timeouts: TimeoutSettings,
+        ip_block: IpBlockList,
+    ) -> Self {
         let http_client = reqwest::Client::new();
         Self {
             use_rest_api,
@@ -93,6 +113,7 @@ impl AppRuntime {
             ),
             metrics: PerformanceMetrics::new(),
             ddos_guard: DdosGuard::new(ddos_settings),
+            ip_block,
             timeouts,
         }
     }

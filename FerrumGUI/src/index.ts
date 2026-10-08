@@ -38,6 +38,7 @@ import {
 
 
 const PORT = process.env.PORT || 3000;
+let guiUpdating = false;
 const cliArgs = new Set(Bun.argv.slice(2));
 const PRIVATE_MODE =
   cliArgs.has('--private') ||
@@ -1239,6 +1240,12 @@ app.use(securityGuard());
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
 app.use(authManager.authMiddleware());
+app.use('/api', (req,res,next) => {
+  if (guiUpdating && !['GET','HEAD','OPTIONS'].includes(req.method)) {
+    return res.status(503).json({error:'GUI update in progress. Wait for the GUI to restart.'});
+  }
+  next();
+});
 
 let embeddedIndexBlob: Blob | undefined;
 
@@ -1446,7 +1453,7 @@ processManager.on('exit', async (instanceId: string, code: number, signal: strin
       return;
     }
 
-    if (instance && instance.autoRestart) {
+    if (!guiUpdating && instance && instance.autoRestart) {
       const now = Date.now();
       const info = restartAttempts.get(instanceId) || { count: 0, firstAttemptAt: now };
 
@@ -1470,6 +1477,7 @@ processManager.on('exit', async (instanceId: string, code: number, signal: strin
       console.log(`Auto-restart: will attempt to restart ${instanceId} in ${backoffMs}ms (attempt ${info.count})`);
       setTimeout(async () => {
         try {
+          if (guiUpdating) return;
           
           const fresh = serviceManager.getById(instanceId);
           if (!fresh) return;
@@ -1594,6 +1602,7 @@ app.get('/api/auth/status', async (req, res) => {
       hasAuth,
       isAuthenticated: !hasAuth || isAuthenticated,
       requireAuth: hasAuth && !isAuthenticated,
+      guiVersion: getCurrentGuiVersion(),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1712,7 +1721,7 @@ app.get('/api/self/version', async (_req, res) => {
   }
 });
 
-// GUI 本体を最新版に差し替える（自動再起動はしない）
+// GUI更新を準備し、HTTP応答後に旧プロセスを終了する。
 app.post('/api/self/update', async (_req, res) => {
   if (!isSelfUpdateSupported(isCompiled)) {
     return res.status(400).json({
@@ -1720,8 +1729,8 @@ app.post('/api/self/update', async (_req, res) => {
         'Self-update is only available on compiled binaries (dev mode is unsupported)',
     });
   }
+  guiUpdating = true;
   try {
-    processManager.stopAll();
     const result = await performGuiSelfUpdate(isCompiled, (downloaded, total) => {
       broadcast({
         type: 'guiUpdateProgress',
@@ -1729,20 +1738,37 @@ app.post('/api/self/update', async (_req, res) => {
         total,
         percentage: total > 0 ? Math.round((downloaded / total) * 100) : 0,
       });
+    }, async () => {
+      for (const instance of serviceManager.getAll()) {
+        if (processManager.isRunning(instance.id)) markIntentionalStop(instance.id);
+      }
+      await processManager.stopAllAndWait();
+      configManager.unwatchAll();
+      await serviceManager.save();
     });
     if (!result.success) {
+      guiUpdating = false;
+      processManager.resumeStarts();
       return res.status(500).json({ error: result.error });
     }
     broadcast({
       type: 'guiUpdateReady',
       version: result.version,
     });
+    // Even if the requesting browser disconnects, the prepared installer must run.
+    const exitTimer = setTimeout(() => process.exit(0),1000);
+    res.once('finish',() => {
+      clearTimeout(exitTimer);
+      setTimeout(() => process.exit(0),250);
+    });
     res.json({
       success: true,
       version: result.version,
-      message: `Updated to v${result.version}. Restart is not performed automatically.`,
+      message: `Restarting GUI to apply v${result.version}.`,
     });
   } catch (error: any) {
+    guiUpdating = false;
+    processManager.resumeStarts();
     res.status(500).json({ error: error.message });
   }
 });

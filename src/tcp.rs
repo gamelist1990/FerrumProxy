@@ -49,6 +49,10 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
 
     loop {
         let (client, client_addr) = listener.accept().await?;
+        if runtime.ip_block.is_blocked(client_addr.ip()) {
+            debug!("IP block: dropped TCP connection from {client_addr}");
+            continue;
+        }
         let tcp_ddos_permit = match runtime.ddos_guard.tcp_connection_opened(client_addr.ip()) {
             Ok(permit) => permit,
             Err(reason) => {

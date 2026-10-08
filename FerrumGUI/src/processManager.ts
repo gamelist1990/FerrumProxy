@@ -22,12 +22,14 @@ export class ProcessManager extends EventEmitter {
   private logBuffers: Map<string, string> = new Map();
   private startedAt: Map<string, Date> = new Map();
   private maxLogEntries = 1000;
+  private startsBlocked = false;
 
   constructor() {
     super();
   }
 
   start(instanceId: string, options: ProcessOptions): number {
+    if (this.startsBlocked) throw new Error('GUI update is stopping managed processes');
     if (this.processes.has(instanceId)) {
       throw new Error(`Process for instance ${instanceId} is already running`);
     }
@@ -229,4 +231,22 @@ export class ProcessManager extends EventEmitter {
       }
     }
   }
+
+  async stopAllAndWait(timeoutMs = 10000): Promise<void> {
+    this.startsBlocked = true;
+    this.stopAll();
+    const waitUntil = async (deadline: number) => {
+      while (this.processes.size && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve,50));
+      }
+    };
+    await waitUntil(Date.now() + timeoutMs);
+    if (this.processes.size) {
+      for (const id of this.processes.keys()) this.stop(id,true);
+      await waitUntil(Date.now() + 2000);
+    }
+    if (this.processes.size) throw new Error('Managed processes did not stop before GUI update');
+  }
+
+  resumeStarts(): void { this.startsBlocked = false; }
 }
