@@ -297,48 +297,6 @@ export async function updateConfig(id: string, config: FerrumProxyConfig): Promi
   }
 }
 
-export async function issueManagerSharedServiceToken(
-  id: string,
-  payload: {
-    name: string;
-    scopes?: string[];
-    expiresIn?: number;
-    issuerId?: string;
-    priority?: number;
-    fixedPort?: number;
-    limits?: Partial<SharedServiceLimits>;
-  }
-): Promise<{ id: string; token: string; expiresAt?: string }> {
-  const res = await fetch(`${API_BASE}/instances/${id}/manager/api/v1/tokens`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Failed to issue manager token' }));
-    throw new Error(error.error || 'Failed to issue manager token');
-  }
-  return res.json();
-}
-
-export async function fetchManagerSharedServiceTokens(id: string): Promise<SharedServiceToken[]> {
-  const res = await fetch(`${API_BASE}/instances/${id}/manager/api/v1/tokens`);
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Failed to fetch manager tokens' }));
-    throw new Error(error.error || 'Failed to fetch manager tokens');
-  }
-  return res.json();
-}
-
-export async function deleteManagerSharedServiceToken(id: string, tokenId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/instances/${id}/manager/api/v1/tokens/${encodeURIComponent(tokenId)}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Failed to delete manager token' }));
-    throw new Error(error.error || 'Failed to delete manager token');
-  }
-}
 
 export async function uploadListenerTlsAssets(
   id: string,

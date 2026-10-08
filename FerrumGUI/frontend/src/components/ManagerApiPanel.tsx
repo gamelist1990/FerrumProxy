@@ -3,7 +3,6 @@ import './ManagerApiPanel.css';
 
 type Endpoint = { method: string; path: string; scope: string };
 type Certificate = { id: string; domain: string; certificatePath: string; privateKeyPath: string; advertiseHost?: string | null; advertisePort?: number | null; expiresAt?: string; error?: string };
-type Credential = { id: string; name: string; scopes: string[]; expiresAt?: string };
 const initialSource = {
   id: 'geyser', domain: 'example.com',
   certificatePath: '/etc/letsencrypt/live/example.com/fullchain.pem',
@@ -23,15 +22,9 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
 }) {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [certificates, setCertificates] = useState<Certificate[]>([]);
-  const [credentials, setCredentials] = useState<Credential[]>([]);
   const [source, setSource] = useState(initialSource);
   const [editingId, setEditingId] = useState('');
   const [certificateId, setCertificateId] = useState('');
-  const [credentialName, setCredentialName] = useState('Geyser');
-  const [expiresDays, setExpiresDays] = useState('');
-  const [issuedToken, setIssuedToken] = useState('');
-  const [issuedCertificate, setIssuedCertificate] = useState<{ id: string; domain: string } | null>(null);
-  const [tokenVisible, setTokenVisible] = useState(false);
   const [endpoint, setEndpoint] = useState('GET /api/v1/health');
   const [resourceId, setResourceId] = useState('geyser');
   const [body, setBody] = useState('{}');
@@ -84,8 +77,8 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
 
   useEffect(() => {
     let active = true;
-    setIssuedToken(''); setIssuedCertificate(null); setTokenVisible(false); setResult(''); setError(''); setNotice('');
-    setCertificates([]); setCredentials([]); setEndpoints([]); setCertificateId(''); setEditingId(''); setSource(initialSource); setBusy(true);
+    setResult(''); setError(''); setNotice('');
+    setCertificates([]); setEndpoints([]); setCertificateId(''); setEditingId(''); setSource(initialSource); setBusy(true);
     void request('GET', '/api/v1/certificates').then(({ data }: { data: Certificate[] }) => {
       if (!active) return;
       setCertificates(data);
@@ -101,12 +94,11 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
     return () => { active = false; };
   }, [request]);
 
-  useEffect(() => { setIssuedToken(''); setIssuedCertificate(null); setTokenVisible(false); }, [certificateId]);
   async function refresh() {
     const results = await Promise.all([
-      request('GET', '/api/v1/catalog'), request('GET', '/api/v1/certificates'), request('GET', '/api/v1/credentials'),
+      request('GET', '/api/v1/catalog'), request('GET', '/api/v1/certificates'),
     ]);
-    setEndpoints(results[0].data.endpoints); setCertificates(results[1].data); setCredentials(results[2].data);
+    setEndpoints(results[0].data.endpoints); setCertificates(results[1].data);
     const next: Certificate[] = results[1].data;
     setCertificateId(current => next.some(item => item.id === current) ? current : next[0]?.id || '');
     setEditingId(current => next.some(item => item.id === current) ? current : '');
@@ -120,7 +112,7 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
   return <div className="manager-workspace">
     <div className="manager-workspace-heading"><strong>API・Geyser証明書連携</strong>
       <button type="button" className="small-action-button" disabled={busy} onClick={() => act(refresh)}>一覧を取得</button></div>
-    <p className="setting-description">まず証明書を検証して登録してください。GeyserはManager APIの管理トークンで接続できます。証明書の取得だけを許可する拡張用トークンも発行できます。証明書の登録・トークン発行は、各ボタンで即時保存されます。</p>
+    <p className="setting-description">まず証明書を検証して登録してください。GeyserはManager APIの管理トークンで接続できます。証明書の登録は各ボタンで即時保存されます。</p>
     {error && <p className="manager-api-error" role="alert">{error}</p>}
     {notice && <p className="manager-api-notice" role="status">{notice}</p>}
     <details open><summary>配布する証明書</summary>
@@ -140,46 +132,13 @@ export function ManagerApiPanel({ instanceId, managerToken, copyText, onBusyChan
         if (payload.advertisePort !== null && (!Number.isInteger(payload.advertisePort) || payload.advertisePort < 1 || payload.advertisePort > 65535))
           throw new Error('公開UDPポートは1〜65535の整数で指定してください');
         const response = await request('POST', '/api/v1/certificates', payload);
-        setIssuedToken(''); setIssuedCertificate(null); setTokenVisible(false);
         setCertificateId(response.data.id); setEditingId(response.data.id); await refresh();
-        setNotice(`証明書「${response.data.id}」（${response.data.domain}）を登録しました。次に拡張用トークンを発行できます。`);
+        setNotice(`証明書「${response.data.id}」（${response.data.domain}）を登録しました。`);
       })}>証明書を検証して登録</button>
       {certificates.map(certificate => <div className="manager-api-item" key={certificate.id}>
         <div><strong>{certificate.id}</strong> — {certificate.domain}<small>{certificate.error || `有効期限: ${certificate.expiresAt ? new Date(certificate.expiresAt).toLocaleString() : '不明'}`}</small></div>
         <button type="button" className="small-action-button" disabled={busy} onClick={() => act(async () => { await request('DELETE', `/api/v1/certificates/${encodeURIComponent(certificate.id)}`); await refresh(); })}>登録を削除</button>
       </div>)}
-    </details>
-    <details><summary>Geyser拡張の認証</summary>
-      <p className="setting-description">管理トークンを使う場合は、Manager API画面のトークンを manager-token.txt に保存します。以下の拡張用トークンは指定した証明書の取得専用で、GET /api/v1/health は許可しません。接続確認には GET /api/v1/certificates/証明書ID を使います。</p>
-      <div className="manager-api-fields">
-        <label>名前<input value={credentialName} onChange={event => setCredentialName(event.target.value)} /></label>
-        <label>取得を許可する登録済み証明書<select value={certificateId} disabled={busy || certificates.length === 0} onChange={event => setCertificateId(event.target.value)}>
-          {certificates.length === 0 && <option value="">先に証明書を登録してください</option>}
-          {certificates.map(certificate => <option key={certificate.id} value={certificate.id}>{certificate.id} — {certificate.domain}</option>)}
-        </select></label>
-        <label>トークンの有効日数<input type="number" min="1" value={expiresDays} placeholder="空欄なら失効まで有効" onChange={event => setExpiresDays(event.target.value)} /></label>
-      </div>
-      {certificates.length === 0 && <p className="setting-description">証明書がまだ登録されていません。「配布する証明書」で登録してから発行してください。</p>}
-      <button type="button" className="small-action-button" disabled={busy || !certificates.some(item => item.id === certificateId)} onClick={() => act(async () => {
-        const certificate = certificates.find(item => item.id === certificateId);
-        if (!certificate) throw new Error('先に証明書を登録してください');
-        if (expiresDays && (!Number.isSafeInteger(Number(expiresDays)) || Number(expiresDays) < 1)) throw new Error('有効日数は1以上の整数で指定してください');
-        const response = await request('POST', '/api/v1/credentials', { name: credentialName, scopes: [`certificates:read:${certificateId}`], expiresIn: expiresDays ? Number(expiresDays) * 86400 : null });
-        setIssuedCertificate({ id: certificate.id, domain: certificate.domain }); setIssuedToken(response.data.token); setTokenVisible(false); await refresh();
-      })}>拡張用トークンを発行</button>
-      {issuedToken && <div className="manager-issued-token">
-        <p>このトークンは再表示できません。拡張フォルダーの manager-token.txt に保存してください。</p>
-        <input type={tokenVisible ? 'text' : 'password'} readOnly value={issuedToken} aria-label="発行した拡張用トークン" autoComplete="off" />
-        <div className="manager-workspace-heading"><button type="button" className="small-action-button" onClick={() => setTokenVisible(!tokenVisible)}>{tokenVisible ? '隠す' : '表示'}</button>
-          <button type="button" className="small-action-button" onClick={() => act(async () => { await copyText(issuedToken); })}>トークンをコピー</button>
-          <button type="button" className="small-action-button" onClick={() => act(async () => {
-            if (!issuedCertificate) throw new Error('拡張用トークンを発行してください');
-            await copyText(`enabled: true\nmanager-url: '${window.location.origin}${base}'\ntoken-file: manager-token.txt\ncertificate-id: '${issuedCertificate.id.replaceAll("'", "''")}'\ndomain: '${issuedCertificate.domain.replaceAll("'", "''")}'\npoll-seconds: 300\nauto-reload: true\nallow-insecure-http: false\n`);
-          })}>拡張設定をコピー</button></div>
-      </div>}
-      {credentials.map(credential => <div className="manager-api-item" key={credential.id}><div><strong>{credential.name}</strong><small>{credential.scopes.join(', ')} / {credential.expiresAt || '失効まで有効'}</small></div>
-        <button type="button" className="small-action-button" disabled={busy} onClick={() => act(async () => { await request('DELETE', `/api/v1/credentials/${encodeURIComponent(credential.id)}`); await refresh(); })}>失効</button></div>)}
-      <p className="setting-description">Manager APIへの接続にはHTTPS、またはTailscaleの100.xアドレスを使います。auto-reload が有効なら証明書更新時にGeyserを自動リロードします。接続中のBedrockプレイヤーは切断されます。</p>
     </details>
     <details><summary>APIを実行</summary>
       <label>操作<select value={endpoint} onChange={event => setEndpoint(event.target.value)}>
