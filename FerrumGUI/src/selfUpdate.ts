@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { startGuiUpdateInstaller } from './selfUpdateInstaller.js';
+import type { GuiUpdateRestart } from './systemdUpdate.js';
 
 // Bun のビルド時に `--define BUILD_VERSION="\"1.0.0\""` で埋め込まれる想定。
 // 開発モード (bun --watch) では未定義なので try/typeof で判定する。
@@ -199,7 +200,7 @@ export async function cleanupOldBinary(): Promise<void> {
 export type SelfUpdateProgress = (downloaded: number, total: number) => void;
 
 export type SelfUpdateResult =
-  | { success: true; version: string }
+  | ({ success: true; version: string } & GuiUpdateRestart)
   | { success: false; error: string };
 
 /**
@@ -208,8 +209,8 @@ export type SelfUpdateResult =
  * フロー:
  *  1. GitHub Release から現在プラットフォームに合うアセット URL を取得
  *  2. `{execPath}.new` にダウンロード
- *  3. ダウンロード完了後に管理プロセスを停止し、別プロセスの更新ヘルパーを起動
- *  4. 呼び出し元がGUIを終了すると、ヘルパーが差し替えて新しいGUIを起動
+ *  3. 再起動できる構成を確認して管理プロセスを停止し、更新を準備
+ *  4. HTTP応答後にsystemdで再起動、またはGUI終了後にヘルパーで差し替えて起動
  */
 export async function performGuiSelfUpdate(
   isCompiled: boolean,
@@ -301,9 +302,9 @@ export async function performGuiSelfUpdate(
     return { success: false, error: `Download error: ${err.message}` };
   }
 
+  let installer: GuiUpdateRestart;
   try {
-    await beforeInstall?.();
-    await startGuiUpdateInstaller();
+    installer = await startGuiUpdateInstaller(beforeInstall);
   } catch (err: any) {
     try {
       await fs.rm(newPath, { force: true });
@@ -316,10 +317,10 @@ export async function performGuiSelfUpdate(
 
   console.log(
     chalk.green(
-      `✓ GUI v${latest.version} downloaded. Installer will apply it after this process exits.`
+      `✓ GUI v${latest.version} prepared. Restarting after the update response is sent.`
     )
   );
 
-  return { success: true, version: latest.version };
+  return { success: true, version: latest.version, ...installer };
 }
 

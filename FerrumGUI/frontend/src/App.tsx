@@ -595,7 +595,7 @@ function App() {
     try {
       setIsGuiUpdating(true);
       const result = await performGuiSelfUpdate();
-      await waitForGuiRestart(result.version);
+      await waitForGuiRestart(result.version, undefined, result.restartTimeoutMs ?? 90000);
       window.location.reload();
     } catch (error) {
       const err = error as Error;

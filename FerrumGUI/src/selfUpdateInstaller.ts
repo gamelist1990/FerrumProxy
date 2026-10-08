@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { detectSystemdService, installSystemdUpdate, systemdRestartPlan, type GuiUpdateRestart } from './systemdUpdate.js';
 
 export function quoteWindowsArgument(value: string): string {
   return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
@@ -69,8 +70,13 @@ nohup "$target" "$@" >> "$log" 2>&1 < /dev/null &
 rm -f "$0"
 `;
 
-export async function startGuiUpdateInstaller(): Promise<void> {
+export async function startGuiUpdateInstaller(beforeInstall?: () => Promise<void>): Promise<GuiUpdateRestart> {
   const target = process.execPath;
+  const service = await detectSystemdService();
+  // Reject unsupported service policies before stopping any managed proxies.
+  if (service) systemdRestartPlan(service, process.geteuid!());
+  await beforeInstall?.();
+  if (service) return installSystemdUpdate(target, service);
   const windows = process.platform === 'win32';
   const scriptPath = `${target}.update-${process.pid}.${windows ? 'ps1' : 'sh'}`;
   const metadataPath = `${scriptPath}.json`;
@@ -109,4 +115,5 @@ export async function startGuiUpdateInstaller(): Promise<void> {
     await fs.rm(metadataPath,{force:true}).catch(() => {});
     throw error;
   }
+  return { restartTimeoutMs: 90000, restart: async () => { process.exit(0); } };
 }

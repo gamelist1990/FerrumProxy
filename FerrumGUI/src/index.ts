@@ -1756,14 +1756,25 @@ app.post('/api/self/update', async (_req, res) => {
       version: result.version,
     });
     // Even if the requesting browser disconnects, the prepared installer must run.
-    const exitTimer = setTimeout(() => process.exit(0),1000);
+    let restarting = false;
+    const restartGui = () => {
+      if (restarting) return;
+      restarting = true;
+      void result.restart().catch(error => {
+        guiUpdating = false;
+        processManager.resumeStarts();
+        console.error(chalk.red(`GUI restart failed: ${error.message}`));
+      });
+    };
+    const exitTimer = setTimeout(restartGui,1000);
     res.once('finish',() => {
       clearTimeout(exitTimer);
-      setTimeout(() => process.exit(0),250);
+      setTimeout(restartGui,250);
     });
     res.json({
       success: true,
       version: result.version,
+      restartTimeoutMs: result.restartTimeoutMs,
       message: `Restarting GUI to apply v${result.version}.`,
     });
   } catch (error: any) {

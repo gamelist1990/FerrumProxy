@@ -552,6 +552,7 @@ export async function performGuiSelfUpdate(): Promise<{
   success: boolean;
   version: string;
   message: string;
+  restartTimeoutMs?: number;
 }> {
   const res = await fetch(`${API_BASE}/self/update`, { method: 'POST' });
   if (!res.ok) {

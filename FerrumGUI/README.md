@@ -94,6 +94,33 @@ bun run build:all
 - `ferrumproxy-gui-macos-arm64` - macOS ARM64
 - `ferrumproxy-gui-windows.exe` - Windows x64
 
+### systemdサービスでのGUI更新
+
+`sudo systemctl restart ferrumproxy` などで起動している場合も、GUIの更新後に新しいバージョンの起動を確認してブラウザーを再読み込みします。サービス名は実行中プロセスのcgroupとsystemdのMainPID・InvocationIDから検出します。`ExecStart` はコンパイル済みのGUI実行ファイルを直接起動してください。
+
+Linuxのsystemd起動では、GUIが稼働している間に実行ファイルをアトミックに差し替え、HTTPの更新応答を送信した後でサービスを再起動します。rootのサービスとユーザーサービスはsystemdに再起動を要求します。一般ユーザーで動くシステムサービスは、既存の `Restart=always` / `on-success` / `on-failure` に対応する終了コードを使用します。`Restart=on-failure` では更新時に非ゼロで終了するため、journalに終了ステータスが記録されますが、その後の新バージョン起動まで確認します。
+
+一般ユーザーで動くサービスには次の設定を推奨します。サービスの実行ユーザーに、GUI実行ファイルがあるディレクトリーへの書き込み権限が必要です。
+
+```ini
+[Service]
+Restart=always
+RestartSec=3
+ExitType=main
+```
+
+`KillMode=control-group` はそのまま利用できます。更新用の子プロセスに再起動を任せないため、GUI停止時に子プロセスが一緒に終了しても更新できます。`RestartSec` に合わせてブラウザー側の待機時間も調整します。自動再起動できない構成は、管理中のプロキシを停止する前にエラーを返します。サービスの権限や設定を自動変更することはありません。
+
+この処理は修正版GUIの導入後に有効になります。旧GUIの更新ヘルパーがsystemdによって停止されてしまう環境では、修正版の初回差し替えとサービス再起動を一度行ってください。
+
+Ubuntuのsystemdで行う隔離テスト（rootの検証VM内で、一時的なテストサービスだけを作成・削除します）:
+
+```bash
+FERRUM_GUI_TEST_SYSTEMD=1 bun test tests/systemdUpdateIntegration.test.ts
+```
+
+`Restart=no` のrootサービスと、`Restart=always` / `on-failure` の一般ユーザーサービスを、既定の `KillMode=control-group` のまま検証します。
+
 ## 使い方
 
 ### インスタンス設定
