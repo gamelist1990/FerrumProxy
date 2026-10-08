@@ -216,7 +216,10 @@ impl IpBlockList {
                     count
                 }
                 Err(err) => {
-                    warn!("IP block: failed to fetch VPN feed from {}: {err}", config.vpn_feed_url);
+                    warn!(
+                        "IP block: failed to fetch VPN feed from {}: {err}",
+                        config.vpn_feed_url
+                    );
                     0
                 }
             }
@@ -297,10 +300,7 @@ impl Default for IpBlockList {
     }
 }
 
-async fn fetch_cidr_list(
-    client: &reqwest::Client,
-    url: &str,
-) -> anyhow::Result<Vec<(IpAddr, u8)>> {
+async fn fetch_cidr_list(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<(IpAddr, u8)>> {
     let text = client
         .get(url)
         .timeout(Duration::from_secs(30))

@@ -4,6 +4,7 @@ mod ddos_guard;
 mod discord;
 mod firewall;
 mod http_rewrite;
+mod ip_block;
 mod management_api;
 mod manager_api;
 mod manager_secrets;
@@ -17,7 +18,6 @@ mod tcp_tuning;
 mod tls_config;
 mod token_security;
 mod udp;
-mod ip_block;
 mod webhook_queue;
 
 use std::path::PathBuf;
@@ -91,7 +91,8 @@ async fn main() -> Result<()> {
         let http_client_for_feed = runtime.http_client.clone();
         let ip_block_config = cfg.ip_block.clone();
         tokio::spawn(async move {
-            ip_block::start_feed_refresh_task(ip_block_list, http_client_for_feed, ip_block_config).await;
+            ip_block::start_feed_refresh_task(ip_block_list, http_client_for_feed, ip_block_config)
+                .await;
         });
     }
     let mut tasks = JoinSet::new();

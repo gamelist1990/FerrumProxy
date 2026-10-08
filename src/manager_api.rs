@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config::{ProxyConfig, SharedServiceConfig, SharedServiceLimits, SharedServiceToken};
-use crate::ip_block::{IpBlockEntry, FeedStats, normalize_ip_str};
+use crate::ip_block::{normalize_ip_str, FeedStats, IpBlockEntry};
 use crate::manager_secrets::{read_bundle, CertificateSource, Store};
 use crate::runtime::AppRuntime;
 use crate::token_security::{generate_opaque_token, generate_salt, hash_token, tokens_equal};
