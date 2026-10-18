@@ -89,6 +89,7 @@ export interface FerrumProxyConfig {
       udp?: number;
     }>;
     httpMappings?: Array<{
+      hostname?: string;
       path: string;
       target?: {
         host?: string;
@@ -198,6 +199,7 @@ export class ConfigManager extends EventEmitter {
       return {
         ...listener,
         webhook: listener.webhook?.trim() || undefined,
+        httpMappings: listener.httpMappings?.map(mapping => ({ ...mapping, hostname: mapping.hostname?.trim().replace(/\.$/, "").toLowerCase() || undefined })),
         https,
       };
     });
@@ -380,6 +382,17 @@ export class ConfigManager extends EventEmitter {
                 errors.push(`listeners[${index}].https.keyPath must be a string`);
               }
             }
+          }
+          if (listener.httpMappings !== undefined) {
+            if (!Array.isArray(listener.httpMappings)) errors.push(`listeners[${index}].httpMappings must be an array`);
+            else listener.httpMappings.forEach((mapping, routeIndex) => {
+              const at = `listeners[${index}].httpMappings[${routeIndex}]`;
+              if (typeof mapping.path !== 'string' || !mapping.path.startsWith('/') || /[\r\n]/.test(mapping.path)) errors.push(`${at}.path must start with /`);
+              if (mapping.hostname !== undefined && (typeof mapping.hostname !== 'string' || (mapping.hostname.trim() && !/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/i.test(mapping.hostname.trim())))) errors.push(`${at}.hostname must be a hostname without a scheme, port or wildcard`);
+              const targets = mapping.targets?.length ? mapping.targets : mapping.target ? [mapping.target] : [];
+              if (!targets.length || targets.some(target => !target.host?.trim())) errors.push(`${at} requires a target`);
+              for (const target of targets) validateTargetPorts(target, at);
+            });
           }
           if (listener.target) {
             validateTargetPorts(listener.target, `listeners[${index}].target`);

@@ -29,6 +29,7 @@ const createEmptyTarget = () => ({
 
 const createEmptyHttpMapping = () => ({
   path: '/',
+  hostname: '',
   target: {
     host: '',
     tcp: undefined,
@@ -131,7 +132,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
 
   const updateHttpMapping = (
     mappingIndex: number,
-    field: 'path' | 'host' | 'tcp',
+    field: 'path' | 'hostname' | 'host' | 'tcp',
     value: string | number | undefined,
   ) => {
     const nextMappings = httpMappings.map((mapping, currentIndex) => {
@@ -140,6 +141,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
       }
 
       const target = mapping.targets?.[0] ?? mapping.target ?? createEmptyTarget();
+      if (field === 'hostname') return { ...mapping, hostname: String(value ?? '').trim().toLowerCase() || undefined };
       if (field === 'path') {
         return { ...mapping, path: String(value ?? '/') };
       }
@@ -602,6 +604,12 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
                 </div>
 
                 <div className="ui-grid">
+                  <Input
+                    label={t('routingHostname')}
+                    value={mapping.hostname || ''}
+                    onChange={(e) => updateHttpMapping(mappingIndex, 'hostname', e.target.value)}
+                    placeholder="share.pexserver.com"
+                  />
                   <Input
                     label={t('externalPath') || 'External Path'}
                     value={mapping.path || '/'}

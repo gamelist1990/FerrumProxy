@@ -1,3 +1,4 @@
+import { certificateCoversDomains } from './certificateDomains';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -346,7 +347,8 @@ async function ensureLetsEncryptCertificate(
   const certPath = path.join(liveDir, 'fullchain.pem');
   const keyPath = path.join(liveDir, 'privkey.pem');
 
-  if (await isFile(certPath) && await isFile(keyPath)) {
+  const existingCertificate = await isFile(certPath) && await isFile(keyPath);
+  if (existingCertificate && certificateCoversDomains(await fs.readFile(certPath, 'utf8'), normalizedDomains)) {
     return {
       certPath,
       keyPath,
@@ -365,6 +367,7 @@ async function ensureLetsEncryptCertificate(
     '--non-interactive',
     '--agree-tos',
     '--keep-until-expiring',
+    ...(existingCertificate ? ['--expand'] : []),
     '--verbose',
     '--cert-name',
     certificateName,

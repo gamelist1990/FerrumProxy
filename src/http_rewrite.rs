@@ -31,6 +31,55 @@ pub fn http_request_path(buf: &[u8]) -> Option<String> {
     path.starts_with('/').then(|| path.to_string())
 }
 
+/// Parse a complete HTTP/1 header, rejecting ambiguous Host/absolute-form authority.
+pub fn http_request_host(buf: &[u8]) -> anyhow::Result<Option<String>> {
+    let end = header_end(buf).ok_or_else(|| anyhow::anyhow!("incomplete HTTP headers"))?;
+    let text = std::str::from_utf8(&buf[..end])?;
+    let mut lines = text.split("\r\n");
+    let line = lines.next().unwrap_or_default();
+    let mut host = None;
+    for line in lines {
+        anyhow::ensure!(
+            !line.starts_with([' ', '\t']),
+            "folded headers are not accepted for host routing"
+        );
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid HTTP header"))?;
+        anyhow::ensure!(name.trim() == name, "invalid header name");
+        if name.eq_ignore_ascii_case("host") {
+            anyhow::ensure!(host.is_none(), "multiple Host headers");
+            host = Some(normalize_http_authority(value.trim())?);
+        }
+    }
+    if let Some(target) = line
+        .split_whitespace()
+        .nth(1)
+        .filter(|target| target.starts_with("http://") || target.starts_with("https://"))
+    {
+        let url = url::Url::parse(target)?;
+        let authority = url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("missing authority"))?
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        anyhow::ensure!(
+            host.as_ref() == Some(&authority),
+            "absolute-form authority differs from Host"
+        );
+    }
+    Ok(host)
+}
+fn normalize_http_authority(value: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(!value.is_empty() && value.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b':' | b'[' | b']')), "invalid Host header");
+    let parsed = url::Url::parse(&format!("http://{value}/"))?;
+    Ok(parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("missing host"))?
+        .trim_end_matches('.')
+        .to_ascii_lowercase())
+}
+
 pub fn rewrite_http_request(buf: &[u8], target: &ProxyTarget, forwarded_proto: &str) -> Vec<u8> {
     let Some(head_end) = header_end(buf) else {
         return buf.to_vec();
@@ -226,4 +275,26 @@ fn strip_mount_path(path_part: &str, mount_path: Option<&str>) -> String {
 
 fn header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|window| window == b"\r\n\r\n")
+}
+#[cfg(test)]
+mod host_routing_tests {
+    use super::*;
+    #[test]
+    fn authority_is_canonical_and_ambiguous_headers_are_rejected() {
+        assert_eq!(
+            http_request_host(b"GET / HTTP/1.1\r\nHost: SHARE.PEXSERVER.COM.:443\r\n\r\n")
+                .unwrap()
+                .as_deref(),
+            Some("share.pexserver.com")
+        );
+        for request in [
+            "GET / HTTP/1.1\r\nHost: share.pexserver.com\r\nHost: play.pexserver.com\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost : share.pexserver.com\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: share.pexserver.com\r\n folded: value\r\n\r\n",
+            "GET https://play.pexserver.com/ HTTP/1.1\r\nHost: share.pexserver.com\r\n\r\n",
+            "GET / HTTP/1.1\r\nHost: user@share.pexserver.com\r\n\r\n",
+        ] {
+            assert!(http_request_host(request.as_bytes()).is_err(), "{request}");
+        }
+    }
 }

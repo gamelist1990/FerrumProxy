@@ -16,12 +16,13 @@ use tracing::{debug, info, warn};
 
 use crate::config::{ListenerRule, Protocol, ProxyTarget};
 use crate::http_rewrite::{
-    http_request_path, is_likely_http_request, rewrite_http_request, rewrite_http_response,
+    http_request_host, http_request_path, is_likely_http_request, rewrite_http_request,
+    rewrite_http_response,
 };
 use crate::proxy_protocol::{build_proxy_v2_header, parse_proxy_chain};
 use crate::runtime::{AppRuntime, PerformanceMetrics};
 use crate::tcp_tuning::{apply_tcp_buffer_sizes, apply_tcp_keepalive, apply_tcp_nodelay};
-use crate::tls_config::resolve_tls_acceptor;
+use crate::tls_config::{certificate_stamp, resolve_tls_acceptor};
 
 const INITIAL_CLIENT_DATA_TIMEOUT_MSG: &str = "timed out waiting for initial client data";
 const BUFFER_SIZE: usize = 16 * 1024;
@@ -36,7 +37,9 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     let listener = TcpListener::bind(&bind)
         .await
         .with_context(|| format!("failed to bind TCP listener {bind}"))?;
-    let tls_acceptor = resolve_tls_acceptor(rule.https.as_ref())?;
+    let mut tls_acceptor = resolve_tls_acceptor(rule.https.as_ref())?;
+    let mut tls_stamp = certificate_stamp(rule.https.as_ref());
+    let mut certificate_reload = tokio::time::interval(Duration::from_secs(60));
 
     info!(
         "{} listening on {bind}",
@@ -48,7 +51,20 @@ pub async fn start_tcp_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) 
     );
 
     loop {
-        let (client, client_addr) = listener.accept().await?;
+        let (client, client_addr) = tokio::select! {
+            accepted = listener.accept() => accepted?,
+            _ = certificate_reload.tick(), if tls_acceptor.is_some() => {
+                let stamp=certificate_stamp(rule.https.as_ref());
+                if stamp.is_some() && stamp != tls_stamp {
+                    match resolve_tls_acceptor(rule.https.as_ref()) {
+                        Ok(Some(acceptor)) => { tls_acceptor=Some(acceptor);tls_stamp=stamp;info!("Reloaded renewed HTTPS certificate on {bind}"); }
+                        Ok(None) => {},
+                        Err(error) => warn!("Keeping active HTTPS certificate on {bind}: {error:#}"),
+                    }
+                }
+                continue;
+            }
+        };
         if runtime.ip_block.is_blocked(client_addr.ip()) {
             debug!("IP block: dropped TCP connection from {client_addr}");
             continue;
@@ -161,6 +177,25 @@ async fn handle_client(
         .context(INITIAL_CLIENT_DATA_TIMEOUT_MSG)??;
     }
 
+    let host_routing = rule
+        .http_mappings
+        .iter()
+        .any(|mapping| mapping.hostname.is_some());
+    if !rule.http_mappings.is_empty() {
+        timeout(runtime.timeouts.initial_client_data, async {
+            while !first_buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                anyhow::ensure!(first_buf.len() < 32768, "HTTP routing headers too large");
+                let mut chunk = [0; 4096];
+                let n = client.read(&mut chunk).await?;
+                anyhow::ensure!(n != 0, "incomplete HTTP routing request");
+                first_buf.extend_from_slice(&chunk[..n]);
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context(INITIAL_CLIENT_DATA_TIMEOUT_MSG)??;
+    }
+
     let mut original_client = client_addr;
     let parsed =
         parse_proxy_chain(&first_buf).unwrap_or_else(|_| crate::proxy_protocol::ParsedProxyChain {
@@ -174,6 +209,12 @@ async fn handle_client(
             original_client, first_header.destination_address, first_header.destination_port
         );
     }
+    // Public HTTP routers take client identity only from the accepted socket.
+    // An HTTP client must never spoof a backend IP by sending its own PROXY preface.
+    anyhow::ensure!(
+        !host_routing || parsed.headers.is_empty(),
+        "incoming PROXY is not accepted on HTTP host routers"
+    );
     let initial_payload = &first_buf[parsed.payload_offset..];
     let forwarded_proto = if rule.https.as_ref().is_some_and(|https| https.enabled) {
         "https"
@@ -181,8 +222,20 @@ async fn handle_client(
         "http"
     };
 
-    let mapped_targets =
-        rule.http_targets_for_path(Protocol::Tcp, http_request_path(initial_payload).as_deref());
+    let request_host = if host_routing {
+        http_request_host(initial_payload)?
+    } else {
+        None
+    };
+    anyhow::ensure!(
+        !host_routing || (request_host.is_some() && http_request_path(initial_payload).is_some()),
+        "HTTP Host is required for hostname routing"
+    );
+    let mapped_targets = rule.http_targets_for_request(
+        Protocol::Tcp,
+        http_request_path(initial_payload).as_deref(),
+        request_host.as_deref(),
+    );
     let targets = if mapped_targets.is_empty() {
         rule.targets_for(Protocol::Tcp)
     } else {
@@ -668,6 +721,87 @@ mod tests {
     use super::*;
     use crate::ddos_guard::DdosGuardSettings;
     use crate::runtime::{ip_tests, ConnectionIpMapper};
+
+    #[tokio::test]
+    async fn hostname_router_buffers_fragmented_headers_and_preserves_real_proxy_identity() {
+        let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = backend.local_addr().unwrap().port();
+        let rule: ListenerRule = serde_yaml::from_str(&format!("tcp: 443\nhaproxy: true\ntarget: {{host: 127.0.0.1, tcp: 1}}\nhttpMappings:\n  - {{hostname: share.pexserver.com, path: /, target: {{host: 127.0.0.1, tcp: {port}}}}}\n")).unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.unwrap();
+            let mut proxy = [0; 28];
+            stream.read_exact(&mut proxy).await.unwrap();
+            assert_eq!(
+                parse_proxy_chain(&proxy).unwrap().headers[0]
+                    .source_address
+                    .to_string(),
+                "203.0.113.42"
+            );
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            assert!(String::from_utf8_lossy(&request).contains("Host: share.pexserver.com"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+                .await
+                .unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        let (mut client, proxy) = tokio::io::duplex(1024);
+        let task = tokio::spawn(handle_client(
+            Box::new(proxy),
+            "203.0.113.42:1234".parse().unwrap(),
+            Arc::new(rule.clone()),
+            Arc::new(AppRuntime::new(
+                false,
+                false,
+                vec![],
+                DdosGuardSettings::default(),
+            )),
+        ));
+        client.write_all(b"GET / HTTP/1.1\r\nHo").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        client
+            .write_all(b"st: share.pexserver.com\r\n\r\n")
+            .await
+            .unwrap();
+        let mut reply = Vec::new();
+        timeout(Duration::from_secs(2), client.read_to_end(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reply.ends_with(b"OK"));
+        client.shutdown().await.unwrap();
+        task.await.unwrap().unwrap();
+        upstream.await.unwrap();
+        let (mut client, proxy) = tokio::io::duplex(1024);
+        let task = tokio::spawn(handle_client(
+            Box::new(proxy),
+            "203.0.113.42:1234".parse().unwrap(),
+            Arc::new(rule),
+            Arc::new(AppRuntime::new(
+                false,
+                false,
+                vec![],
+                DdosGuardSettings::default(),
+            )),
+        ));
+        let mut forged = build_proxy_v2_header(
+            "1.2.3.4".parse().unwrap(),
+            1234,
+            "127.0.0.1".parse().unwrap(),
+            443,
+            false,
+        );
+        forged.extend_from_slice(b"GET / HTTP/1.1\r\nHost: share.pexserver.com\r\n\r\n");
+        client.write_all(&forged).await.unwrap();
+        assert!(timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+    }
 
     #[tokio::test]
     async fn diagnostics_do_not_wait_for_http_headers_before_forwarding() {

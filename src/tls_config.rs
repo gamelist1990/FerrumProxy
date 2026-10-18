@@ -30,6 +30,20 @@ pub fn resolve_tls_acceptor(config: Option<&ListenerHttpsConfig>) -> Result<Opti
     Ok(Some(TlsAcceptor::from(Arc::new(server_config))))
 }
 
+/// Follow certbot symlinks so renewed files can be loaded without dropping sessions.
+pub fn certificate_stamp(
+    config: Option<&ListenerHttpsConfig>,
+) -> Option<((std::time::SystemTime, u64), (std::time::SystemTime, u64))> {
+    let config = config.filter(|config| config.enabled)?;
+    let (cert, key) = resolve_paths(config).ok()?;
+    let cert = std::fs::metadata(cert).ok()?;
+    let key = std::fs::metadata(key).ok()?;
+    Some((
+        (cert.modified().ok()?, cert.len()),
+        (key.modified().ok()?, key.len()),
+    ))
+}
+
 fn resolve_paths(config: &ListenerHttpsConfig) -> Result<(PathBuf, PathBuf)> {
     let cert_path = config
         .cert_path

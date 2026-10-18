@@ -318,6 +318,9 @@ pub struct ProxyTarget {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpTargetMapping {
+    /// Optional exact HTTP Host name. Host-specific routes precede path-only routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
     pub path: String,
     #[serde(default)]
     pub target: Option<ProxyTarget>,
@@ -355,6 +358,21 @@ impl ProxyConfig {
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         config.normalize_targets();
         for listener in &config.listeners {
+            for mapping in &listener.http_mappings {
+                if let Some(host) = &mapping.hostname {
+                    anyhow::ensure!(
+                        host.len() <= 253
+                            && host.split('.').all(|label| !label.is_empty()
+                                && label.len() <= 63
+                                && !label.starts_with('-')
+                                && !label.ends_with('-')
+                                && label
+                                    .bytes()
+                                    .all(|c| c.is_ascii_alphanumeric() || c == b'-')),
+                        "Invalid HTTP routing hostname: {host}"
+                    );
+                }
+            }
             if let Some(ip) = listener.nethernet_advertise_host {
                 anyhow::ensure!(
                     !ip.is_unspecified() && !ip.is_multicast(),
@@ -518,10 +536,11 @@ impl ListenerRule {
             .collect()
     }
 
-    pub fn http_targets_for_path(
+    pub fn http_targets_for_request(
         &self,
         protocol: Protocol,
         request_path: Option<&str>,
+        request_host: Option<&str>,
     ) -> Vec<ProxyTarget> {
         let Some(request_path) = request_path else {
             return Vec::new();
@@ -530,8 +549,13 @@ impl ListenerRule {
         let Some(mapping) = self
             .http_mappings
             .iter()
-            .filter(|mapping| path_matches_mapping(request_path, &mapping.path))
-            .max_by_key(|mapping| mapping.path.len())
+            .filter(|mapping| {
+                path_matches_mapping(request_path, &mapping.path)
+                    && mapping.hostname.as_deref().is_none_or(|host| {
+                        request_host.is_some_and(|actual| host.eq_ignore_ascii_case(actual))
+                    })
+            })
+            .max_by_key(|mapping| (mapping.hostname.is_some(), mapping.path.len()))
         else {
             return Vec::new();
         };
@@ -589,6 +613,11 @@ impl ProxyTarget {
 impl HttpTargetMapping {
     fn normalize(&mut self) {
         self.path = normalize_mapping_path(&self.path);
+        self.hostname = self
+            .hostname
+            .take()
+            .map(|host| host.trim().trim_end_matches('.').to_ascii_lowercase())
+            .filter(|host| !host.is_empty());
 
         if let Some(target) = &mut self.target {
             target.normalize_url_host();
@@ -718,4 +747,37 @@ fn default_udp_session_idle_timeout_ms() -> u64 {
 
 fn default_true() -> bool {
     true
+}
+#[cfg(test)]
+mod hostname_tests {
+    use super::*;
+    #[test]
+    fn exact_host_precedes_generic_path_and_retains_legacy_fallback() {
+        let mut rule: ListenerRule = serde_yaml::from_str("tcp: 443\ntarget: {host: legacy, tcp: 8123}\nhttpMappings:\n  - {path: /deep, target: {host: generic, tcp: 80}}\n  - {hostname: SHARE.PEXSERVER.COM., path: /, target: {host: a8, tcp: 8100}}\n  - {hostname: share.pexserver.com, path: /deep, target: {host: a8-deep, tcp: 8101}}\n").unwrap();
+        for mapping in &mut rule.http_mappings {
+            mapping.normalize();
+        }
+        let select = |path, host| {
+            rule.http_targets_for_request(Protocol::Tcp, Some(path), Some(host))
+                .first()
+                .map(|t| t.host.clone())
+        };
+        assert_eq!(
+            select("/deep/x", "SHARE.PEXSERVER.COM"),
+            Some("a8-deep".into())
+        );
+        assert_eq!(select("/deepest", "share.pexserver.com"), Some("a8".into()));
+        assert_eq!(
+            select("/deep/x", "play.pexserver.com"),
+            Some("generic".into())
+        );
+        assert_eq!(select("/", "share.pexserver.com.evil.example"), None);
+        assert_eq!(rule.targets_for(Protocol::Tcp)[0].host, "legacy");
+        let restored: ListenerRule =
+            serde_yaml::from_str(&serde_yaml::to_string(&rule).unwrap()).unwrap();
+        assert_eq!(
+            restored.http_mappings[1].hostname.as_deref(),
+            Some("share.pexserver.com")
+        );
+    }
 }

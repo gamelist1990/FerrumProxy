@@ -43,6 +43,9 @@ jobs:
         working-directory: FerrumGUI/frontend
         run: bun install --frozen-lockfile
 
+      - name: Test configuration and certificate domains
+        run: bun test tests frontend/tests
+
       - name: Build frontend
         run: bun run build:frontend
 

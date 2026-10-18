@@ -49,6 +49,7 @@ export interface ListenerConfig {
   target?: ProxyTargetConfig;
   targets?: ProxyTargetConfig[];
   httpMappings?: Array<{
+      hostname?: string;
     path?: string;
     target?: ProxyTargetConfig;
     targets?: ProxyTargetConfig[];

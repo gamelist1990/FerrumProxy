@@ -78,6 +78,10 @@ jobs:
       - name: Check
         run: cargo check --target ${{ matrix.target }}
 
+      - name: Test proxy transport and host routing
+        if: matrix.platform == 'linux-x64'
+        run: cargo test --locked
+
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
 

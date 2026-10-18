@@ -100,6 +100,10 @@ listeners:
     # Optional HTTP/HTTPS path mappings. The longest matching path wins.
     # /pages/example is routed to /pages before /.
     httpMappings:
+      # Optional hostname: exact HTTP Host match on a shared HTTP/HTTPS port.
+      # - hostname: share.pexserver.com
+      #   path: /
+      #   target: { host: 100.69.76.52, tcp: 8100 }
       - path: /
         target:
           host: https://example.com/
