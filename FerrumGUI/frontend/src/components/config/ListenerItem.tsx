@@ -77,6 +77,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
   const [certFile, setCertFile] = useState<File | null>(null);
   const [keyFile, setKeyFile] = useState<File | null>(null);
   const [provisioningCertificate, setProvisioningCertificate] = useState(false);
+  const [certificateFeedback, setCertificateFeedback] = useState<{error: boolean; message: string} | null>(null);
 
   const targets = listener.targets !== undefined
     ? listener.targets
@@ -195,10 +196,11 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
     ));
 
     if (domains.length === 0) {
-      alert(t('letsEncryptDomainRequired') || 'Enter at least one domain.');
+      setCertificateFeedback({error:true,message:t('letsEncryptDomainRequired') || 'Enter at least one domain.'});
       return;
     }
 
+    setCertificateFeedback(null);
     setProvisioningCertificate(true);
     try {
       const result = await provisionListenerLetsEncrypt(instanceId, index, {
@@ -215,14 +217,12 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
         certPath: result.certPath,
         keyPath: result.keyPath,
       });
-      alert(
-        result.alreadyPresent
+      setCertificateFeedback({ error: false, message: result.alreadyPresent
           ? (t('letsEncryptAlreadyPresent') || 'Certificate already exists.')
-          : (t('letsEncryptProvisionSuccess') || 'Certificate issued successfully.')
-      );
+          : (t('letsEncryptProvisionSuccess') || 'Certificate issued successfully.') });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      alert(`${t('letsEncryptProvisionFailed') || 'Certificate issuance failed:'} ${message}`);
+      setCertificateFeedback({error:true,message:`${t('letsEncryptProvisionFailed') || 'Certificate issuance failed:'} ${message}`});
     } finally {
       setProvisioningCertificate(false);
     }
@@ -411,6 +411,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
                 ? (t('letsEncryptProvisioning') || 'Checking...')
                 : (t('checkAndProvisionLetsEncrypt') || 'Check and issue certificate')}
             </Button>
+            {certificateFeedback && <p role={certificateFeedback.error ? 'alert' : 'status'} className="ui-help-text">{certificateFeedback.message}</p>}
             <p className="ui-help-text">
               {t('letsEncryptProvisionHint') || 'All comma-separated domains are included in one SAN certificate for the same IP address.'}
             </p>
