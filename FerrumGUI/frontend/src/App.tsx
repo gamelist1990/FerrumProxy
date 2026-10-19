@@ -55,6 +55,8 @@ import type { WebSocketEventMap } from "./api";
 import { LOG_DISPLAY_LIMIT } from "./utils/constants";
 
 function App() {
+  const [guiUpdateConfirmation, setGuiUpdateConfirmation] = useState(false);
+  const [guiUpdateError, setGuiUpdateError] = useState("");
   const [instances, setInstances] = useState<FerrumProxyInstance[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -588,10 +590,12 @@ function App() {
       alert(t("guiAlreadyUpToDate"));
       return;
     }
-    const proceed = confirm(
-      `${t("guiUpdateConfirm")}\n\nv${guiVersion} → v${guiLatestVersion}\n\n${t("guiUpdateWillRestart")}`
-    );
-    if (!proceed) return;
+    setGuiUpdateError("");
+    setGuiUpdateConfirmation(true);
+  }
+
+  async function confirmGuiSelfUpdate() {
+    setGuiUpdateConfirmation(false);
     try {
       setIsGuiUpdating(true);
       const result = await performGuiSelfUpdate();
@@ -599,7 +603,7 @@ function App() {
       window.location.reload();
     } catch (error) {
       const err = error as Error;
-      alert(`${t("errorGuiUpdate")} ${err.message}`);
+      setGuiUpdateError(`${t("errorGuiUpdate")} ${err.message}`);
       setIsGuiUpdating(false);
     }
   }
@@ -907,6 +911,12 @@ function App() {
               <RefreshCw size={16} className={isCheckingUpdates ? 'spin' : ''} aria-hidden="true" />
               {isCheckingUpdates ? t("checking") : t("checkUpdates")}
             </button>
+            {guiUpdateError && <p role="alert">{guiUpdateError}</p>}
+            {guiUpdateConfirmation && <section role="dialog" aria-modal="true" aria-label={t("guiUpdateConfirm")} className="surface-card" onKeyDown={e => { if (e.key === 'Escape') setGuiUpdateConfirmation(false); }}>
+              <p>{t("guiUpdateConfirm")}</p><p>v{guiVersion} → v{guiLatestVersion}</p><p>{t("guiUpdateWillRestart")}</p>
+              <button type="button" className="btn tertiary" onClick={() => setGuiUpdateConfirmation(false)}>キャンセル</button>
+              <button type="button" className="btn warning" onClick={() => void confirmGuiSelfUpdate()}>{t("guiUpdate")}</button>
+            </section>}
             {guiSelfUpdateSupported && (
               <button
                 type="button"
