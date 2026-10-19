@@ -228,7 +228,7 @@ graph TB
 | **設定 GUI** | ✅ 内蔵 (FerrumGUI) | ❌ 別途 | ❌ 自作必要dayo |
 | **設定ホットリロード** | ✅ 即反映 | ⚠️ `nginx -s reload` | ⚠️ プロセス再起動 |
 | **Web 一般用途** | ✅ 対応 | ⭐ みんな使ってるはず | ✅ 対応 |
-| **HTTP/2 / HTTP/3** | ❌ 未対応 | ✅ 対応 | ✅ 対応 |
+| **HTTP/2 / HTTP/3** | HTTP/3対応（任意有効化）、HTTP/2未対応 | ✅ 対応 | ✅ 対応 |
 
 **まとめ**: 汎用 Web だけなら nginx で十分ですが、**Bedrock を含む Minecraft サーバー運用**では他に選択肢がほぼありません。
 
@@ -375,7 +375,7 @@ Web (HTTP/HTTPS) だけなら nginx で十分です。
 
 ### Q. HTTP/2 や HTTP/3 は？
 
-**A.** 現時点では未対応。Web 用途では nginx の後段に置く構成を推奨。
+**A.** HTTP/3はHTTPS待受の `https.http3` で有効化できます。UDPの同一ポートと明示的なホスト名ルートが必要です。既存HTTPS/TCPも維持するため、wgetなども利用できます。HTTP/2は未対応です。制限と検証手順は [docs/http3.md](docs/http3.md) を参照してください。
 
 ### Q. どんなライセンスですか？
 
