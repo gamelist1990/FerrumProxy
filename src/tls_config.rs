@@ -136,3 +136,25 @@ fn ensure_file(path: &Path, label: &str) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn resolve_quic_config(config: &ListenerHttpsConfig) -> Result<quinn::ServerConfig> {
+    let (cert_path, key_path) = resolve_paths(config)?;
+    let mut tls = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(load_certs(&cert_path)?, load_private_key(&key_path)?)?;
+    tls.alpn_protocols = vec![b"h3".to_vec()];
+    // No 0-RTT: registration and mutations must never be replayable early data.
+    tls.max_early_data_size = 0;
+    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
+    let mut server = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_bidi_streams(32u32.into());
+    transport.max_concurrent_uni_streams(8u32.into());
+    transport.stream_receive_window((512 * 1024u32).into());
+    transport.receive_window((4 * 1024 * 1024u32).into());
+    transport.max_idle_timeout(Some(std::time::Duration::from_secs(45).try_into()?));
+    // Keep the peer IP fixed for application per-IP limits and PROXY identity.
+    server.migration(false);
+    server.transport_config(Arc::new(transport));
+    Ok(server)
+}

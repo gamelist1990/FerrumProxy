@@ -67,6 +67,7 @@ export interface FerrumProxyConfig {
     nethernetAdvertiseHost?: string;
     nethernetAdvertisePort?: number;
     https?: {
+    http3?: boolean;
       enabled?: boolean;
       autoDetect?: boolean;
       autoProvision?: boolean;
@@ -375,6 +376,8 @@ export class ConfigManager extends EventEmitter {
               ) {
                 errors.push(`listeners[${index}].https requires at least one domain when autoProvision is enabled`);
               }
+              if (listener.https.http3 !== undefined && typeof listener.https.http3 !== 'boolean') errors.push(`listeners[${index}].https.http3 must be a boolean`);
+              if (listener.https.http3 && (!listener.https.enabled || !listener.tcp || listener.udp === listener.tcp || !listener.httpMappings?.some(mapping => mapping.hostname))) errors.push(`listeners[${index}].https.http3 requires HTTPS, a TCP port, a free matching UDP port and hostname routes`);
               if (listener.https.certPath !== undefined && typeof listener.https.certPath !== 'string') {
                 errors.push(`listeners[${index}].https.certPath must be a string`);
               }

@@ -405,3 +405,5 @@ Web (HTTP/HTTPS) だけなら nginx で十分です。
 [GitHub](https://github.com/gamelist1990/FerrumProxy) · [Releases](https://github.com/gamelist1990/FerrumProxy/releases) · [Issues](https://github.com/gamelist1990/FerrumProxy/issues)
 
 </div>
+
+HTTP/3 / QUIC の追加フロントエンドは [docs/http3.md](docs/http3.md) を参照してください。既定は無効、HTTPS/TCP と wget は引き続き利用可能です。

@@ -331,6 +331,9 @@ pub struct HttpTargetMapping {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerHttpsConfig {
+    /// Serve HTTP/3 on UDP at the TCP TLS listener port; TCP remains available.
+    #[serde(default)]
+    pub http3: bool,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_true")]
@@ -358,6 +361,21 @@ impl ProxyConfig {
             .with_context(|| format!("failed to parse config {}", path.display()))?;
         config.normalize_targets();
         for listener in &config.listeners {
+            if listener.https.as_ref().is_some_and(|tls| tls.http3) {
+                anyhow::ensure!(
+                    listener.https.as_ref().is_some_and(|tls| tls.enabled)
+                        && listener.tcp.is_some(),
+                    "HTTP/3 requires an HTTPS TCP listener"
+                );
+                anyhow::ensure!(
+                    listener.udp != listener.tcp,
+                    "HTTP/3 UDP port conflicts with the UDP relay"
+                );
+                anyhow::ensure!(
+                    !listener.http_mappings.is_empty(),
+                    "HTTP/3 requires explicit HTTP host routing"
+                );
+            }
             for mapping in &listener.http_mappings {
                 if let Some(host) = &mapping.hostname {
                     anyhow::ensure!(

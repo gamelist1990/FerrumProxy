@@ -35,6 +35,7 @@ export interface ListenerConfig {
   nethernetAdvertiseHost?: string;
   nethernetAdvertisePort?: number;
   https?: {
+    http3?: boolean;
     enabled?: boolean;
     autoDetect?: boolean;
     autoProvision?: boolean;

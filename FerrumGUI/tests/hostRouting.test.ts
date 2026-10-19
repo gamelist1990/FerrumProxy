@@ -31,3 +31,13 @@ test('certificate reuse checks every SAN instead of just existing files',async()
   expect(certificateCoversDomains('bad',['play.pexserver.com'])).toBe(false);
  }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('HTTP/3 configuration round-trips and rejects UDP collisions or missing TLS and hosts', async () => {
+ const manager=new ConfigManager(),dir=await mkdtemp(join(tmpdir(),'ferrum-h3-config-'));
+ try {
+  const listener={tcp:443,https:{enabled:true,http3:true,autoDetect:false,certPath:'/tmp/cert.pem',keyPath:'/tmp/key.pem'},httpMappings:[{hostname:'share.pexserver.com',path:'/',target:{host:'100.69.76.52',tcp:8100}}]};
+  const config={listeners:[listener]};expect((await manager.validate(config)).valid).toBe(true);
+  const file=join(dir,'config.yml');await manager.write(file,config);expect((await manager.read(file)).listeners![0].https?.http3).toBe(true);
+  for(const changed of [{...listener,udp:443},{...listener,https:{...listener.https,enabled:false}},{...listener,httpMappings:[]}]) expect((await manager.validate({listeners:[changed]})).valid).toBe(false);
+ } finally {await rm(dir,{recursive:true,force:true});}
+});

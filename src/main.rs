@@ -3,6 +3,7 @@ mod config;
 mod ddos_guard;
 mod discord;
 mod firewall;
+mod http3;
 mod http_rewrite;
 mod ip_block;
 mod management_api;
@@ -211,6 +212,19 @@ async fn main() -> Result<()> {
     }
 
     for rule in cfg.listeners {
+        if rule
+            .https
+            .as_ref()
+            .is_some_and(|tls| tls.enabled && tls.http3)
+        {
+            let rule = Arc::new(rule.clone());
+            let runtime = Arc::clone(&runtime);
+            tasks.spawn(async move {
+                if let Err(err) = http3::start_http3_proxy(rule, runtime).await {
+                    error!("HTTP/3 listener stopped: {err:#}");
+                }
+            });
+        }
         if rule.tcp.is_some() && rule.has_targets_for(config::Protocol::Tcp) {
             let rule = Arc::new(rule.clone());
             let runtime = Arc::clone(&runtime);

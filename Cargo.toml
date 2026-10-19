@@ -5,6 +5,14 @@ edition = "2021"
 description = "Low-latency Rust proxy for Minecraft Bedrock and HTTP/HTTPS forwarding."
 
 [dependencies]
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http = "1"
+tokio-stream = "0.1"
+
 anyhow = "1.0"
 axum = "0.7"
 base64 = "0.22"

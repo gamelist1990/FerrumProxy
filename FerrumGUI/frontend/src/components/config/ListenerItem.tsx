@@ -342,6 +342,7 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
           checked={listener.https?.enabled || false}
           onChange={(checked) => onChange('https', {
             enabled: checked,
+            http3: checked && (listener.https?.http3 ?? false),
             autoDetect: listener.https?.autoDetect ?? true,
             autoProvision: listener.https?.autoProvision ?? false,
             letsEncryptDomain: listener.https?.letsEncryptDomain || 'play.pexserver.com',
@@ -355,6 +356,8 @@ export const ListenerItem: React.FC<ListenerItemProps> = ({
 
       {listener.https?.enabled && (
         <>
+          <Switch label="HTTP/3 (QUIC / UDP)" checked={listener.https?.http3 ?? false} onChange={checked => onChange('https', { ...listener.https, enabled: true, http3: checked })} />
+          <p className="text-xs text-slate-400">HTTP/3 uses UDP at the HTTPS TCP port. Keep TCP enabled for wget and WebSocket uploads. Explicit hostname routes are required.</p>
           <div className="ui-grid">
             <Switch
               label={t('autoDetectLetsEncrypt') || 'Auto-detect Let\'s Encrypt'}
