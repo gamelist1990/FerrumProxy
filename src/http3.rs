@@ -15,10 +15,27 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     io::AsyncWriteExt,
     net::TcpStream,
-    sync::{mpsc, Semaphore},
+    sync::{mpsc, Notify, Semaphore},
     time::timeout,
 };
 use tokio_stream::wrappers::ReceiverStream;
+
+// Response headers normally arrive only after the request body. Limit inactivity,
+// not the total upload duration, so low-bandwidth clients can keep streaming.
+async fn wait_while_upload_active<F: std::future::Future>(
+    response: F,
+    activity: &Notify,
+    idle: Duration,
+) -> Result<F::Output> {
+    tokio::pin!(response);
+    loop {
+        tokio::select! {
+            result = &mut response => return Ok(result),
+            _ = activity.notified() => {},
+            _ = tokio::time::sleep(idle) => anyhow::bail!("HTTP/3 origin inactive"),
+        }
+    }
+}
 
 pub async fn start_http3_proxy(rule: Arc<ListenerRule>, runtime: Arc<AppRuntime>) -> Result<()> {
     let tls = rule
@@ -217,11 +234,16 @@ async fn forward(
     let pump = tokio::spawn(async move {
         let _ = connection.await;
     });
+    let activity = Arc::new(Notify::new());
+    let upload_activity = activity.clone();
     let upload = tokio::spawn(async move {
         loop {
             let data = match timeout(Duration::from_secs(90), recv.recv_data()).await {
                 Ok(Ok(Some(data))) => data,
-                Ok(Ok(None)) => break,
+                Ok(Ok(None)) => {
+                    upload_activity.notify_one();
+                    break;
+                }
                 _ => {
                     let _ = sender
                         .send(Err(std::io::Error::new(
@@ -242,11 +264,17 @@ async fn forward(
                 {
                     return;
                 }
+                upload_activity.notify_one();
             }
         }
     });
     let result: Result<()> = async {
-        let response = timeout(Duration::from_secs(90), client.send_request(request)).await??;
+        let response = wait_while_upload_active(
+            client.send_request(request),
+            &activity,
+            Duration::from_secs(90),
+        )
+        .await??;
         let (mut parts, mut body) = response.into_parts();
         strip_hop_headers(&mut parts.headers);
         parts.version = http::Version::HTTP_3;
@@ -274,6 +302,35 @@ mod tests {
     use super::*;
     use crate::ddos_guard::DdosGuardSettings;
     use tokio::io::AsyncReadExt;
+    #[tokio::test]
+    async fn advancing_upload_outlives_header_deadline_but_idle_origin_times_out() -> Result<()> {
+        let activity = Arc::new(Notify::new());
+        let updates = activity.clone();
+        let producer = tokio::spawn(async move {
+            for _ in 0..8 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                updates.notify_one();
+            }
+        });
+        let response = async {
+            tokio::time::sleep(Duration::from_millis(230)).await;
+            42
+        };
+        assert_eq!(
+            wait_while_upload_active(response, &activity, Duration::from_millis(100)).await?,
+            42
+        );
+        producer.await?;
+        assert!(wait_while_upload_active(
+            std::future::pending::<()>(),
+            &Notify::new(),
+            Duration::from_millis(25)
+        )
+        .await
+        .is_err());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn quic_streams_forward_proxy_identity_bodies_ranges_and_do_not_block_each_other(
     ) -> Result<()> {
