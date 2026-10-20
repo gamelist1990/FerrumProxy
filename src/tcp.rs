@@ -25,7 +25,9 @@ use crate::tcp_tuning::{apply_tcp_buffer_sizes, apply_tcp_keepalive, apply_tcp_n
 use crate::tls_config::{certificate_stamp, resolve_tls_acceptor};
 
 const INITIAL_CLIENT_DATA_TIMEOUT_MSG: &str = "timed out waiting for initial client data";
-const BUFFER_SIZE: usize = 16 * 1024;
+// Keep reads large enough to consume the 1 MiB frames used by the upload path
+// without forcing the relay through dozens of Tokio read/write cycles.
+const BUFFER_SIZE: usize = 1024 * 1024;
 
 trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}

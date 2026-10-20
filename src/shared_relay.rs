@@ -23,7 +23,9 @@ use crate::runtime::AppRuntime;
 use crate::tcp_tuning::{apply_tcp_keepalive, apply_tcp_nodelay};
 use crate::token_security::hash_token;
 
-const BUFFER_SIZE: usize = 16 * 1024;
+// Match the large application frames used by the TCP tunnel clients so a
+// single frame is not needlessly split into dozens of relay iterations.
+const BUFFER_SIZE: usize = 1024 * 1024;
 
 pub struct SharedRelayState {
     pub config: SharedServiceConfig,
